@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.DS_Store
+bots/*/workspace/private/.env
+bots/*/workspace/private/history/
+bots/*/workspace/private/logs/
+bots/*/workspace/cli-home/

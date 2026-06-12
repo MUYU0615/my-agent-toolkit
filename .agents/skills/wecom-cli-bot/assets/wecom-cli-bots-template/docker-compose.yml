@@ -1,0 +1,23 @@
+services:
+  example-bot:
+    build: .
+    command: ["--bot", "example-bot"]
+    restart: unless-stopped
+
+  # Example: Kimi Code bot
+  # kimi-bot:
+  #   build:
+  #     context: .
+  #     args:
+  #       INSTALL_KIMI_CODE: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash"
+  #   command: ["--bot", "kimi-bot"]
+  #   restart: unless-stopped
+
+  # Example: Kiro CLI bot
+  # kiro-bot:
+  #   build:
+  #     context: .
+  #     args:
+  #       INSTALL_KIRO_CLI: "curl -fsSL https://cli.kiro.dev/install | bash"
+  #   command: ["--bot", "kiro-bot"]
+  #   restart: unless-stopped

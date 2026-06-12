@@ -1,0 +1,25 @@
+{
+  "name": "wecom-cli-bots",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bot:start": "tsx src/main.ts --bot"
+  },
+  "dependencies": {
+    "@wecom/aibot-node-sdk": "^1.0.7",
+    "dotenv": "^16.4.7",
+    "ws": "^8.18.0",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

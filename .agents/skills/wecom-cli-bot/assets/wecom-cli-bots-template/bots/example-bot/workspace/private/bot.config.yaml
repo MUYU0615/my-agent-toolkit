@@ -1,0 +1,51 @@
+bot:
+  name: example-bot
+  session_idle_ttl_seconds: 10800
+  stop_keyword: "/stop"
+  thinking_message: "正在思考... /stop 终止 | /history 历史会话 | /new 新会话 | /open N 恢复"
+  busy_message: "当前任务仍在运行，请发送 /stop 终止后再发送新问题。"
+
+wecom:
+  bot_id_env: WECOM_BOT_ID
+  secret_env: WECOM_BOT_SECRET
+
+# --- Provider: Codex (default) ---
+cli:
+  provider: codex
+  command: codex
+  args: []
+  input_mode: stdin
+  stream_output: stdout
+  stop_signal: SIGTERM
+  kill_after_ms: 10000
+  timeout_seconds: 10800
+  env:
+    CODEX_HOME: "./bots/example-bot/workspace/cli-home/codex"
+
+# --- Provider: Kimi Code ---
+# cli:
+#   provider: kimi-code
+#   command: kimi
+#   args: ["-p", "{{prompt}}", "--output-format", "text"]
+#   input_mode: arg
+#   prompt_placeholder: "{{prompt}}"
+#   stream_output: stdout
+#   stop_signal: SIGTERM
+#   kill_after_ms: 10000
+#   timeout_seconds: 10800
+#   env:
+#     KIMI_CODE_HOME: "./bots/example-bot/workspace/cli-home/kimi"
+
+# --- Provider: Kiro CLI ---
+# cli:
+#   provider: kiro-cli
+#   command: kiro-cli
+#   args: ["chat", "--no-interactive", "--trust-all-tools", "{{prompt}}"]
+#   input_mode: arg
+#   prompt_placeholder: "{{prompt}}"
+#   stream_output: stdout
+#   stop_signal: SIGTERM
+#   kill_after_ms: 10000
+#   timeout_seconds: 10800
+#   env:
+#     KIRO_HOME: "./bots/example-bot/workspace/cli-home/kiro"

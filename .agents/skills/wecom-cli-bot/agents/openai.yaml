@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeCom CLI Bot"
+  short_description: "生成企业微信长连接本地 CLI 机器人"
+  default_prompt: "Use $wecom-cli-bot to create a WeCom smart bot that bridges messages to a local CLI."
