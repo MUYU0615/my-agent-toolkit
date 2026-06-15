@@ -13,6 +13,7 @@ export class BotWorker {
   private cli: CliRunner;
   private memory: MemoryClient;
   private activeStreams = new Map<string, StreamHandle>();
+  private pendingFiles = new Map<string, string[]>(); // userId -> file paths in tmp/
 
   constructor(private runtime: BotRuntime, private wecom: WeComClient) {
     this.sessions = new SessionStore(runtime);
@@ -85,6 +86,9 @@ export class BotWorker {
     const setSoulMatch = text.match(/^\/set_soul\s+([\s\S]+)$/);
     if (setSoulMatch) { await this.handleSetSoul(message, setSoulMatch[1].trim()); return; }
 
+    if (text === "/confirm") { await this.handleConfirm(message); return; }
+    if (text === "/reject") { await this.handleReject(message); return; }
+
     // Normal message flow - check if initialized
     const soulPath = path.join(this.runtime.privateDir, "soul.md");
     if (!fs.existsSync(soulPath) || fs.readFileSync(soulPath, "utf8").trim() === "") {
@@ -119,6 +123,8 @@ export class BotWorker {
         if (result.kiroSessionId) this.sessions.setKiroSessionId(session, result.kiroSessionId);
         this.sessions.append(session, { role: "assistant", event: "completed", content: result.rawOutput });
         await stream.end(redact(result.intermediateOutput || result.rawOutput, this.runtime.secrets));
+        // Check for tmp files and send to user
+        await this.sendTmpFiles(message);
       },
       onError: async (error) => {
         this.activeStreams.delete(message.userId);
@@ -141,6 +147,8 @@ export class BotWorker {
       "/name <名称> | 命名当前会话",
       "/soul | 查看当前 Soul",
       "/set_soul <内容> | 设置新 Soul",
+      "/confirm | 确认保存文档",
+      "/reject | 丢弃文档",
     ];
     if (this.memory.enabled) {
       rows.push(
@@ -242,6 +250,61 @@ export class BotWorker {
     if (!this.memory.enabled) { await this.wecom.sendText(message.conversationId, "记忆功能未启用。"); return; }
     const count = await this.memory.forget([keyword]);
     await this.wecom.sendText(message.conversationId, `已删除 ${count} 条记忆。`);
+  }
+
+  // --- Tmp file workflow ---
+  private async sendTmpFiles(message: IncomingWeComMessage): Promise<void> {
+    const tmpDir = path.join(this.runtime.filesDir, "tmp");
+    if (!fs.existsSync(tmpDir)) return;
+    const files = fs.readdirSync(tmpDir).filter(f => fs.statSync(path.join(tmpDir, f)).isFile());
+    if (files.length === 0) return;
+
+    const filePaths = files.map(f => path.join(tmpDir, f));
+    this.pendingFiles.set(message.userId, filePaths);
+
+    for (const filePath of filePaths) {
+      const content = fs.readFileSync(filePath, "utf8");
+      const filename = path.basename(filePath);
+      await this.wecom.sendText(message.conversationId, `📄 ${filename}\n\n${content}`);
+    }
+    await this.wecom.sendText(message.conversationId, "发送 /confirm 保存文档，/reject 丢弃。");
+  }
+
+  private async handleConfirm(message: IncomingWeComMessage): Promise<void> {
+    const files = this.pendingFiles.get(message.userId);
+    if (!files || files.length === 0) {
+      await this.wecom.sendText(message.conversationId, "没有待确认的文档。");
+      return;
+    }
+    const docsDir = path.join(this.runtime.filesDir, "docs");
+    fs.mkdirSync(docsDir, { recursive: true });
+    const saved: string[] = [];
+    for (const filePath of files) {
+      const filename = path.basename(filePath);
+      const dest = path.join(docsDir, filename);
+      fs.renameSync(filePath, dest);
+      saved.push(filename);
+      // Index to memory if enabled
+      if (this.memory.enabled) {
+        const content = fs.readFileSync(dest, "utf8");
+        await this.memory.store(content, [filename.replace(/\.md$/, "")], "core");
+      }
+    }
+    this.pendingFiles.delete(message.userId);
+    await this.wecom.sendText(message.conversationId, `已保存：${saved.join(", ")}`);
+  }
+
+  private async handleReject(message: IncomingWeComMessage): Promise<void> {
+    const files = this.pendingFiles.get(message.userId);
+    if (!files || files.length === 0) {
+      await this.wecom.sendText(message.conversationId, "没有待确认的文档。");
+      return;
+    }
+    for (const filePath of files) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    }
+    this.pendingFiles.delete(message.userId);
+    await this.wecom.sendText(message.conversationId, "已丢弃。");
   }
 
   // --- Init ---

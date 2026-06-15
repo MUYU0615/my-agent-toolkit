@@ -51,7 +51,7 @@ export async function buildPrompt(runtime: BotRuntime, userText: string, memory?
     "# Runtime Constraint",
     "Answer directly from your model knowledge unless the user explicitly asks you to search, browse, fetch URLs, or inspect current live information. Do not start web search or fetch tools for ordinary chat or analysis requests.",
     "# Output Constraint",
-    "When you perform file operations (create, modify, read files), do NOT repeat the file content in your reply. Only state the result (e.g. '已生成 PRD，路径：docs/prd/xxx.md'). If the user wants to see the content, they will ask explicitly.",
+    "When you produce documents (PRD, design docs, reports, etc.), write them to the `tmp/` directory (e.g. `tmp/feature-name.md`). Do NOT output the full document content in your reply. Just confirm: '已生成文档：tmp/xxx.md'. Short answers and explanations can be replied directly without writing files.",
     "# User Message",
     userText
   );

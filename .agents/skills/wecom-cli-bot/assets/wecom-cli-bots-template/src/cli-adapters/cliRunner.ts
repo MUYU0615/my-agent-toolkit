@@ -185,7 +185,7 @@ export class CliRunner {
       if (options.useWorkspaceCwd) {
         cwd = this.runtime.workspaceDir;
       } else {
-        cwd = this.getUserCwd(userId);
+        cwd = this.runtime.filesDir;
       }
       const explicitId = this.userResumeId.get(userId);
       if (explicitId) {
