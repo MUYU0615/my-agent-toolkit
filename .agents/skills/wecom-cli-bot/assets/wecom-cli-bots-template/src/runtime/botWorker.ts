@@ -42,7 +42,16 @@ export class BotWorker {
 
     // Slash commands
     if (text === "/help") { await this.handleHelp(message); return; }
-    if (text === "/init") { await this.handleInit(message); return; }
+    if (text === "/init") {
+      const soulPath = path.join(this.runtime.privateDir, "soul.md");
+      const soulContent = fs.existsSync(soulPath) ? fs.readFileSync(soulPath, "utf8").trim() : "";
+      if (soulContent && !soulContent.includes("[BOOTSTRAP]")) {
+        await this.wecom.sendText(message.conversationId, "机器人已完成初始化，无法重复执行。");
+        return;
+      }
+      await this.handleInit(message);
+      return;
+    }
     if (text === "/history") { await this.handleHistory(message); return; }
     if (text === "/new") { await this.handleNew(message); return; }
     if (text === "/memory") { await this.handleMemoryStats(message); return; }
