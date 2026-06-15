@@ -6,6 +6,6 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      - EMBEDDING_MODEL=BAAI/bge-m3
+      - EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
       - DEVICE=cpu
     restart: unless-stopped

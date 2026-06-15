@@ -18,7 +18,7 @@ def _get_chroma() -> chromadb.ClientAPI:
 
 def _get_db() -> sqlite3.Connection:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(SQLITE_PATH))
+    conn = sqlite3.connect(str(SQLITE_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("""
         CREATE TABLE IF NOT EXISTS memories (
