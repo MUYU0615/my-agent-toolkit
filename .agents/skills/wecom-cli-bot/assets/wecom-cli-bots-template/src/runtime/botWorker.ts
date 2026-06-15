@@ -249,7 +249,27 @@ export class BotWorker {
     // Reset session
     this.cli.clearUserSession(message.userId);
     this.sessions.expire(message.userId);
-    await this.wecom.sendText(message.conversationId, "已进入初始化模式，请开始配置你的机器人。");
+
+    // Trigger first guided question
+    const session = this.sessions.getOrCreate(message.userId);
+    const prompt = await buildPrompt(this.runtime, "开始初始化", this.memory);
+    const stream = await this.wecom.startStream(message.replyKey);
+    this.activeStreams.set(message.userId, stream);
+
+    await this.cli.run(message.userId, prompt, {
+      onChunk: async (chunk) => {
+        await stream.write(redact(chunk, this.runtime.secrets));
+      },
+      onDone: async (result) => {
+        this.activeStreams.delete(message.userId);
+        if (result.kiroSessionId) this.sessions.setKiroSessionId(session, result.kiroSessionId);
+        await stream.end(redact(result.intermediateOutput || result.rawOutput, this.runtime.secrets));
+      },
+      onError: async (error) => {
+        this.activeStreams.delete(message.userId);
+        await stream.end("初始化启动失败，请重试 /init");
+      }
+    }, { userMessage: "开始初始化" });
   }
 
   // --- Soul commands ---
