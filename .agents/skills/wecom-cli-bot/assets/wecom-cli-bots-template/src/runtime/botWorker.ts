@@ -65,6 +65,10 @@ export class BotWorker {
     const skillRemoveMatch = text.match(/^\/skill_remove\s+(.+)$/);
     if (skillRemoveMatch) { await this.handleSkillRemove(message, skillRemoveMatch[1].trim()); return; }
 
+    if (text === "/soul") { await this.handleGetSoul(message); return; }
+    const setSoulMatch = text.match(/^\/set_soul\s+([\s\S]+)$/);
+    if (setSoulMatch) { await this.handleSetSoul(message, setSoulMatch[1].trim()); return; }
+
     // Normal message flow
     if (this.cli.isRunning(message.userId)) {
       await this.wecom.sendText(message.conversationId, this.runtime.config.bot.busy_message);
@@ -99,32 +103,34 @@ export class BotWorker {
 
   // --- Help ---
   private async handleHelp(message: IncomingWeComMessage): Promise<void> {
-    const lines = [
-      "可用指令：",
-      "",
-      "会话管理",
-      "  /stop        终止当前任务",
-      "  /new         开始新会话",
-      "  /history     历史会话列表",
-      "  /open N      恢复第 N 个会话",
-      "  /name <名称>  命名当前会话",
+    const rows = [
+      "指令 | 功能",
+      "--- | ---",
+      "/stop | 终止当前任务",
+      "/new | 开始新会话",
+      "/history | 历史会话列表",
+      "/open N | 恢复第 N 个会话",
+      "/name <名称> | 命名当前会话",
+      "/soul | 查看当前 Soul",
+      "/set_soul <内容> | 设置新 Soul",
     ];
     if (this.memory.enabled) {
-      lines.push("", "记忆管理",
-        "  /remember <文本>          存入记忆",
-        "  /remember --shared <文本>  存入共享记忆",
-        "  /fetch <url>             抓取 URL 存入",
-        "  /scan [目录]              扫描文件存入",
-        "  /memory                  记忆统计",
-        "  /forget <关键词>          删除记忆",
+      rows.push(
+        "/remember <文本> | 存入记忆",
+        "/remember --shared <文本> | 存入共享记忆",
+        "/fetch <url> | 抓取 URL 存入",
+        "/scan [目录] | 扫描文件存入",
+        "/memory | 记忆统计",
+        "/forget <关键词> | 删除记忆",
       );
     }
-    lines.push("", "技能管理",
-      "  /skill_list              已装技能列表",
-      "  /skill_add <git_url>    安装技能",
-      "  /skill_remove <name>    卸载技能",
+    rows.push(
+      "/skill_list | 已装技能列表",
+      "/skill_add <git_url> | 安装技能",
+      "/skill_remove <name> | 卸载技能",
+      "/help | 显示本帮助",
     );
-    await this.wecom.sendText(message.conversationId, lines.join("\n"));
+    await this.wecom.sendText(message.conversationId, rows.join("\n"));
   }
 
   // --- Session commands ---
@@ -198,6 +204,23 @@ export class BotWorker {
     if (!this.memory.enabled) { await this.wecom.sendText(message.conversationId, "记忆功能未启用。"); return; }
     const count = await this.memory.forget([keyword]);
     await this.wecom.sendText(message.conversationId, `已删除 ${count} 条记忆。`);
+  }
+
+  // --- Soul commands ---
+  private async handleGetSoul(message: IncomingWeComMessage): Promise<void> {
+    const soulPath = path.join(this.runtime.privateDir, "soul.md");
+    if (!fs.existsSync(soulPath)) {
+      await this.wecom.sendText(message.conversationId, "当前未设置 Soul。");
+      return;
+    }
+    const content = fs.readFileSync(soulPath, "utf8");
+    await this.wecom.sendText(message.conversationId, content.slice(0, 2000));
+  }
+
+  private async handleSetSoul(message: IncomingWeComMessage, content: string): Promise<void> {
+    const soulPath = path.join(this.runtime.privateDir, "soul.md");
+    fs.writeFileSync(soulPath, content);
+    await this.wecom.sendText(message.conversationId, "Soul 已更新。");
   }
 
   // --- Skill commands ---
