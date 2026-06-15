@@ -102,6 +102,9 @@ export class BotWorker {
     this.sessions.append(session, { role: "user", event: "message", content: text });
 
     const prompt = await buildPrompt(this.runtime, text, this.memory);
+    const soulContent = fs.existsSync(path.join(this.runtime.privateDir, "soul.md"))
+      ? fs.readFileSync(path.join(this.runtime.privateDir, "soul.md"), "utf8") : "";
+    const isBootstrap = soulContent.includes("[BOOTSTRAP]");
     const stream = await this.wecom.startStream(message.replyKey);
     this.activeStreams.set(message.userId, stream);
 
@@ -123,7 +126,7 @@ export class BotWorker {
         await stream.write("任务执行失败，请查看私有日志。");
         await stream.end("任务执行失败，请查看私有日志。");
       }
-    }, { resumeSessionId: session.kimiSessionId ?? session.kiroSessionId, userMessage: text });
+    }, { resumeSessionId: session.kimiSessionId ?? session.kiroSessionId, userMessage: text, useWorkspaceCwd: isBootstrap });
   }
 
   // --- Help ---
