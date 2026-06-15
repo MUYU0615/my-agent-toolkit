@@ -1,6 +1,7 @@
 services:
   memory-service:
-    build: .
+    image: ghcr.io/dujiepeng/memory-service:latest
+    # build: .  # 本地开发时取消注释此行，注释 image 行
     ports:
       - "8100:8000"
     volumes:
