@@ -21,6 +21,7 @@ export type RunResult = {
 export type RunOptions = {
   resumeSessionId?: string;
   userMessage?: string;
+  useWorkspaceCwd?: boolean;
 };
 
 export type KiroSession = {
@@ -181,7 +182,11 @@ export class CliRunner {
 
     let cwd = this.runtime.filesDir;
     if (cli.provider === "kiro-cli") {
-      cwd = this.getUserCwd(userId);
+      if (options.useWorkspaceCwd) {
+        cwd = this.runtime.workspaceDir;
+      } else {
+        cwd = this.getUserCwd(userId);
+      }
       const explicitId = this.userResumeId.get(userId);
       if (explicitId) {
         // Resume a specific session chosen by user via /open

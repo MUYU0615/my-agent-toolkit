@@ -278,7 +278,7 @@ export class BotWorker {
         this.activeStreams.delete(message.userId);
         await stream.end("初始化启动失败，请重试 /init");
       }
-    }, { userMessage: "开始初始化" });
+    }, { userMessage: "开始初始化", useWorkspaceCwd: true });
   }
 
   // --- Soul commands ---

@@ -11,14 +11,16 @@ const KIRO_NOISE_PATTERNS = [
 ];
 const KIRO_TOOL_LOG_PATTERNS = [
   /^.*\(using tool: \w+.*\).*\n?/gm,
-  /^[✓✗·].*Completed in.*\n?/gm,
-  /^[✓✗·].*Successfully (?:read|wrote|created|updated|deleted).*\n?/gm,
+  /^[✓✗·•].*Completed in.*\n?/gm,
+  /^[✓✗·•].*Successfully (?:read|wrote|created|updated|deleted).*\n?/gm,
   /^Reading (?:file|directory):.*\n?/gm,
   /^Writing (?:file|to):.*\n?/gm,
   /^Updating:.*\n?/gm,
+  /^Creating:.*\n?/gm,
   /^I'll modify the following file:.*\n?/gm,
   /^\s*\d+,\s*\d+:.*\n?/gm,
   /^[·•]\s*\d+\s*:.*\n?/gm,
+  /^·\s+\d+\s+:.*\n?/gm,
 ];
 
 export function redact(text: string, exactSecrets: string[]): string {
