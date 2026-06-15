@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
-import type { BotRuntime, IncomingWeComMessage, WeComClient } from "../types.js";
+import type { BotRuntime, IncomingWeComMessage, WeComClient, StreamHandle } from "../types.js";
 import { CliRunner } from "../cli-adapters/cliRunner.js";
 import { SessionStore } from "../history/sessionStore.js";
 import { buildPrompt } from "./promptBuilder.js";
@@ -12,6 +12,7 @@ export class BotWorker {
   private sessions: SessionStore;
   private cli: CliRunner;
   private memory: MemoryClient;
+  private activeStreams = new Map<string, StreamHandle>();
 
   constructor(private runtime: BotRuntime, private wecom: WeComClient) {
     this.sessions = new SessionStore(runtime);
@@ -30,6 +31,11 @@ export class BotWorker {
 
     if (text === stopKeyword || text === "/stop") {
       const stopped = await this.cli.stop(message.userId);
+      const stream = this.activeStreams.get(message.userId);
+      if (stream) {
+        await stream.end("已停止。");
+        this.activeStreams.delete(message.userId);
+      }
       await this.wecom.sendText(message.conversationId, stopped ? "已停止当前任务。" : "当前没有正在运行的任务。");
       return;
     }
@@ -81,6 +87,7 @@ export class BotWorker {
 
     const prompt = await buildPrompt(this.runtime, text, this.memory);
     const stream = await this.wecom.startStream(message.replyKey);
+    this.activeStreams.set(message.userId, stream);
 
     await this.cli.run(message.userId, prompt, {
       onChunk: async (chunk) => {
@@ -88,12 +95,14 @@ export class BotWorker {
         await stream.write(redact(chunk, this.runtime.secrets));
       },
       onDone: async (result) => {
+        this.activeStreams.delete(message.userId);
         if (result.kimiSessionId) this.sessions.setKimiSessionId(session, result.kimiSessionId);
         if (result.kiroSessionId) this.sessions.setKiroSessionId(session, result.kiroSessionId);
         this.sessions.append(session, { role: "assistant", event: "completed", content: result.rawOutput });
         await stream.end(redact(result.intermediateOutput || result.rawOutput, this.runtime.secrets));
       },
       onError: async (error) => {
+        this.activeStreams.delete(message.userId);
         this.sessions.append(session, { role: "assistant", event: "error", content: error.message });
         await stream.write("任务执行失败，请查看私有日志。");
         await stream.end("任务执行失败，请查看私有日志。");
