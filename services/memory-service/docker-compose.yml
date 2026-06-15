@@ -1,0 +1,11 @@
+services:
+  memory-service:
+    build: .
+    ports:
+      - "8100:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - EMBEDDING_MODEL=BAAI/bge-m3
+      - DEVICE=cpu
+    restart: unless-stopped
