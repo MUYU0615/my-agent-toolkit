@@ -14,6 +14,7 @@ export class BotWorker {
   private memory: MemoryClient;
   private activeStreams = new Map<string, StreamHandle>();
   private pendingFiles = new Map<string, string[]>(); // userId -> file paths in tmp/
+  private docBuffer = new Map<string, { filename: string; content: string; collecting: boolean }>();
 
   constructor(private runtime: BotRuntime, private wecom: WeComClient) {
     this.sessions = new SessionStore(runtime);
@@ -115,16 +116,65 @@ export class BotWorker {
     await this.cli.run(message.userId, prompt, {
       onChunk: async (chunk) => {
         this.sessions.append(session, { role: "assistant", event: "chunk", content: chunk });
-        await stream.write(redact(chunk, this.runtime.secrets));
+        const cleaned = redact(chunk, this.runtime.secrets);
+        // Detect document block start
+        const docStart = cleaned.match(/~~~document:(.+\.md)\s*\n/);
+        if (docStart) {
+          this.docBuffer.set(message.userId, { filename: docStart[1], content: "", collecting: true });
+          await stream.write(`正在生成文档 ${docStart[1]}...`);
+          // Buffer the part after the marker
+          const afterMarker = cleaned.split(/~~~document:.+\.md\s*\n/)[1] || "";
+          if (afterMarker) {
+            const buf = this.docBuffer.get(message.userId)!;
+            buf.content += afterMarker;
+          }
+          return;
+        }
+        const buf = this.docBuffer.get(message.userId);
+        if (buf?.collecting) {
+          // Check for closing marker
+          const closeIdx = cleaned.indexOf("\n~~~");
+          if (closeIdx >= 0) {
+            buf.content += cleaned.slice(0, closeIdx);
+            buf.collecting = false;
+            // Write to tmp and send
+            const tmpDir = path.join(this.runtime.filesDir, "tmp");
+            fs.mkdirSync(tmpDir, { recursive: true });
+            const tmpPath = path.join(tmpDir, buf.filename);
+            fs.writeFileSync(tmpPath, buf.content);
+            this.pendingFiles.set(message.userId, [...(this.pendingFiles.get(message.userId) || []), tmpPath]);
+            await stream.replace(buf.content);
+            // Continue with remaining text after ~~~
+            const remaining = cleaned.slice(closeIdx + 4).trim();
+            if (remaining) await stream.write("\n\n" + remaining);
+          } else {
+            buf.content += cleaned;
+          }
+          return;
+        }
+        await stream.write(cleaned);
       },
       onDone: async (result) => {
         this.activeStreams.delete(message.userId);
         if (result.kimiSessionId) this.sessions.setKimiSessionId(session, result.kimiSessionId);
         if (result.kiroSessionId) this.sessions.setKiroSessionId(session, result.kiroSessionId);
         this.sessions.append(session, { role: "assistant", event: "completed", content: result.rawOutput });
-        await stream.end(redact(result.intermediateOutput || result.rawOutput, this.runtime.secrets));
-        // Check for tmp files and send to user
-        await this.sendTmpFiles(message);
+        // If doc was being collected but never closed, flush it
+        const buf = this.docBuffer.get(message.userId);
+        if (buf?.collecting && buf.content) {
+          const tmpDir = path.join(this.runtime.filesDir, "tmp");
+          fs.mkdirSync(tmpDir, { recursive: true });
+          const tmpPath = path.join(tmpDir, buf.filename);
+          fs.writeFileSync(tmpPath, buf.content);
+          this.pendingFiles.set(message.userId, [...(this.pendingFiles.get(message.userId) || []), tmpPath]);
+          await stream.replace(buf.content);
+        }
+        this.docBuffer.delete(message.userId);
+        await stream.end();
+        // Check for pending files
+        if (this.pendingFiles.has(message.userId) && (this.pendingFiles.get(message.userId)?.length ?? 0) > 0) {
+          await this.wecom.sendText(message.conversationId, "发送 /confirm 保存文档，/reject 丢弃。");
+        }
       },
       onError: async (error) => {
         this.activeStreams.delete(message.userId);
@@ -253,22 +303,6 @@ export class BotWorker {
   }
 
   // --- Tmp file workflow ---
-  private async sendTmpFiles(message: IncomingWeComMessage): Promise<void> {
-    const tmpDir = path.join(this.runtime.filesDir, "tmp");
-    if (!fs.existsSync(tmpDir)) return;
-    const files = fs.readdirSync(tmpDir).filter(f => fs.statSync(path.join(tmpDir, f)).isFile());
-    if (files.length === 0) return;
-
-    const filePaths = files.map(f => path.join(tmpDir, f));
-    this.pendingFiles.set(message.userId, filePaths);
-
-    for (const filePath of filePaths) {
-      const content = fs.readFileSync(filePath, "utf8");
-      const filename = path.basename(filePath);
-      await this.wecom.sendText(message.conversationId, `📄 ${filename}\n\n${content}`);
-    }
-    await this.wecom.sendText(message.conversationId, "发送 /confirm 保存文档，/reject 丢弃。");
-  }
 
   private async handleConfirm(message: IncomingWeComMessage): Promise<void> {
     const files = this.pendingFiles.get(message.userId);
