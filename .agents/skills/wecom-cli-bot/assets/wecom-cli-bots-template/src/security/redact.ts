@@ -8,6 +8,7 @@ const FRAMEWORK_NOISE = [
   /Agents can sometimes do unexpected.*\n?/gi,
   /Learn more at\s*https:\/\/kiro\.dev.*\n?/gi,
   /^\s*▸ Credits:.*$/gm,
+  /^> /gm,
 ];
 
 export function redact(text: string, exactSecrets: string[]): string {

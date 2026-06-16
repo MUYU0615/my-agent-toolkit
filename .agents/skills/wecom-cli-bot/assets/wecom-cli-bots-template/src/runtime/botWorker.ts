@@ -168,7 +168,7 @@ export class BotWorker {
         }
         
         // Not collecting - look for BEGIN marker
-        const beginMatch = full.match(/~document:(.+?\.md)\s*\n/);
+        const beginMatch = full.match(/~document:(.+?\.md)\s*\n?/);
         if (beginMatch) {
           const beginIdx = beginMatch.index!;
           // Send everything before the marker
