@@ -152,9 +152,9 @@ export class BotWorker {
               await stream.replace(buf.content.trim());
             }
             
-            // Process remaining after END marker
-            const remaining = full.slice(endIdx + endMatch[0].length).trim();
-            if (remaining) await stream.write(remaining);
+            // Process remaining after END marker - put back to buffer for next BEGIN detection
+            const remaining = full.slice(endIdx + endMatch[0].length);
+            this.chunkBuffer.set(message.userId, remaining);
           } else {
             // Keep buffering - but flush safe content (keep last 20 chars in case marker is split)
             if (full.length > 20) {
