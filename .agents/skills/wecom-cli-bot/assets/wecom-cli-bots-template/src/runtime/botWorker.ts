@@ -118,7 +118,7 @@ export class BotWorker {
         this.sessions.append(session, { role: "assistant", event: "chunk", content: chunk });
         const cleaned = redact(chunk, this.runtime.secrets);
         // Detect document block start
-        const docStart = cleaned.match(/~~~document:(.+\.md)\s*\n/);
+        const docStart = cleaned.match(/~{1,3}document:(.+\.md)\s*\n/);
         if (docStart) {
           this.docBuffer.set(message.userId, { filename: docStart[1], content: "", collecting: true });
           const isConfig = docStart[1].startsWith("private/") || docStart[1].startsWith("instructions/");
@@ -126,7 +126,7 @@ export class BotWorker {
             await stream.write(`正在生成文档 ${docStart[1]}...`);
           }
           // Buffer the part after the marker
-          const afterMarker = cleaned.split(/~~~document:.+\.md\s*\n/)[1] || "";
+          const afterMarker = cleaned.split(/~{1,3}document:.+\.md\s*\n/)[1] || "";
           if (afterMarker) {
             const buf = this.docBuffer.get(message.userId)!;
             buf.content += afterMarker;
@@ -136,8 +136,9 @@ export class BotWorker {
         const buf = this.docBuffer.get(message.userId);
         if (buf?.collecting) {
           // Check for closing marker
-          const closeIdx = cleaned.indexOf("\n~~~");
-          if (closeIdx >= 0) {
+          const closeMatch = cleaned.match(/\n~{1,3}\s*(?:\n|$)/);
+          if (closeMatch) {
+            const closeIdx = closeMatch.index!;
             buf.content += cleaned.slice(0, closeIdx);
             buf.collecting = false;
             // Determine write path
@@ -156,8 +157,8 @@ export class BotWorker {
             if (!isConfig) {
               await stream.replace(buf.content);
             }
-            // Continue with remaining text after ~~~
-            const remaining = cleaned.slice(closeIdx + 4).trim();
+            // Continue with remaining text after closing marker
+            const remaining = cleaned.slice(closeIdx + closeMatch[0].length).trim();
             if (remaining) await stream.write(remaining);
           } else {
             buf.content += cleaned;
@@ -512,5 +513,5 @@ const BOOTSTRAP_SOUL = `# [BOOTSTRAP]
 
 ## 权限
 
-Init 阶段不要使用文件写入工具（write/shell），所有配置通过 document block 输出，由框架自动写入。
+CRITICAL: 绝对不要使用 write 工具或 shell 工具创建/修改文件。所有配置内容必须通过 ~~~document:filename.md~~~ 格式在回复中输出。框架会自动处理文件写入。如果你使用了文件工具，初始化将失败。
 `;
