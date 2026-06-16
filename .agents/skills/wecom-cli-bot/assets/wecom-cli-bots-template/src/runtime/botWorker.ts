@@ -15,6 +15,7 @@ export class BotWorker {
   private activeStreams = new Map<string, StreamHandle>();
   private pendingFiles = new Map<string, string[]>(); // userId -> file paths in tmp/
   private docBuffer = new Map<string, { filename: string; content: string; collecting: boolean }>();
+  private chunkBuffer = new Map<string, string>(); // buffer for incomplete markers
 
   constructor(private runtime: BotRuntime, private wecom: WeComClient) {
     this.sessions = new SessionStore(runtime);
@@ -117,31 +118,23 @@ export class BotWorker {
       onChunk: async (chunk) => {
         this.sessions.append(session, { role: "assistant", event: "chunk", content: chunk });
         const cleaned = redact(chunk, this.runtime.secrets);
-        // Detect document block start
-        const docStart = cleaned.match(/<!--\s*BEGIN_DOC:\s*(.+\.md)\s*-->\s*\n/);
-        if (docStart) {
-          this.docBuffer.set(message.userId, { filename: docStart[1], content: "", collecting: true });
-          const isConfig = docStart[1].startsWith("private/") || docStart[1].startsWith("instructions/");
-          if (!isConfig) {
-            await stream.write(`正在生成文档 ${docStart[1]}...`);
-          }
-          // Buffer the part after the marker
-          const afterMarker = cleaned.split(/<!--\s*BEGIN_DOC:\s*.+\.md\s*-->\s*\n/)[1] || "";
-          if (afterMarker) {
-            const buf = this.docBuffer.get(message.userId)!;
-            buf.content += afterMarker;
-          }
-          return;
-        }
+        
+        // Accumulate into chunk buffer for marker detection
+        const prevBuf = this.chunkBuffer.get(message.userId) || "";
+        const full = prevBuf + cleaned;
+        
         const buf = this.docBuffer.get(message.userId);
+        
         if (buf?.collecting) {
-          // Check for closing marker
-          const closeMatch = cleaned.match(/\n<!--\s*END_DOC\s*-->\s*(?:\n|$)/);
-          if (closeMatch) {
-            const closeIdx = closeMatch.index!;
-            buf.content += cleaned.slice(0, closeIdx);
+          // Currently collecting document content - look for END marker
+          const endMatch = full.match(/<!--\s*END_DOC\s*-->/);
+          if (endMatch) {
+            const endIdx = endMatch.index!;
+            buf.content += full.slice(0, endIdx);
             buf.collecting = false;
-            // Determine write path
+            this.chunkBuffer.set(message.userId, "");
+            
+            // Write file
             const isConfig = buf.filename.startsWith("private/") || buf.filename.startsWith("instructions/");
             let writePath: string;
             if (isConfig) {
@@ -153,18 +146,58 @@ export class BotWorker {
               this.pendingFiles.set(message.userId, [...(this.pendingFiles.get(message.userId) || []), writePath]);
             }
             fs.mkdirSync(path.dirname(writePath), { recursive: true });
-            fs.writeFileSync(writePath, buf.content);
+            fs.writeFileSync(writePath, buf.content.trim());
+            
             if (!isConfig) {
-              await stream.replace(buf.content);
+              await stream.replace(buf.content.trim());
             }
-            // Continue with remaining text after closing marker
-            const remaining = cleaned.slice(closeIdx + closeMatch[0].length).trim();
+            
+            // Process remaining after END marker
+            const remaining = full.slice(endIdx + endMatch[0].length).trim();
             if (remaining) await stream.write(remaining);
           } else {
-            buf.content += cleaned;
+            // Keep buffering - but flush safe content (keep last 20 chars in case marker is split)
+            if (full.length > 20) {
+              buf.content += full.slice(0, -20);
+              this.chunkBuffer.set(message.userId, full.slice(-20));
+            } else {
+              this.chunkBuffer.set(message.userId, full);
+            }
           }
           return;
         }
+        
+        // Not collecting - look for BEGIN marker
+        const beginMatch = full.match(/<!--\s*BEGIN_DOC:\s*(.+?\.md)\s*-->\s*\n?/);
+        if (beginMatch) {
+          const beginIdx = beginMatch.index!;
+          // Send everything before the marker
+          const before = full.slice(0, beginIdx).trim();
+          if (before) await stream.write(before);
+          
+          // Start collecting
+          const filename = beginMatch[1];
+          const isConfig = filename.startsWith("private/") || filename.startsWith("instructions/");
+          this.docBuffer.set(message.userId, { filename, content: "", collecting: true });
+          if (!isConfig) {
+            await stream.write(`正在生成文档 ${filename}...`);
+          }
+          
+          // Buffer content after the marker
+          const afterMarker = full.slice(beginIdx + beginMatch[0].length);
+          this.chunkBuffer.set(message.userId, afterMarker);
+          return;
+        }
+        
+        // No markers - check if we might have a partial marker at the end
+        if (full.includes("<!--") && !full.includes("-->")) {
+          // Might be a split marker, keep buffering
+          this.chunkBuffer.set(message.userId, full);
+          return;
+        }
+        
+        // Normal output
+        this.chunkBuffer.set(message.userId, "");
         await stream.write(cleaned);
       },
       onDone: async (result) => {
