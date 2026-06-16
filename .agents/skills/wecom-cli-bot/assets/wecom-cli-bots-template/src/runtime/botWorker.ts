@@ -121,7 +121,10 @@ export class BotWorker {
         const docStart = cleaned.match(/~~~document:(.+\.md)\s*\n/);
         if (docStart) {
           this.docBuffer.set(message.userId, { filename: docStart[1], content: "", collecting: true });
-          await stream.write(`正在生成文档 ${docStart[1]}...`);
+          const isConfig = docStart[1].startsWith("private/") || docStart[1].startsWith("instructions/");
+          if (!isConfig) {
+            await stream.write(`正在生成文档 ${docStart[1]}...`);
+          }
           // Buffer the part after the marker
           const afterMarker = cleaned.split(/~~~document:.+\.md\s*\n/)[1] || "";
           if (afterMarker) {
@@ -137,16 +140,25 @@ export class BotWorker {
           if (closeIdx >= 0) {
             buf.content += cleaned.slice(0, closeIdx);
             buf.collecting = false;
-            // Write to tmp and send
-            const tmpDir = path.join(this.runtime.filesDir, "tmp");
-            fs.mkdirSync(tmpDir, { recursive: true });
-            const tmpPath = path.join(tmpDir, buf.filename);
-            fs.writeFileSync(tmpPath, buf.content);
-            this.pendingFiles.set(message.userId, [...(this.pendingFiles.get(message.userId) || []), tmpPath]);
-            await stream.replace(buf.content);
+            // Determine write path
+            const isConfig = buf.filename.startsWith("private/") || buf.filename.startsWith("instructions/");
+            let writePath: string;
+            if (isConfig) {
+              writePath = path.join(this.runtime.workspaceDir, buf.filename);
+            } else {
+              const tmpDir = path.join(this.runtime.filesDir, "tmp");
+              fs.mkdirSync(tmpDir, { recursive: true });
+              writePath = path.join(tmpDir, path.basename(buf.filename));
+              this.pendingFiles.set(message.userId, [...(this.pendingFiles.get(message.userId) || []), writePath]);
+            }
+            fs.mkdirSync(path.dirname(writePath), { recursive: true });
+            fs.writeFileSync(writePath, buf.content);
+            if (!isConfig) {
+              await stream.replace(buf.content);
+            }
             // Continue with remaining text after ~~~
             const remaining = cleaned.slice(closeIdx + 4).trim();
-            if (remaining) await stream.write("\n\n" + remaining);
+            if (remaining) await stream.write(remaining);
           } else {
             buf.content += cleaned;
           }
@@ -480,14 +492,21 @@ const BOOTSTRAP_SOUL = `# [BOOTSTRAP]
 
 ## 确认后操作
 
-1. 将正式 soul 写入 private/soul.md（不包含 [BOOTSTRAP] 标记）。
-   - 如果用户提供了业务背景，写在 soul 开头作为"业务背景"段。
-   - 将交互模式写入 soul（逐句引导 or 批量引导），作为后续工作时的对话规则。
-2. 生成 workspace/instructions/AGENTS.md（工作规范）。
-3. 创建所需目录结构。
-4. 完成后只回复一句："✅ 初始化完成，开始工作。"不要在回复中输出文件内容、代码块或目录树。文件已写入本地，用户可通过 /soul 查看。
+用户确认后，用 document block 格式输出配置文件（不要使用文件写入工具）：
+
+1. 输出 soul 配置（不包含 [BOOTSTRAP] 标记）：
+~~~document:private/soul.md
+(生成的正式 soul 内容)
+~~~
+
+2. 输出工作规范：
+~~~document:instructions/AGENTS.md
+(生成的 AGENTS 内容)
+~~~
+
+3. 最后回复："✅ 初始化完成，开始工作。"
 
 ## 权限
 
-Init 阶段你可以读写所有文件，包括 private/ 目录。
+Init 阶段不要使用文件写入工具（write/shell），所有配置通过 document block 输出，由框架自动写入。
 `;
