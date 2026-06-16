@@ -127,7 +127,7 @@ export class BotWorker {
         
         if (buf?.collecting) {
           // Currently collecting document content - look for END marker
-          const endMatch = full.match(/---END---/);
+          const endMatch = full.match(/-*END-*/);
           if (endMatch) {
             const endIdx = endMatch.index!;
             buf.content += full.slice(0, endIdx);
@@ -168,7 +168,7 @@ export class BotWorker {
         }
         
         // Not collecting - look for BEGIN marker
-        const beginMatch = full.match(/---BEGIN:(.+?\.md)---\s*\n?/);
+        const beginMatch = full.match(/-*BEGIN:(.+?\.md)-*\s*\n?/);
         if (beginMatch) {
           const beginIdx = beginMatch.index!;
           // Send everything before the marker
@@ -190,8 +190,8 @@ export class BotWorker {
         }
         
         // No markers - check if we might have a partial marker at the end
-        if (full.includes("---BEGIN:") || full.includes("---END")) {
-          if (!full.match(/---BEGIN:.+?\.md---/) && !full.match(/---END---/)) {
+        if (full.includes("BEGIN:") || full.includes("END")) {
+          if (!full.match(/-*BEGIN:.+?\.md-*/) && !full.match(/-*END-*/)) {
             this.chunkBuffer.set(message.userId, full);
             return;
           }
