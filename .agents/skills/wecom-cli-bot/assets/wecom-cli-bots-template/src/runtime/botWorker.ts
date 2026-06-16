@@ -127,7 +127,7 @@ export class BotWorker {
         
         if (buf?.collecting) {
           // Currently collecting document content - look for END marker
-          const endMatch = full.match(/-*END-*/);
+          const endMatch = full.match(/\n~\/document\s*\n?/);
           if (endMatch) {
             const endIdx = endMatch.index!;
             buf.content += full.slice(0, endIdx);
@@ -168,7 +168,7 @@ export class BotWorker {
         }
         
         // Not collecting - look for BEGIN marker
-        const beginMatch = full.match(/-*BEGIN:(.+?\.md)-*\s*\n?/);
+        const beginMatch = full.match(/~document:(.+?\.md)\s*\n/);
         if (beginMatch) {
           const beginIdx = beginMatch.index!;
           // Send everything before the marker
@@ -190,8 +190,8 @@ export class BotWorker {
         }
         
         // No markers - check if we might have a partial marker at the end
-        if (full.includes("BEGIN:") || full.includes("END")) {
-          if (!full.match(/-*BEGIN:.+?\.md-*/) && !full.match(/-*END-*/)) {
+        if (full.includes("~document:") || full.includes("~/document")) {
+          if (!full.match(/~document:.+?\.md\s*\n/) && !full.match(/\n~\/document/)) {
             this.chunkBuffer.set(message.userId, full);
             return;
           }
@@ -549,23 +549,23 @@ const BOOTSTRAP_SOUL = `# [BOOTSTRAP]
    - 将交互模式写入 soul（逐句引导 or 批量引导）。
    - 如果用户选择了"提供选项"，在交互规则中注明：澄清时提供若干选项供选择，用户也可直接输入自己的答案。
 
----BEGIN:private/soul.md---
+~document:private/soul.md
 (生成的正式 soul 内容)
----END---
+~/document
 
 2. 输出工作规范：
 
----BEGIN:instructions/AGENTS.md---
+~document:instructions/AGENTS.md
 (生成的 AGENTS 内容)
----END---
+~/document
 
 3. 最后回复："✅ 初始化完成，开始工作。"
 
 ## 权限
 
 CRITICAL: 绝对不要使用 write 工具或 shell 工具创建/修改文件。所有配置内容必须通过以下格式在回复中输出：
----BEGIN:filename.md---
+~document:filename.md
 (内容)
----END---
+~/document
 框架会自动处理文件写入。如果你使用了文件工具，初始化将失败。
 `;

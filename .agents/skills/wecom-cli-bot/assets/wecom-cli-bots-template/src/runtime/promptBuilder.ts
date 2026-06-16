@@ -51,7 +51,7 @@ export async function buildPrompt(runtime: BotRuntime, userText: string, memory?
     "# Runtime Constraint",
     "Answer directly from your model knowledge unless the user explicitly asks you to search, browse, fetch URLs, or inspect current live information. Do not start web search or fetch tools for ordinary chat or analysis requests.",
     "# Output Constraint",
-    "When you produce documents (PRD, design docs, reports, etc.), wrap the full content in a document block like this:\n---BEGIN:filename.md---\n(full markdown content here)\n---END---\nDo NOT use file write tools to create documents. Short answers and explanations can be replied directly without document blocks.",
+    "When you produce documents (PRD, design docs, reports, etc.), wrap the full content in a document block like this:\n~document:filename.md\n(full markdown content here)\n~/document\nDo NOT use file write tools to create documents. Short answers and explanations can be replied directly without document blocks.",
     "# User Message",
     userText
   );
