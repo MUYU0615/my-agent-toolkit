@@ -182,7 +182,6 @@ export class BotWorker {
       },
       onDone: async (result) => {
         this.activeStreams.delete(message.userId);
-        if (result.kimiSessionId) this.sessions.setKimiSessionId(session, result.kimiSessionId);
         if (result.kiroSessionId) this.sessions.setKiroSessionId(session, result.kiroSessionId);
         this.sessions.append(session, { role: "assistant", event: "completed", content: result.rawOutput });
         // If doc was being collected but never closed, flush remaining buffer and write
@@ -208,7 +207,7 @@ export class BotWorker {
         await stream.write("任务执行失败，请查看私有日志。");
         await stream.end("任务执行失败，请查看私有日志。");
       }
-    }, { resumeSessionId: session.kimiSessionId ?? session.kiroSessionId, userMessage: text, useWorkspaceCwd: isBootstrap });
+    }, { resumeSessionId: session.kiroSessionId, userMessage: text, useWorkspaceCwd: isBootstrap });
   }
 
   // --- Help ---

@@ -9,43 +9,15 @@ wecom:
   bot_id_env: WECOM_BOT_ID
   secret_env: WECOM_BOT_SECRET
 
-# --- Provider: Codex (default) ---
 cli:
-  provider: codex
-  command: codex
-  args: []
-  input_mode: stdin
+  provider: kiro-cli
+  command: kiro-cli
+  args: ["chat", "--no-interactive", "--trust-all-tools", "{{prompt}}"]
+  input_mode: arg
+  prompt_placeholder: "{{prompt}}"
   stream_output: stdout
   stop_signal: SIGTERM
   kill_after_ms: 10000
   timeout_seconds: 10800
   env:
-    CODEX_HOME: "./bots/example-bot/workspace/cli-home/codex"
-
-# --- Provider: Kimi Code ---
-# cli:
-#   provider: kimi-code
-#   command: kimi
-#   args: ["-p", "{{prompt}}", "--output-format", "text"]
-#   input_mode: arg
-#   prompt_placeholder: "{{prompt}}"
-#   stream_output: stdout
-#   stop_signal: SIGTERM
-#   kill_after_ms: 10000
-#   timeout_seconds: 10800
-#   env:
-#     KIMI_CODE_HOME: "./bots/example-bot/workspace/cli-home/kimi"
-
-# --- Provider: Kiro CLI ---
-# cli:
-#   provider: kiro-cli
-#   command: kiro-cli
-#   args: ["chat", "--no-interactive", "--trust-all-tools", "{{prompt}}"]
-#   input_mode: arg
-#   prompt_placeholder: "{{prompt}}"
-#   stream_output: stdout
-#   stop_signal: SIGTERM
-#   kill_after_ms: 10000
-#   timeout_seconds: 10800
-#   env:
-#     KIRO_HOME: "./bots/example-bot/workspace/cli-home/kiro"
+    KIRO_HOME: "./bots/example-bot/workspace/cli-home/kiro"

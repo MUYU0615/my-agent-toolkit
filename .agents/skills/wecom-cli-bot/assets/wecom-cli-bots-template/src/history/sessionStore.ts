@@ -8,7 +8,6 @@ export type Session = {
   userId: string;
   path: string;
   lastMessageAt: number;
-  kimiSessionId?: string;
   kiroSessionId?: string;
 };
 
@@ -54,11 +53,6 @@ export class SessionStore {
 
   append(session: Session, entry: Record<string, unknown>): void {
     fs.appendFileSync(session.path, `${JSON.stringify({ timestamp: new Date().toISOString(), ...entry })}\n`);
-  }
-
-  setKimiSessionId(session: Session, kimiSessionId: string): void {
-    session.kimiSessionId = kimiSessionId;
-    this.append(session, { role: "system", event: "kimi_session", kimiSessionId });
   }
 
   setKiroSessionId(session: Session, kiroSessionId: string): void {

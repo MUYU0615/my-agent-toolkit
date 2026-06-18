@@ -14,7 +14,6 @@ export type RunResult = {
   rawOutput: string;
   intermediateOutput: string;
   displayOutput: string;
-  kimiSessionId?: string;
   kiroSessionId?: string;
 };
 
@@ -104,6 +103,7 @@ export class CliRunner {
   }
 
   async listSessions(userId: string): Promise<KiroSession[]> {
+    assertSupportedProvider(this.runtime.config.cli.provider);
     const cwd = this.getUserCwd(userId);
     const env = { ...process.env, ...this.runtime.env, ...resolveRelativeEnv(this.runtime.rootDir, this.runtime.config.cli.env ?? {}) };
     try {
@@ -169,6 +169,7 @@ export class CliRunner {
     if (this.active.has(userId)) throw new Error("Task already running for user");
 
     const cli = this.runtime.config.cli;
+    assertSupportedProvider(cli.provider);
     const env = {
       ...process.env,
       ...this.runtime.env,
@@ -176,9 +177,6 @@ export class CliRunner {
     };
 
     const args = buildArgs(cli.args ?? [], prompt, cli.prompt_placeholder ?? "{{prompt}}");
-    if (options.resumeSessionId && cli.provider === "kimi-code") {
-      args.splice(0, 0, "-r", options.resumeSessionId);
-    }
 
     let cwd = this.runtime.filesDir;
     if (cli.provider === "kiro-cli") {
@@ -231,23 +229,16 @@ export class CliRunner {
     child.on("close", async () => {
       clearTimeout(timeout);
       this.active.delete(userId);
-      let result: RunResult;
-      if (cli.provider === "kimi-code") {
-        result = parseKimiOutput(output);
-      } else if (cli.provider === "kiro-cli") {
-        result = parseKiroOutput(output);
-        if (!this.userHasSession.has(userId) && options.userMessage) {
-          // New session - get its ID from list-sessions (most recent) and save first message
-          const sessionsNow = await this.listSessions(userId);
-          if (sessionsNow.length > 0) {
-            this.saveFirstMsg(userId, sessionsNow[0].id, options.userMessage);
-          }
+      const result = parseKiroOutput(output);
+      if (!this.userHasSession.has(userId) && options.userMessage) {
+        // New session - get its ID from list-sessions (most recent) and save first message
+        const sessionsNow = await this.listSessions(userId);
+        if (sessionsNow.length > 0) {
+          this.saveFirstMsg(userId, sessionsNow[0].id, options.userMessage);
         }
-        this.userHasSession.add(userId);
-      } else {
-        result = { rawOutput: output, intermediateOutput: output, displayOutput: output };
       }
-      console.log(`[cli] completed provider=${cli.provider} user=${userId} session=${result.kimiSessionId ?? result.kiroSessionId ?? "resumed"}`);
+      this.userHasSession.add(userId);
+      console.log(`[cli] completed provider=${cli.provider} user=${userId} session=${result.kiroSessionId ?? "resumed"}`);
       await callbacks.onDone(result);
     });
 
@@ -255,6 +246,12 @@ export class CliRunner {
       child.stdin.write(prompt);
     }
     child.stdin.end();
+  }
+}
+
+export function assertSupportedProvider(provider: string): void {
+  if (provider !== "kiro-cli") {
+    throw new Error(`Unsupported CLI provider: ${provider}. Current implementation supports only kiro-cli.`);
   }
 }
 
@@ -268,25 +265,6 @@ function redactArgs(args: string[]): string[] {
 
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "_");
-}
-
-function parseKimiOutput(output: string): RunResult {
-  const sessionMatch = output.match(/To resume this session:\s*kimi\s+-r\s+(session_[a-z0-9-]+)/i);
-  const kimiSessionId = sessionMatch?.[1];
-  const withoutResume = output
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*To resume this session:/i.test(line))
-    .filter((line) => !/^\s*kimi\s+-r\s+/i.test(line))
-    .join("\n")
-    .trim();
-  const displayOutput = extractFinalAnswer(withoutResume);
-  return { rawOutput: output, intermediateOutput: withoutResume, displayOutput, kimiSessionId };
-}
-
-function extractFinalAnswer(output: string): string {
-  const bulletMatches = [...output.matchAll(/^•\s*([\s\S]*?)(?=^•\s|\s*$)/gm)];
-  const lastBullet = bulletMatches.at(-1)?.[1]?.trim();
-  return lastBullet || output;
 }
 
 function parseKiroOutput(output: string): RunResult {
