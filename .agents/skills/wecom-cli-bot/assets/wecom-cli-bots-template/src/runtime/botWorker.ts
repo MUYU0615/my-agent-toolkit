@@ -8,6 +8,7 @@ import { buildPrompt } from "./promptBuilder.js";
 import { redact } from "../security/redact.js";
 import { MemoryClient } from "../memory/memoryClient.js";
 import { AdminStore } from "../admin/adminStore.js";
+import { assertInside } from "../security/pathFence.js";
 
 type DocumentBuffer = { filename: string; content: string; collecting: boolean };
 type DocumentWriteTarget = { writePath: string; isConfig: boolean } | null;
@@ -441,12 +442,16 @@ export class BotWorker {
       await this.wecom.sendText(message.conversationId, "没有待确认的文档。");
       return;
     }
-    const docsDir = path.join(this.runtime.filesDir, "docs");
+    const docsDir = this.resolveConfirmedDocumentsDir();
+    if (!docsDir) {
+      await this.wecom.sendText(message.conversationId, "文档目录配置不安全，未保存。");
+      return;
+    }
     fs.mkdirSync(docsDir, { recursive: true });
     const saved: string[] = [];
     for (const filePath of files) {
       const filename = path.basename(filePath);
-      const dest = path.join(docsDir, filename);
+      const dest = assertInsideDirectory(docsDir, path.join(docsDir, filename));
       fs.renameSync(filePath, dest);
       saved.push(filename);
       // Index to memory if enabled
@@ -457,6 +462,27 @@ export class BotWorker {
     }
     this.pendingFiles.delete(message.userId);
     await this.wecom.sendText(message.conversationId, `已保存：${saved.join(", ")}`);
+  }
+
+  private resolveConfirmedDocumentsDir(): string | null {
+    const configured = this.runtime.config.documents?.shared_dir?.trim();
+    if (!configured) {
+      return assertInside(this.runtime.workspaceDir, path.join(this.runtime.filesDir, "docs"));
+    }
+    const docsDir = path.isAbsolute(configured) ? path.resolve(configured) : path.resolve(this.runtime.rootDir, configured);
+    if (this.isSensitiveDocumentDir(docsDir) || this.isSensitiveDocumentDir(resolveExistingPath(docsDir))) {
+      console.error("[document] rejected unsafe shared document directory", configured);
+      return null;
+    }
+    return docsDir;
+  }
+
+  private isSensitiveDocumentDir(dir: string): boolean {
+    const normalized = path.resolve(dir).split(path.sep).join("/");
+    if (normalized.includes("/run/cli-auth") || normalized.includes("/host/kiro-auth")) return true;
+    if (isInsideOrSame(resolveExistingPath(this.runtime.privateDir), dir)) return true;
+    if (isInsideOrSame(resolveExistingPath(path.join(this.runtime.workspaceDir, "cli-home")), dir)) return true;
+    return false;
   }
 
   private async handleReject(message: IncomingWeComMessage): Promise<void> {
@@ -639,6 +665,28 @@ function extractTags(text: string): string[] {
 
 function isSafeSkillName(name: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(name) && !name.startsWith(".") && name !== "..";
+}
+
+function isInsideOrSame(root: string, target: string): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function assertInsideDirectory(root: string, target: string): string {
+  const resolved = path.resolve(target);
+  if (!isInsideOrSame(root, resolved)) throw new Error(`Path escapes directory: ${target}`);
+  return resolved;
+}
+
+function resolveExistingPath(target: string): string {
+  let current = path.resolve(target);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return path.resolve(target);
+    current = parent;
+  }
+  const realCurrent = fs.realpathSync(current);
+  return path.join(realCurrent, path.relative(current, path.resolve(target)));
 }
 
 function partialMarkerPrefixLength(text: string, marker: string): number {

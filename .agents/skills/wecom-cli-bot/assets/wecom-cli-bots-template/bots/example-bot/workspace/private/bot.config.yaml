@@ -22,3 +22,14 @@ cli:
   env:
     KIRO_HOME: "./bots/example-bot/workspace/cli-home/kiro"
     KIRO_HOST_AUTH_DIR: "/host/kiro-auth"
+
+memory:
+  enabled: true
+  api_url_env: MEMORY_API_URL
+  namespace_env: MEMORY_NAMESPACE
+  auto_retrieve: true
+  auto_store: true
+  retrieve_limit: 5
+
+documents:
+  shared_dir: /shared/docs

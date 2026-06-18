@@ -478,3 +478,81 @@ test("malformed admin state sends safe response without throwing", async () => {
   assert.equal(errors.length, 1);
   assert.match(String(errors[0][0]), /admin state/i);
 });
+
+test("confirm saves generated documents into configured shared directory", async () => {
+  const { worker, runtime, wecom } = createWorker();
+  const admin = new AdminStore(runtime.privateDir);
+  admin.write({
+    admin_user_id: "admin-user",
+    status: "ready",
+    claim: null,
+    pending_transfer: null,
+    initialized_at: "2026-01-01T00:00:00.000Z"
+  });
+  fs.writeFileSync(path.join(runtime.privateDir, "soul.md"), "Ready soul");
+  const sharedDir = path.join(runtime.rootDir, "shared-docs");
+  runtime.config.documents = { shared_dir: sharedDir };
+  (worker as any).cli.run = async (_userId: string, _prompt: string, callbacks: any) => {
+    await callbacks.onChunk("~document:notes.md\nShared notes\n~/document\n");
+    await callbacks.onDone({ rawOutput: "", intermediateOutput: "", displayOutput: "" });
+  };
+
+  await handle(worker, message("write notes", "user-1"));
+  await handle(worker, message("/confirm", "user-1"));
+
+  assert.equal(fs.readFileSync(path.join(sharedDir, "notes.md"), "utf8"), "Shared notes");
+  assert.equal(fs.existsSync(path.join(runtime.filesDir, "docs", "notes.md")), false);
+  assert.deepEqual(wecom.sent.at(-1), { conversationId: "conversation-1", text: "已保存：notes.md" });
+});
+
+test("confirm rejects sensitive configured shared directory without writing documents", async () => {
+  const { worker, runtime, wecom } = createWorker();
+  const admin = new AdminStore(runtime.privateDir);
+  admin.write({
+    admin_user_id: "admin-user",
+    status: "ready",
+    claim: null,
+    pending_transfer: null,
+    initialized_at: "2026-01-01T00:00:00.000Z"
+  });
+  fs.writeFileSync(path.join(runtime.privateDir, "soul.md"), "Ready soul");
+  const sensitiveDir = path.join(runtime.rootDir, "run", "cli-auth");
+  runtime.config.documents = { shared_dir: sensitiveDir };
+  (worker as any).cli.run = async (_userId: string, _prompt: string, callbacks: any) => {
+    await callbacks.onChunk("~document:notes.md\nSensitive notes\n~/document\n");
+    await callbacks.onDone({ rawOutput: "", intermediateOutput: "", displayOutput: "" });
+  };
+
+  await handle(worker, message("write notes", "user-1"));
+  await handle(worker, message("/confirm", "user-1"));
+
+  assert.equal(fs.existsSync(path.join(sensitiveDir, "notes.md")), false);
+  assert.equal(fs.existsSync(path.join(runtime.filesDir, "docs", "notes.md")), false);
+  assert.deepEqual(wecom.sent.at(-1), { conversationId: "conversation-1", text: "文档目录配置不安全，未保存。" });
+});
+
+test("confirm rejects shared directory symlink that resolves into private directory", async () => {
+  const { worker, runtime, wecom } = createWorker();
+  const admin = new AdminStore(runtime.privateDir);
+  admin.write({
+    admin_user_id: "admin-user",
+    status: "ready",
+    claim: null,
+    pending_transfer: null,
+    initialized_at: "2026-01-01T00:00:00.000Z"
+  });
+  fs.writeFileSync(path.join(runtime.privateDir, "soul.md"), "Ready soul");
+  const symlinkDir = path.join(runtime.rootDir, "shared-link");
+  fs.symlinkSync(runtime.privateDir, symlinkDir, "dir");
+  runtime.config.documents = { shared_dir: symlinkDir };
+  (worker as any).cli.run = async (_userId: string, _prompt: string, callbacks: any) => {
+    await callbacks.onChunk("~document:notes.md\nPrivate notes\n~/document\n");
+    await callbacks.onDone({ rawOutput: "", intermediateOutput: "", displayOutput: "" });
+  };
+
+  await handle(worker, message("write notes", "user-1"));
+  await handle(worker, message("/confirm", "user-1"));
+
+  assert.equal(fs.existsSync(path.join(runtime.privateDir, "notes.md")), false);
+  assert.deepEqual(wecom.sent.at(-1), { conversationId: "conversation-1", text: "文档目录配置不安全，未保存。" });
+});

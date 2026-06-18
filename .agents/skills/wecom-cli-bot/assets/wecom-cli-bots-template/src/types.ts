@@ -20,6 +20,10 @@ export type MemoryConfig = {
   retrieve_limit: number;
 };
 
+export type DocumentsConfig = {
+  shared_dir?: string;
+};
+
 export type BotConfig = {
   bot: {
     name: string;
@@ -34,6 +38,7 @@ export type BotConfig = {
   };
   cli: CliConfig;
   memory?: MemoryConfig;
+  documents?: DocumentsConfig;
 };
 
 export type BotRuntime = {
