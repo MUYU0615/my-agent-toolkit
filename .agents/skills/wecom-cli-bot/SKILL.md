@@ -1,11 +1,11 @@
 ---
 name: wecom-cli-bot
-description: Create or extend a WeCom/Enterprise WeChat smart bot bridge that uses the official intelligent bot long connection to receive messages and invoke local AI coding CLIs such as Codex CLI, Claude Code, Kimi Code, Kiro CLI, or a custom CLI. Use when the user asks to build an Enterprise WeChat bot, connect WeCom to a CLI, scaffold a persistent multi-bot worker, manage bot-specific workspaces/souls/history, stream CLI output back to WeCom, or enforce CLI workspace isolation and secret redaction.
+description: Use when creating or extending an Enterprise WeChat smart bot bridge that receives WeCom long-connection messages and runs the current Kiro CLI based bot runtime with Docker, admin claiming, shared memory, workspace isolation, and secret redaction.
 ---
 
 # WeCom CLI Bot
 
-Use this skill to scaffold or modify a `./wecom-cli-bots` project that bridges WeCom intelligent bot messages to local CLI tools. The generated project must treat each bot as an isolated worker with its own workspace, private config, soul, history, and CLI process.
+Use this skill to scaffold or modify a `./wecom-cli-bots` project that bridges WeCom intelligent bot messages to `kiro-cli`. The provider boundary remains in code for future adapters, but the current shipped runtime supports only `kiro-cli`.
 
 ## Skill Interaction Rule
 
@@ -20,6 +20,14 @@ Use the wizard below instead:
 - After required inputs are collected, create or update the project directly.
 - Use other skills only when the user explicitly asks for that skill or the task involves a separate artifact type that cannot be handled here.
 
+## Current Support
+
+- Current CLI provider: `kiro-cli` only.
+- Default command: `kiro-cli`.
+- Default args: `["chat", "--no-interactive", "--trust-all-tools", "{{prompt}}"]`.
+- Default deployment: Docker Compose, with Kiro auth/config mounted read-only from the Docker host.
+- Future providers may be added through the adapter/auth strategy, but do not present Codex, Claude Code, Kimi Code, or custom CLI as currently supported choices.
+
 ## Bot Creation Wizard
 
 Guide the user step by step. Ask one question at a time when information is missing. Do not ask for values that can safely default.
@@ -27,26 +35,20 @@ Guide the user step by step. Ask one question at a time when information is miss
 Required inputs:
 
 1. Bot name.
-2. CLI provider: `codex`, `claude-code`, `kimi-code`, `kiro`, or `custom`.
-3. Bot role and output goal, for example "market analysis", "QA regression planning", or "code review".
-4. Deployment mode: Docker-owned or host-local. If the user says "in Docker", default to Docker-owned. If the user says "on this machine/local", default to host-local.
-5. Target location. Docker-owned default: create a temporary build context, build an image, and copy/generated files into the image or container. Host-local default: create/use a `./wecom-cli-bots` directory under the current working directory or user-requested root.
-6. WeCom credential handling. Default: generate placeholders in `workspace/private/.env.example`. For Docker-owned mode, copy a real `.env` into the container only from a local file path the user provides; do not paste secrets in chat and do not bake real secrets into reusable images. For host-local mode, ask the user to fill `workspace/private/.env` under the host-local project directory.
-7. CLI install source. Use built-in defaults for `codex`, `claude-code`, and `kimi-code`. Kimi Code default install command is `curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`. For `kiro`, ask for the official Docker install command unless already known in the project.
-
-For `kimi-code`, use Kimi Code CLI mode: `kimi -p "{{prompt}}" --output-format text`, `input_mode: arg`, `KIMI_CODE_HOME` under `workspace/cli-home/kimi`, and runtime `kimi login`. Do not use a Kimi/OpenAI-compatible API provider unless the user explicitly asks for API mode. See `references/cli-adapters.md`.
+2. Bot role and output goal, for example "market analysis", "QA regression planning", or "code review".
+3. Deployment mode: Docker-owned or host-local. If the user says "in Docker", default to Docker-owned. If the user says "on this machine/local", default to host-local.
+4. Target location. Docker-owned default: create or use a Docker build context and keep mutable runtime files in the container/volumes. Host-local default: create/use `./wecom-cli-bots` under the current working directory or requested root.
+5. WeCom credential handling. Default: generate placeholders in `workspace/private/.env.example`. Do not ask for secret values in chat.
+6. Kiro auth location. For Docker-owned mode, the Docker host must have a Kiro auth/config directory copied from a logged-in `kiro-cli` environment and mounted read-only. For host-local mode, the same machine running the bot must have `kiro-cli` installed and logged in.
 
 Optional inputs with defaults:
 
-- CLI command. Defaults: `codex` for Codex CLI, `claude` for Claude Code, `kimi` for Kimi Code. For Kiro, ask if unknown.
-- CLI args. Default: none. For Kimi Code default to `["-p", "{{prompt}}", "--output-format", "text"]` and never combine `--auto` with `-p`.
 - Session idle TTL. Default: 3 hours.
-- Stop keyword. Default: `停止`.
+- Stop keyword. Default: `/stop`.
 - Workspace files seed. Default: empty `workspace/files`.
-- Docker persistence. Default: Docker Compose service with `restart: unless-stopped` and Docker-owned files. Do not bind mount bot workspace in Docker-owned mode unless the user explicitly asks for host persistence.
+- Shared memory namespace. Default: `MEMORY_NAMESPACE=shared`.
+- Shared document directory. Docker default: `/shared/docs`.
 - Bot "skills" or specialties. If the user only gives a role, infer conservative specialties and write them into `soul.md`.
-
-Do not ask for secret values in chat unless the user explicitly wants to paste them. Prefer generating `workspace/private/.env.example`. In Docker-owned mode, ask for a local `.env` file path only when credentials must be copied into a running container.
 
 ### Wizard Output
 
@@ -56,13 +58,76 @@ For each bot, create or update:
 - `bots/<bot-name>/workspace/private/bot.config.yaml`
 - `bots/<bot-name>/workspace/private/soul.md`
 - `bots/<bot-name>/workspace/instructions/AGENTS.md`
-- provider-specific instruction file such as `KIMI.md`
-- `docker-compose.yml` service for the bot. In Docker-owned mode, do not mount `bots/<bot-name>/workspace` from the host by default.
-- Docker build args or comments needed to install the selected CLI
+- `bots/<bot-name>/workspace/instructions/KIRO.md`
+- `docker-compose.yml` service for the bot with `restart: unless-stopped`
+- Dockerfile Kiro install arg `INSTALL_KIRO_CLI`
+- `shared-docs` volume when shared documents are enabled
 
-For a role like market analysis, the generated `soul.md` should explicitly cover: target market definition, competitor monitoring, trend synthesis, customer segmentation, channel analysis, pricing/positioning, evidence quality, assumptions, and concise executive summaries.
+For a role like market analysis, the generated `soul.md` should explicitly cover target market definition, competitor monitoring, trend synthesis, customer segmentation, channel analysis, pricing/positioning, evidence quality, assumptions, and concise executive summaries.
 
-### Existing Project or Existing Bot
+## Admin Claim Flow
+
+Every deployed bot starts unclaimed. Before initialization, it must be claimed by a WeCom user:
+
+```bash
+npm run admin:claim -- --bot <bot-name>
+```
+
+The CLI prints:
+
+```text
+/claim_admin <code>
+```
+
+The deployer sends that exact command to the bot from Enterprise WeChat. If the code matches, that WeCom `userId` becomes administrator and initialization starts immediately. A separate `/init` is not needed for first setup.
+
+If the claim must be restarted:
+
+```bash
+npm run admin:claim -- --bot <bot-name> --reset
+```
+
+Only this deployment-side CLI should generate claim codes or reset the administrator claim flow. Real admin state is stored in `workspace/private/admin.json`; never include it in prompts, docs, logs intended for users, or WeCom replies.
+
+Administrator-only operations include initialization/reinitialization, soul updates, skill management, and admin transfer. Admin transfer uses `/transfer_admin <userId>`, `/accept_admin`, and `/cancel_transfer_admin`.
+
+## Kiro Host Auth
+
+Kiro authentication is achieved on the host that owns the Docker runtime, not inside a chat and not by giving API keys to the model.
+
+Docker-owned runtime:
+
+1. Install `kiro-cli` and complete `kiro-cli login` on a machine with browser access.
+2. Copy the required Kiro auth/config directory to the Docker host when the Docker host is a remote machine.
+3. Set `KIRO_HOST_AUTH_DIR` on the Docker host to that copied directory.
+4. Compose mounts it read-only at `/host/kiro-auth`.
+5. The container uses `KIRO_HOME` under the bot workspace for runtime state.
+
+If the bot runs on a remote Docker host, that remote host must have the Kiro auth/config available. A local laptop login does not help a different remote Docker host unless the required auth/config files are copied there.
+
+Do not mount host `kiro-cli` binaries into the container. Install Kiro CLI in the image with `INSTALL_KIRO_CLI` and verify it in the container.
+
+## Shared Knowledge
+
+Memory service is shared by namespace. Use a shared namespace when multiple bots should cooperate through the same long-term knowledge base:
+
+```env
+MEMORY_API_URL=http://memory-service:8100
+MEMORY_NAMESPACE=shared
+```
+
+The bot reads these values from `workspace/private/.env` through `runtime.env`. The model does not receive the raw `.env` values.
+
+Raw generated documents can also be shared through the configured documents directory:
+
+```yaml
+documents:
+  shared_dir: /shared/docs
+```
+
+Docker Compose should mount a named `shared-docs` volume at `/shared/docs`. Do not point shared docs at Kiro auth, `workspace/private`, or `workspace/cli-home`.
+
+## Existing Project or Existing Bot
 
 When the target project or `bots/<bot-name>` already exists, treat the task as an idempotent reconcile, not a fresh scaffold.
 
@@ -74,37 +139,22 @@ find <target-project>/bots/<bot-name> -maxdepth 5 -type f -print
 find <target-project>/bots/<bot-name> -maxdepth 5 -type d -print
 ```
 
-Then compare the existing bot against the Wizard Output list and only create or update missing or inconsistent pieces. Preserve user-created files, real `.env` values, history, logs, and CLI home directories. If the bot already exists and satisfies the checklist, do not rewrite it just to match formatting.
+Then compare the existing bot against the Wizard Output list and only create or update missing or inconsistent pieces. Preserve user-created files, real `.env` values, history, logs, CLI home directories, admin state, and shared documents. If the bot already exists and satisfies the checklist, do not rewrite it just to match formatting.
 
 For an existing bot, explicitly check:
 
 - `workspace/private/.env.example` exists and contains placeholders only.
-- `workspace/private/bot.config.yaml` matches the requested provider, command, stop keyword, TTL, and CLI home.
+- `workspace/private/bot.config.yaml` uses `provider: kiro-cli`, command `kiro-cli`, Kiro chat args, `KIRO_HOME`, optional `KIRO_HOST_AUTH_DIR`, memory config, and documents config.
 - `workspace/private/soul.md` covers the requested role and output goal.
-- `workspace/instructions/AGENTS.md` states the CLI may work only in `workspace/files/` and must not access `private/` or `cli-home/`.
-- The provider-specific instruction file exists.
-- `workspace/files/`, `workspace/private/history/`, `workspace/private/logs/`, and `workspace/cli-home/<provider>/` exist.
+- `workspace/instructions/AGENTS.md` states the CLI may work only in `workspace/files/` and must not access `private/`, `cli-home/`, Kiro auth mounts, or admin state.
+- `workspace/instructions/KIRO.md` exists.
+- `workspace/files/`, `workspace/private/history/`, `workspace/private/logs/`, and `workspace/cli-home/kiro/` exist.
 - `.gitignore` excludes private env, history, logs, and CLI home.
-- `docker-compose.yml` has exactly one intended service for the bot, with `restart: unless-stopped` and `command: ["--bot", "<bot-name>"]`.
-- In Docker-owned mode, `docker-compose.yml` does not bind mount the bot workspace by default. If host persistence is explicitly requested, document that exception.
-- In host-local mode, bind mounts are allowed when Docker is used only as an optional runtime for a host-local project.
-
-For Kimi Code existing bots, additionally check that `bot.config.yaml` uses `input_mode: arg`, `prompt_placeholder: "{{prompt}}"`, `KIMI_CODE_HOME`, and `args: ["-p", "{{prompt}}", "--output-format", "text"]`; that the runtime has completed `kimi login`; and that Kimi session ids are extracted before redaction and reused with `-r`.
+- `docker-compose.yml` has the intended service with `restart: unless-stopped`, `command: ["--bot", "<bot-name>"]`, read-only Kiro host auth mount, and optional `shared-docs` volume.
 
 ## Docker Mode Preflight
 
-When the user says to create, run, or test the bot in Docker, use Docker-owned mode by default. Do not create a host-local project as the runtime home. First run preflight checks and report any blocker.
-
-Docker-owned mode separates ownership clearly:
-
-- Host-owned: only temporary build context files, source templates, and optional user-provided input files used for `docker build` or `docker cp`.
-- Image-owned: project source, bot scaffold files, default workspace files, Node runtime, npm dependencies, `@wecom/aibot-node-sdk`, provider CLIs, runtime tools, and compiled app code.
-- Container-owned: mutable runtime state, real `.env`, history, logs, CLI home/cache, workspace changes, the running bot process, and command execution.
-- Never host-installed in Docker mode: `npm install` for validation, WeCom SDK packages, or global provider CLIs such as Codex CLI, Claude Code, Kimi Code, or Kiro CLI.
-
-Do not bind mount the bot workspace from the host in Docker-owned mode unless the user explicitly asks for host persistence. If the user wants local files as the source of truth, switch to host-local mode and say so.
-
-Run these checks from the user's current workspace:
+When the user says to create, run, or test the bot in Docker, use Docker-owned mode by default. Do not create a host-local project as the runtime home. First run preflight checks and report any blocker:
 
 ```bash
 pwd
@@ -115,24 +165,15 @@ docker info
 
 If `docker compose version` fails, try `docker-compose --version` and note which command is available. If Docker is missing, Docker Desktop/daemon is not running, or the user lacks permission to access the daemon, stop and ask the user to fix the environment before scaffolding.
 
-After Docker is confirmed, determine the target build context path:
+Docker-owned mode separates ownership clearly:
 
-- Docker-owned default: create or use a temporary or explicit build context, then copy files into the image/container. Do not use `./wecom-cli-bots` as the runtime home by default.
-- If the user requested an explicit build context path, use that path.
-- If the user requested host-local mode, create or use `./wecom-cli-bots` under the current working directory or requested root.
+- Host-owned: temporary build context files, source templates, and operator-provided Kiro auth/config source directory.
+- Image-owned: project source, bot scaffold files, Node runtime, npm dependencies, WeCom SDK, `kiro-cli`, runtime tools, and compiled app code.
+- Container/volume-owned: mutable runtime state, real `.env`, history, logs, CLI home/cache, workspace changes, shared docs, and the running bot process.
 
-For Docker validation:
+Do not bind mount the bot workspace from the host in Docker-owned mode unless the user explicitly asks for host persistence. If the user wants local files as the source of truth, switch to host-local mode and say so.
 
-- Run build and verification for one Compose project/service serially. Do not start multiple `docker compose run` checks in parallel for the same project; Compose may race on network creation or image state.
-- Build without installing provider CLIs when testing the scaffold itself by clearing `INSTALL_*` build args.
-- If the user selected a CLI provider and asks to create a usable Docker bot, build with that provider's install arg before finishing. A scaffold-only build is allowed only when explicitly doing template/scaffold validation.
-- Build with the selected provider install arg when the user asks for a real runnable image.
-- After a real provider build, verify the provider CLI command exists inside the image/container. Do not mark the bot complete until this check passes or you report the concrete install failure.
-- Do not install Node packages, WeCom SDK packages, or CLI tools on the host for Docker-mode work.
-- Prefer `docker compose build <service>` and `docker compose up -d <service>` for real bot deployment.
-- Use `docker cp` or image build context copies to move generated files into Docker-owned containers/images. Do not rely on host bind mounts unless explicitly requested.
-
-### Docker Verification Levels
+## Docker Verification Levels
 
 Use the narrowest verification that matches the user's request and the current state.
 
@@ -142,92 +183,50 @@ Use the narrowest verification that matches the user's request and the current s
 docker compose config
 ```
 
-2. Template build, without provider CLI installation. Use this when validating scaffold correctness, TypeScript build, package install, and Dockerfile basics:
+2. Template build without Kiro CLI installation. Use this for scaffold correctness, TypeScript build, package install, and Dockerfile basics:
 
 ```bash
-docker compose build \
-  --build-arg INSTALL_CODEX_CLI= \
-  --build-arg INSTALL_CLAUDE_CODE= \
-  --build-arg INSTALL_KIMI_CODE= \
-  --build-arg INSTALL_KIRO_CLI= \
-  <service>
+docker compose build --build-arg INSTALL_KIRO_CLI= <service>
 ```
 
-3. Real runnable image. Use this only when the user wants deployment or runtime validation. Keep CLI installation inside Docker:
+3. Real runnable image. Use this when the user wants deployment or runtime validation:
 
 ```bash
 docker compose build <service>
-```
-
-When the provider install arg is not already in `docker-compose.yml`, pass it explicitly, for example:
-
-```bash
-docker compose build --build-arg INSTALL_KIMI_CODE='curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash' <service>
-```
-
-This level is required before completion when the user has selected a provider CLI and expects a usable Docker bot.
-
-After build, identify the produced image name before using `docker run`:
-
-```bash
 docker compose images <service>
-docker image ls <expected-image-name>
-```
-
-4. Runtime check. Use after the real provider CLI has been installed in the image or runtime:
-
-```bash
-docker compose run --rm <service> ./scripts/check-runtime.sh <bot-name>
-```
-
-If the service has an `ENTRYPOINT`, override it for shell checks and script checks. Otherwise Compose may pass the shell command to the bot entrypoint instead of executing it. Prefer `docker run` against the built image for provider CLI checks because it cannot accidentally rebuild the service:
-
-```bash
-docker run --rm --entrypoint sh <image-name> -c 'command -v <cli-command> && <cli-command> --version'
+docker run --rm --entrypoint sh <image-name> -c 'command -v kiro-cli && kiro-cli --version'
 docker run --rm --entrypoint ./scripts/check-runtime.sh <image-name> <bot-name>
 ```
 
-If using `docker compose run`, do not pass `--build` during verification unless you also pass the provider install args; otherwise the check may rebuild with default empty install args.
+Do not append `|| true` to Kiro verification commands. A missing CLI must fail visibly. Use `sh -c`, not `sh -lc`, because login shells may reset `PATH`.
 
-Use `sh -c`, not `sh -lc`, for direct CLI checks. Login shell startup may reset `PATH` and hide Dockerfile `ENV PATH` entries such as `/root/.kimi-code/bin`.
-
-Do not append `|| true` to provider CLI verification commands. A missing CLI must fail the verification visibly.
-
-5. Long-running deployment:
+4. Long-running deployment:
 
 ```bash
 docker compose up -d <service>
 docker compose ps
 ```
 
-If local `npm run typecheck` fails because `node_modules/` is absent, do not treat that as a scaffold failure and do not run host-local dependency installation for Docker-mode work. Verify through Docker build where dependencies are installed inside the image. Install host dependencies only if the user explicitly asks for local development outside Docker.
+If only a template build was performed with Kiro CLI installation disabled, say that clearly. Do not imply the bot is runnable until WeCom credentials, Kiro CLI, and Kiro host auth are present and verified in the runtime.
 
-If Docker access fails because of sandbox or daemon permissions, report the blocker and retry with the platform's approved escalation mechanism when available. Do not edit files until Docker preflight has passed for Docker-mode requests.
+## Delivery Checklist
 
-### Delivery Checklist
-
-Before saying the bot is ready, report the actual state, not just the intended state:
+Before saying the bot is ready, report:
 
 - Target path.
 - Bot name and Compose service name.
-- Selected provider, CLI command, and whether the provider CLI is installed in the verified image.
-- Evidence used to verify the provider CLI install, such as `check-runtime.sh` or `command -v <cli-command>` output.
+- CLI command and whether `kiro-cli` is installed in the verified image/runtime.
+- Evidence used to verify Kiro, such as `check-runtime.sh` or `command -v kiro-cli` output.
+- Whether a real `workspace/private/.env` exists. Do not print its contents.
+- Whether admin claim code has been generated and whether the bot has been claimed.
+- Where Kiro host auth/config is mounted. Do not list contents.
+- Shared memory namespace and shared docs path, if enabled.
 - Files created or reconciled.
 - Verification commands run and their result.
-- Whether a real `workspace/private/.env` exists. Do not print its contents.
-- Where the real runtime files live: Docker image/container, Docker volume, or host-local directory.
 - Whether the container was started.
-- Exact next command for the user, if credentials or real CLI installation are still pending.
-
-If only a template build was performed with provider CLI installation disabled, say that clearly. Do not imply the bot is runnable until credentials exist and the provider CLI is installed and verified in the Docker image or runtime.
-
-### WeCom Stream Output
-
-WeCom stream replies refresh the current content for a stream id; they are not append-only token deltas. Generated runtimes must accumulate CLI output and send accumulated current content, throttled, then send one final `finish=true` frame. See `references/wecom-smart-bot.md`.
+- Exact next command for the user, if credentials, Kiro auth, or admin claim are still pending.
 
 ## Default Architecture
-
-For Docker-owned mode, create a Docker build context and put the runtime project files into the image/container. For host-local mode, create the project at `./wecom-cli-bots` under the current working directory or user-requested root.
 
 Use Node.js + TypeScript with `@wecom/aibot-node-sdk`. Default to Docker/Linux deployment while keeping macOS local development support. Run one OS process per bot.
 
@@ -239,6 +238,9 @@ wecom-cli-bots/
   docker-compose.yml
   package.json
   tsconfig.json
+  scripts/
+    admin-claim.ts
+    check-runtime.sh
   src/
   bots/
     <bot-name>/
@@ -246,20 +248,15 @@ wecom-cli-bots/
         private/
           .env
           .env.example
+          admin.json
           bot.config.yaml
           soul.md
           history/
           logs/
         cli-home/
-          codex/
-          claude/
-          kimi/
           kiro/
         instructions/
           AGENTS.md
-          CODEX.md
-          CLAUDE.md
-          KIMI.md
           KIRO.md
         files/
   supervisor/
@@ -270,34 +267,32 @@ wecom-cli-bots/
 ## Workflow
 
 1. Read `references/architecture.md` before creating or changing the scaffold.
-2. Read `references/security.md` before handling workspace, env, logging, or response streaming.
-3. Read `references/cli-adapters.md` before adding or changing CLI adapters.
+2. Read `references/security.md` before handling workspace, env, auth, logging, or response streaming.
+3. Read `references/cli-adapters.md` before changing Kiro invocation behavior.
 4. Read `references/wecom-smart-bot.md` before implementing or updating WeCom long-connection logic.
-5. Read `references/runtime-installation.md` before editing Dockerfile, runtime checks, or CLI install instructions.
+5. Read `references/runtime-installation.md` before editing Dockerfile, runtime checks, or Kiro install/auth instructions.
 6. If Docker mode is requested, complete Docker Mode Preflight before creating or editing the Docker build context or target container.
 7. Determine deployment mode: Docker-owned or host-local.
-8. For Docker-owned mode, prepare a build context, copy `assets/wecom-cli-bots-template/` into that context if needed, customize files there, build the image, and copy any runtime-only files into the container with `docker cp` when needed.
-9. For host-local mode, copy or reconcile `assets/wecom-cli-bots-template/` under `./wecom-cli-bots` or the user-requested root.
+8. For Docker-owned mode, prepare a build context, copy `assets/wecom-cli-bots-template/` into that context if needed, customize files there, build the image, and copy runtime-only files into the container with `docker cp` when needed.
+9. For host-local mode, copy or reconcile `assets/wecom-cli-bots-template/` under `./wecom-cli-bots` or the requested root.
 10. For an existing project or bot, run the Existing Project or Existing Bot reconciliation checklist instead of overwriting files.
-11. Customize `bots/<bot-name>/workspace/private/bot.config.yaml`, `soul.md`, and `instructions/AGENTS.md` for each bot.
-12. Keep all real secrets out of images and generated markdown instructions. In Docker-owned mode, copy `.env` into the specific running container or use Docker secrets/env injection. In host-local mode, keep real secrets in `bots/<bot-name>/workspace/private/.env`.
-13. Verify with Docker whenever possible using Docker Verification Levels. Do not install npm dependencies, WeCom SDK packages, Codex CLI, Claude Code, Kimi Code, or Kiro CLI on the host unless the user explicitly asks for host-local development. Keep runtime install commands in Dockerfile/build args and use `./scripts/check-runtime.sh <bot-name>` inside the target runtime when the selected CLI is installed.
-14. Finish with the Delivery Checklist.
+11. Customize `bot.config.yaml`, `soul.md`, and `instructions/AGENTS.md` for each bot.
+12. Keep all real secrets out of images and generated markdown instructions. In Docker-owned mode, inject `.env` into the specific runtime container/volume or use Docker secrets/env injection. In host-local mode, keep real secrets in `workspace/private/.env`.
+13. Run `npm run admin:claim -- --bot <bot-name>` and instruct the admin to send `/claim_admin <code>` in WeCom.
+14. Verify with Docker whenever possible using Docker Verification Levels. Do not install npm dependencies, WeCom SDK packages, or `kiro-cli` on the host for Docker-owned work except when preparing host auth with `kiro-cli login`.
+15. Finish with the Delivery Checklist.
 
 ## Non-Negotiable Runtime Rules
 
 - Treat `workspace/private/` as worker-only.
-- Treat `workspace/cli-home/` as CLI-specific home/config/cache storage. It is not user-facing and must not be included in prompts or WeCom replies.
-- Run the selected CLI with current working directory `workspace/files/`.
-- Do not let the CLI read `workspace/private/` or raw history files.
-- Pass only sanitized prompt context to the CLI: user message, safe session summary, `soul.md` intent, and allowed instructions.
+- Treat `workspace/private/admin.json` as governance state; never prompt it into the model or send it to WeCom.
+- Treat `workspace/cli-home/` and Kiro host auth mounts as credential/config storage. Do not include their contents in prompts or WeCom replies.
+- Run Kiro with current working directory `workspace/files/`, except initialization may run in the workspace to generate controlled config document blocks.
+- Pass only sanitized prompt context to Kiro: user message, safe session summary, `soul.md`, allowed instructions, and retrieved memory snippets.
 - Store JSONL history under `workspace/private/history/<user-id>/<session-id>.jsonl`.
 - Isolate sessions by bot and WeCom user.
-- Reuse a session while the same user keeps sending messages within 3 hours; expire after 3 hours with no new message.
-- On message receipt, immediately send `正在思考，发送【停止】将终止。`.
-- Stream CLI output back to WeCom as it arrives.
-- If the same user sends `停止` while a task is running, terminate that user's CLI child process and reply `已停止当前任务。`.
-- If the same user sends another normal message while a task is running, reply `当前任务仍在运行，请发送【停止】终止后再发送新问题。`.
+- Reuse a session while the same user keeps sending messages within the configured TTL.
+- Stream CLI output back to WeCom as it arrives, after redaction.
 - Redact secrets before any text is sent to WeCom.
 
 ## WeCom Integration
@@ -317,4 +312,4 @@ Also include optional:
 - Linux `systemd` template for non-Docker deployment.
 - macOS `launchd` template for local persistent runs.
 
-Do not mount host CLI binaries into Docker by default. Prefer installing required CLI tools in the image or leaving explicit Dockerfile installation placeholders for the user to fill.
+Do not mount host CLI binaries into Docker. Install `kiro-cli` in the image and mount only the host Kiro auth/config directory read-only.

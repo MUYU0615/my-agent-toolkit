@@ -6,15 +6,17 @@
 
 ### wecom-cli-bot
 
-企业微信 CLI 机器人框架。将 AI CLI 工具（Kimi Code、Kiro CLI、Codex、Claude Code）接入企业微信智能机器人。
+企业微信 CLI 机器人框架。当前实现将 Kiro CLI 接入企业微信智能机器人；代码保留 provider 边界，后续可扩展其他 CLI。
 
 **核心功能：**
 
-- 多 Provider 支持（Kimi Code、Kiro CLI、Codex、Claude Code）
+- 当前支持 Kiro CLI：`kiro-cli chat --no-interactive --trust-all-tools`
 - Docker 容器化部署，docker-compose 多 Bot 管理
 - 会话管理：自动 resume、3 小时空闲过期、用户隔离
 - 完整指令体系：`/stop` `/help` `/history` `/new` `/open N` `/name`
-- 记忆集成：自动检索注入、手动存取
+- 管理员认领与初始化：部署后生成认领码，企业微信内 `/claim_admin <code>` 认领
+- 记忆集成：共享 namespace 自动检索注入、手动存取
+- 共享文档：多个 Bot 可通过 `/shared/docs` 卷共享已确认文档
 - 技能管理：`/skill_list` `/skill_add` `/skill_remove`
 - 安全：ANSI 码清理、密钥脱敏、路径沙箱
 - 流式输出到企业微信
@@ -60,7 +62,7 @@ docker compose up -d
 ```yaml
 environment:
   - MEMORY_API_URL=http://host.docker.internal:8100
-  - MEMORY_NAMESPACE=product
+  - MEMORY_NAMESPACE=shared
 ```
 
 在 `bot.config.yaml` 中启用：
@@ -74,6 +76,25 @@ memory:
   auto_store: true
   retrieve_limit: 5
 ```
+
+### Kiro Bot 部署要点
+
+1. 在 Docker 宿主机准备 Kiro auth/config：先在有浏览器的环境完成 `kiro-cli login`，如果 Docker 在远程机器上运行，把所需 auth/config 复制到远程宿主机。
+2. 设置 `KIRO_HOST_AUTH_DIR`，Compose 会把它只读挂载到容器的 `/host/kiro-auth`。
+3. 构建包含 Kiro CLI 的镜像并验证：
+
+```bash
+docker compose build <service>
+docker run --rm --entrypoint ./scripts/check-runtime.sh <image-name> <bot-name>
+```
+
+4. 生成管理员认领码：
+
+```bash
+npm run admin:claim -- --bot <bot-name>
+```
+
+5. 管理员在企业微信向 bot 发送 `/claim_admin <code>`。认领成功后会自动进入初始化引导，不需要额外执行 `/init`。
 
 ## 目录结构
 

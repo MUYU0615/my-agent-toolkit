@@ -60,4 +60,4 @@ Practical rules:
 - For intermediate stream updates, send the accumulated content, not the latest chunk alone.
 - Throttle intermediate updates, for example one refresh every 500-1000 ms, to avoid high-frequency full-message repainting in WeCom clients.
 - Send `replyStream(..., finish=true)` exactly once with the final accumulated content.
-- Filter or remove transport-only lines such as `To resume this session: kimi -r ...` from the final user-visible content.
+- Filter or remove Kiro CLI transport/banner lines from the final user-visible content.

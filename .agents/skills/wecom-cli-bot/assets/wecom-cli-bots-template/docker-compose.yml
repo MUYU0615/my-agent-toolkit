@@ -11,7 +11,7 @@ services:
       # Example only: never commit real credential paths or files.
       - "${KIRO_HOST_AUTH_DIR:-./.docker/placeholders/kiro-auth}:/host/kiro-auth:ro"
       # Shared docs placeholder for future cross-bot reference material.
-      - "shared-docs:/app/shared-docs"
+      - "shared-docs:/shared/docs"
 
 volumes:
   shared-docs:

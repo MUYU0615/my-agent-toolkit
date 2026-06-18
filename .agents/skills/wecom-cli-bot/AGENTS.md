@@ -4,7 +4,7 @@
 
 ## 用途
 
-创建或扩展 Docker 优先的企业微信智能机器人桥接项目。生成的项目将企业微信长连接消息桥接到本地 AI CLI 工具（Codex CLI、Claude Code、Kimi Code、Kiro CLI 或自定义 CLI）。
+创建或扩展 Docker 优先的企业微信智能机器人桥接项目。当前生成的项目将企业微信长连接消息桥接到 Kiro CLI；其他 CLI 仅作为未来 adapter 扩展方向。
 
 ## 生成内容
 
@@ -25,6 +25,9 @@ bots/<bot-name>/workspace/
 - `/stop` 取消任务
 - 3 小时空闲会话过期
 - 斜杠指令：`/history` `/new` `/open N` `/name`
+- 管理员认领、初始化锁和管理员转移
+- Kiro host auth 只读挂载
+- 共享 memory namespace 和共享文档目录
 - 用户隔离的会话管理
 - JSONL 历史记录
 - 密钥脱敏和 ANSI 清理
@@ -41,8 +44,9 @@ bots/<bot-name>/workspace/
 ## 默认配置
 
 - 默认项目路径：`./wecom-cli-bots`
-- Kimi Code 安装：`curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`
+- 当前 CLI：`kiro-cli`
 - Kiro CLI 安装：`curl -fsSL https://cli.kiro.dev/install | bash`
+- 管理员认领：`npm run admin:claim -- --bot <bot-name>`
 - 停止指令：`/stop`
 - 会话空闲过期：3 小时
 - 部署方式：Docker Compose + `restart: unless-stopped`
