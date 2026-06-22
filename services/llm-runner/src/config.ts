@@ -4,6 +4,13 @@ import type { CliRuntimeConfig } from "./runtimes.js";
 export interface RunnerConfig {
   enabled_runtimes: RuntimeName[];
   kiro?: CliRuntimeConfig;
+  mcp?: McpRunnerConfig;
+  fetch?: typeof fetch;
+}
+
+export interface McpRunnerConfig {
+  service_url: string;
+  runner_secret: string;
 }
 
 export function loadRunnerConfig(
@@ -27,6 +34,15 @@ export function loadRunnerConfig(
       command,
       args: parseArgs(env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools"),
       timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 120_000),
+    };
+  }
+
+  const mcpServiceUrl = env.MCP_SERVICE_URL?.trim();
+  const mcpRunnerSecret = env.MCP_RUNNER_SECRET?.trim();
+  if (mcpServiceUrl && mcpRunnerSecret) {
+    config.mcp = {
+      service_url: mcpServiceUrl.replace(/\/+$/, ""),
+      runner_secret: mcpRunnerSecret,
     };
   }
 

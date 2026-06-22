@@ -1,5 +1,9 @@
 import { parseChatRequest, type ChatResponse } from "@my-agent-toolkit/contracts";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
+import {
+  fetchMcpToolManifest,
+  injectMcpPromptSection,
+} from "./mcpClient.js";
 import { getRuntimeStatuses } from "./runtimeStatus.js";
 import {
   RuntimeExecutionError,
@@ -54,7 +58,8 @@ async function handleChatStream(
 ): Promise<Response> {
   try {
     const chatRequest = parseChatRequest(await request.json());
-    const runtimeResult = runRuntimeStream(config, chatRequest);
+    const runtimeRequest = await enrichChatRequest(config, chatRequest);
+    const runtimeResult = runRuntimeStream(config, runtimeRequest);
     const runId = `run_${crypto.randomUUID()}`;
     const encoder = new TextEncoder();
 
@@ -114,7 +119,8 @@ async function handleChat(
 ): Promise<Response> {
   try {
     const chatRequest = parseChatRequest(await request.json());
-    const runtimeResult = await runRuntime(config, chatRequest);
+    const runtimeRequest = await enrichChatRequest(config, chatRequest);
+    const runtimeResult = await runRuntime(config, runtimeRequest);
     const response: ChatResponse = {
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: runtimeResult.runner_session_id,
@@ -142,6 +148,32 @@ async function handleChat(
       { error: error instanceof Error ? error.message : "invalid request" },
       400,
     );
+  }
+}
+
+async function enrichChatRequest(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+): Promise<ReturnType<typeof parseChatRequest>> {
+  if (!config.mcp) {
+    return chatRequest;
+  }
+  try {
+    const manifest = await fetchMcpToolManifest({
+      ...config.mcp,
+      ...(config.fetch ? { fetch: config.fetch } : {}),
+    }, {
+      bot_id: chatRequest.bot_id,
+      user_id: chatRequest.user_id,
+      conversation_id: chatRequest.conversation_id,
+      runtime: chatRequest.runtime,
+    });
+    return {
+      ...chatRequest,
+      prompt: injectMcpPromptSection(chatRequest.prompt, manifest),
+    };
+  } catch {
+    return chatRequest;
   }
 }
 

@@ -34,4 +34,17 @@ describe("loadRunnerConfig", () => {
       },
     });
   });
+
+  it("loads optional MCP service config from env", () => {
+    const config = loadRunnerConfig({
+      LLM_RUNNER_ENABLED_RUNTIMES: "mock",
+      MCP_SERVICE_URL: "http://mcp-service:8700/",
+      MCP_RUNNER_SECRET: "runner-secret",
+    });
+
+    expect(config.mcp).toEqual({
+      service_url: "http://mcp-service:8700",
+      runner_secret: "runner-secret",
+    });
+  });
 });

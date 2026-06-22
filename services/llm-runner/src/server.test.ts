@@ -56,6 +56,66 @@ describe("llm-runner server", () => {
     expect(body.run_id).toMatch(/^run_/);
   });
 
+  it("injects MCP tool manifest into runtime prompts when configured", async () => {
+    const mcpRequests: Request[] = [];
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["mock"],
+      mcp: {
+        service_url: "http://mcp-service:8700",
+        runner_secret: "runner-secret",
+      },
+      fetch: async (input) => {
+        const request = input instanceof Request ? input : new Request(input);
+        mcpRequests.push(request);
+        return new Response(JSON.stringify({
+          version: 1,
+          directory_refs: ["knowledge-base"],
+          tools: [
+            {
+              name: "document.create",
+              category: "document",
+              description: "Create a document.",
+              input_schema: {
+                type: "object",
+                required: ["scope", "owner_id", "title", "doc_type", "content"],
+                properties: {},
+              },
+              permissions: {
+                reads: [],
+                writes: ["bot", "user", "session"],
+              },
+            },
+          ],
+        }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+          },
+        });
+      },
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          runtime: "mock",
+          prompt: "hello",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.output).toContain("<mcp_tools>");
+    expect(body.output).toContain("document.create");
+    expect(body.output).toContain("<message>\nhello\n</message>");
+    expect(mcpRequests[0].url).toBe("http://mcp-service:8700/mcp/bots/prd-bot/sessions/conv-1/tools");
+  });
+
   it("returns not implemented for unavailable runtimes", async () => {
     const server = createLlmRunnerServer();
     const response = await server.fetch(
