@@ -1,4 +1,10 @@
-import type { DocumentCreateInput, McpScope, McpTier } from "@my-agent-toolkit/contracts";
+import {
+  parseMcpCapabilityConfig,
+  type DocumentCreateInput,
+  type McpCapabilityConfig,
+  type McpScope,
+  type McpTier,
+} from "@my-agent-toolkit/contracts";
 
 export interface DataServiceClientOptions {
   baseUrl: string;
@@ -9,6 +15,7 @@ export interface DataServiceClient {
   createDocument(input: DocumentCreateInput): Promise<Record<string, unknown>>;
   createMemory(input: CreateMemoryInput): Promise<Record<string, unknown>>;
   getMemoryStats(input: MemoryStatsInput): Promise<Record<string, unknown>>;
+  getMcpCapabilityConfig(botId: string): Promise<McpCapabilityConfig>;
 }
 
 export interface CreateMemoryInput {
@@ -62,6 +69,17 @@ export function createDataServiceClient(
       return requestJson(fetchImpl, url.toString(), {
         method: "GET",
       });
+    },
+
+    async getMcpCapabilityConfig(botId) {
+      const body = await requestJson(
+        fetchImpl,
+        `${baseUrl}/v1/bots/${encodeURIComponent(botId)}/mcp-capabilities/config`,
+        {
+          method: "GET",
+        },
+      );
+      return parseMcpCapabilityConfig(body);
     },
   };
 }

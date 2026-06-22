@@ -4,7 +4,7 @@ import {
   createMemoryBackendClient,
   type MemoryBackendClient,
 } from "./memoryBackendClient.js";
-import { callMcpTool, listMcpTools } from "./tools.js";
+import { callMcpTool, listMcpTools, type McpToolResult } from "./tools.js";
 
 export type McpMemoryBackendDependency = Pick<
   MemoryBackendClient,
@@ -14,7 +14,7 @@ export type McpMemoryBackendDependency = Pick<
 export interface McpServiceConfig {
   runnerSecret: string;
   dataServiceUrl?: string;
-  dataClient?: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">;
+  dataClient?: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats" | "getMcpCapabilityConfig">;
   memoryBackendUrl?: string;
   memoryBackend?: McpMemoryBackendDependency;
   allowedDirectoryRefs?: Record<string, string>;
@@ -63,6 +63,7 @@ export function createMcpServiceServer(
         return handleListTools(
           request,
           config,
+          dataClient,
           decodeURIComponent(toolsListRoute[1]),
           decodeURIComponent(toolsListRoute[2]),
         );
@@ -87,18 +88,24 @@ export function createMcpServiceServer(
   };
 }
 
-function handleListTools(
+async function handleListTools(
   request: Request,
   config: McpServiceConfig,
+  dataClient: Pick<DataServiceClient, "getMcpCapabilityConfig">,
   botId: string,
   conversationId: string,
-): Response {
+): Promise<Response> {
   const context = authenticateRequest(request, config, botId, conversationId);
   if (context instanceof Response) {
     return context;
   }
+  const capabilityConfig = await dataClient.getMcpCapabilityConfig(context.bot_id);
   return jsonResponse(listMcpTools({
-    allowedDirectoryRefs: config.allowedDirectoryRefs ?? {},
+    allowedDirectoryRefs: filterAllowedDirectoryRefs(
+      config.allowedDirectoryRefs ?? {},
+      capabilityConfig.directory_refs,
+    ),
+    enabledTools: capabilityConfig.tools.enabled,
   }));
 }
 
@@ -129,7 +136,7 @@ function handleGetContext(
 async function handleToolCall(
   request: Request,
   config: McpServiceConfig,
-  dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">,
+  dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats" | "getMcpCapabilityConfig">,
   memoryBackend: McpMemoryBackendDependency,
   botId: string,
   conversationId: string,
@@ -139,11 +146,19 @@ async function handleToolCall(
     return context;
   }
   try {
+    const toolCall = await request.json() as { tool: string; input: unknown };
+    const capabilityConfig = await dataClient.getMcpCapabilityConfig(context.bot_id);
+    if (!capabilityConfig.tools.enabled.includes(toolCall.tool)) {
+      return jsonResponse(disabledToolResult(toolCall.tool));
+    }
     return jsonResponse(await callMcpTool(context, {
       dataClient,
       memoryBackend,
-      allowedDirectoryRefs: config.allowedDirectoryRefs ?? {},
-    }, await request.json() as { tool: string; input: unknown }));
+      allowedDirectoryRefs: filterAllowedDirectoryRefs(
+        config.allowedDirectoryRefs ?? {},
+        capabilityConfig.directory_refs,
+      ),
+    }, toolCall));
   } catch (error) {
     return mcpErrorResponse(
       "validation_error",
@@ -151,6 +166,26 @@ async function handleToolCall(
       400,
     );
   }
+}
+
+function disabledToolResult(toolName: string): McpToolResult {
+  return {
+    ok: false,
+    error: {
+      code: "permission_denied",
+      message: `MCP tool is disabled by bot capability config: ${toolName}`,
+    },
+  };
+}
+
+function filterAllowedDirectoryRefs(
+  configuredRefs: Record<string, string>,
+  enabledRefs: string[],
+): Record<string, string> {
+  const enabled = new Set(enabledRefs);
+  return Object.fromEntries(
+    Object.entries(configuredRefs).filter(([ref]) => enabled.has(ref)),
+  );
 }
 
 function authenticateRequest(
