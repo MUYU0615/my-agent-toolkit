@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api",
-    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api"
+    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service",
+    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service"
   },
   "workspaces": [
     "packages/*",
