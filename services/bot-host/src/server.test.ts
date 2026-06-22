@@ -1849,6 +1849,252 @@ describe("bot-host server", () => {
     ]);
   });
 
+  it("runs the full real wecom worker flow from admin claim through initialization and normal chat", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const sent: Array<{ conversationId: string; text: string; finish: boolean }> = [];
+    let botStatus: "unclaimed" | "initializing" | "ready" = "unclaimed";
+    let configDocumentWrites = 0;
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "kiro",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      logServiceUrl: "http://log-service",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/admin/claim/verify") {
+          expect(body).toEqual({
+            wecom_user_id: "admin-a",
+            code: "123456",
+          });
+          botStatus = "initializing";
+          return Response.json({
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            role: "admin",
+          });
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          if (botStatus === "unclaimed") {
+            return Response.json({ allowed: false, reason: "admin_unclaimed" });
+          }
+          if (botStatus === "initializing") {
+            return Response.json({
+              allowed: body?.wecom_user_id === "admin-a",
+              reason: body?.wecom_user_id === "admin-a" ? "initializing" : "initialization_required",
+              is_admin: body?.wecom_user_id === "admin-a",
+              conversation: {
+                conversation_id: "conv-init",
+                purpose: "init",
+              },
+            });
+          }
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: body?.wecom_user_id === "admin-a",
+            conversation: {
+              conversation_id: "conv-chat-admin-a",
+              purpose: "normal_chat",
+            },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json(configDocumentWrites === 2
+            ? [
+              {
+                scope: "bot",
+                owner_id: "prd-bot",
+                title: "soul",
+                version: 1,
+                content: "你是环信业务的产品经理机器人，性格直接、严谨，负责需求澄清。",
+              },
+              {
+                scope: "bot",
+                owner_id: "prd-bot",
+                title: "agents.md",
+                version: 1,
+                content: "行为规则：先澄清范围，再输出 PRD；需要检查 console、计量计费和 IMM 开关。",
+              },
+            ]
+            : []);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          expect(body).toMatchObject({
+            bot_id: "prd-bot",
+            user_id: "admin-a",
+            conversation_id: "conv-init",
+            runtime: "kiro",
+          });
+          return Response.json({
+            run_id: "run-init-docs",
+            output: [
+              "配置已确认。",
+              "~document:private/soul.md",
+              "# Soul",
+              "你是环信业务的产品经理机器人，性格直接、严谨，负责需求澄清。",
+              "~/document",
+              "~document:instructions/AGENTS.md",
+              "# AGENTS",
+              "行为规则：先澄清范围，再输出 PRD；需要检查 console、计量计费和 IMM 开关。",
+              "~/document",
+              "初始化完成，开始工作。",
+            ].join("\n"),
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          configDocumentWrites += 1;
+          return Response.json({
+            memory_doc_id: `config-${configDocumentWrites}`,
+            ...(body as object),
+          }, { status: 201 });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/ready") {
+          botStatus = "ready";
+          return Response.json({ bot_id: "prd-bot", status: "ready" });
+        }
+
+        if (request.url === "http://llm-runner/v1/chat/stream") {
+          expect(body).toMatchObject({
+            bot_id: "prd-bot",
+            user_id: "admin-a",
+            conversation_id: "conv-chat-admin-a",
+            runtime: "kiro",
+          });
+          expect((body as { prompt: string }).prompt).toContain("<memory>");
+          expect((body as { prompt: string }).prompt).toContain("[bot/prd-bot v1] soul");
+          expect((body as { prompt: string }).prompt).toContain("[bot/prd-bot v1] agents.md");
+          expect((body as { prompt: string }).prompt).toContain("<message>\n我需要一个语音转文字的api\n</message>");
+          return new Response([
+            JSON.stringify({ type: "run", run_id: "run-chat", runner_session_id: "kiro:prd-bot:admin-a:conv-chat-admin-a" }),
+            JSON.stringify({ type: "chunk", content: "先确认定位：" }),
+            JSON.stringify({ type: "chunk", content: "这是 PRD 还是接口设计？" }),
+            JSON.stringify({ type: "done" }),
+          ].join("\n") + "\n", {
+            headers: { "content-type": "application/x-ndjson" },
+          });
+        }
+
+        if (request.url === "http://log-service/v1/chat-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(conversationId, text, options) {
+          sent.push({ conversationId, text, finish: options?.finish ?? true });
+        },
+      },
+    });
+
+    await worker.start();
+    const waitForSentText = async (text: string) => {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (sent.some((message) => message.text.includes(text))) {
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      throw new Error(`timed out waiting for sent text: ${text}`);
+    };
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "user-a",
+      text: "hi",
+    });
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "admin-a",
+      text: "/claim_admin 123456",
+    });
+
+    for (const text of [
+      "环信，即时通讯云服务商，提供 IM SDK 和 REST API",
+      "1",
+      "1,2,3,4,6",
+      "1",
+      "1",
+      "1",
+      "固定使用 bot-memory，MCP 只能写业务文档和长期记忆",
+      "PRD 需要确认是否涉及 console、计量计费、IMM 开关",
+      "确认",
+    ]) {
+      await messageHandler?.({
+        conversationId: "conversation-a",
+        userId: "admin-a",
+        text,
+      });
+    }
+    await waitForSentText("机器人已完成初始化，可以开始工作。");
+
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "admin-a",
+      text: "我需要一个语音转文字的api",
+    });
+
+    expect(sent[0]).toEqual({
+      conversationId: "conversation-a",
+      text: "机器人尚未完成管理员认领，请发送页面上的 /claim_admin <验证码>。",
+      finish: true,
+    });
+    expect(sent[1].text).toContain("管理员认领成功，开始初始化。");
+    expect(sent[1].text).toContain("问题 1/8：");
+    expect(sent.map((message) => message.text)).toContain("配置已确认，正在生成 soul.md 和 agents.md。完成后我会主动通知你。");
+    expect(sent.some((message) => message.text.includes("机器人已完成初始化，可以开始工作。"))).toBe(true);
+    expect(sent.at(-2)).toEqual({
+      conversationId: "conversation-a",
+      text: "正在思考...",
+      finish: false,
+    });
+    expect(sent.at(-1)).toEqual({
+      conversationId: "conversation-a",
+      text: "先确认定位：这是 PRD 还是接口设计？",
+      finish: true,
+    });
+    expect(calls.filter((call) => call.url === "http://data-service/v1/bot-config-documents").map((call) => call.body)).toEqual([
+      expect.objectContaining({
+        bot_id: "prd-bot",
+        title: "soul",
+        content: expect.stringContaining("产品经理机器人"),
+      }),
+      expect.objectContaining({
+        bot_id: "prd-bot",
+        title: "agents.md",
+        content: expect.stringContaining("行为规则"),
+      }),
+    ]);
+    expect(calls.map((call) => call.url)).toContain("http://data-service/v1/bots/prd-bot/ready");
+  });
+
   it("actively sends initialization wizard to the admin when restarted", async () => {
     const sent: Array<{ conversationId: string; text: string }> = [];
     const worker = createBotHostWorker({
