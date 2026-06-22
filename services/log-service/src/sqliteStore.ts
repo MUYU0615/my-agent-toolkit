@@ -2,11 +2,14 @@ import Database from "better-sqlite3";
 import {
   normalizeListChatEventsQuery,
   normalizeListAuditEventsQuery,
+  normalizeListToolEventsQuery,
+  redactSummary,
   requireText,
   type AuditEventRecord,
   type ChatEventRecord,
   type LogStore,
   type RecordChatEventInput,
+  type ToolEventRecord,
 } from "./store.js";
 
 export function createSqliteLogStore(dbPath: string): LogStore {
@@ -174,6 +177,101 @@ export function createSqliteLogStore(dbPath: string): LogStore {
         .map(rowToAuditEvent);
     },
 
+    recordToolEvent(input) {
+      const event: ToolEventRecord = {
+        event_id: `tool_${crypto.randomUUID()}`,
+        bot_id: requireText(input.bot_id, "bot_id"),
+        user_id: requireText(input.user_id, "user_id"),
+        conversation_id: requireText(input.conversation_id, "conversation_id"),
+        tool_name: requireText(input.tool_name, "tool_name"),
+        input_summary: redactSummary(input.input_summary),
+        output_summary: redactSummary(input.output_summary),
+        target_type: requireText(input.target_type, "target_type"),
+        target_id: requireText(input.target_id, "target_id"),
+        status: input.status,
+        ...(input.error_code ? { error_code: input.error_code } : {}),
+        duration_ms: input.duration_ms,
+        created_at: new Date().toISOString(),
+      };
+      db.prepare(
+        `
+          insert into tool_events (
+            event_id,
+            bot_id,
+            user_id,
+            conversation_id,
+            tool_name,
+            input_summary_json,
+            output_summary_json,
+            target_type,
+            target_id,
+            status,
+            error_code,
+            duration_ms,
+            created_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+      ).run(
+        event.event_id,
+        event.bot_id,
+        event.user_id,
+        event.conversation_id,
+        event.tool_name,
+        JSON.stringify(event.input_summary),
+        JSON.stringify(event.output_summary),
+        event.target_type,
+        event.target_id,
+        event.status,
+        event.error_code ?? null,
+        event.duration_ms,
+        event.created_at,
+      );
+      return event;
+    },
+
+    listToolEvents(query) {
+      const normalized = normalizeListToolEventsQuery(query);
+      const conditions = ["bot_id = ?"];
+      const params: Array<string | number> = [normalized.bot_id];
+      if (normalized.conversation_id) {
+        conditions.push("conversation_id = ?");
+        params.push(normalized.conversation_id);
+      }
+      if (normalized.tool_name) {
+        conditions.push("tool_name = ?");
+        params.push(normalized.tool_name);
+      }
+      if (normalized.status) {
+        conditions.push("status = ?");
+        params.push(normalized.status);
+      }
+      params.push(normalized.limit, normalized.offset);
+
+      return db.prepare(
+        `
+          select
+            event_id,
+            bot_id,
+            user_id,
+            conversation_id,
+            tool_name,
+            input_summary_json,
+            output_summary_json,
+            target_type,
+            target_id,
+            status,
+            error_code,
+            duration_ms,
+            created_at
+          from tool_events
+          where ${conditions.join(" and ")}
+          order by rowid asc
+          limit ?
+          offset ?
+        `,
+      ).all(...params).map(rowToToolEvent);
+    },
+
     close() {
       db.close();
     },
@@ -222,6 +320,31 @@ function migrate(db: Database.Database): void {
 
     create index if not exists idx_audit_events_action
       on audit_events (action);
+
+    create table if not exists tool_events (
+      event_id text primary key,
+      bot_id text not null,
+      user_id text not null,
+      conversation_id text not null,
+      tool_name text not null,
+      input_summary_json text not null,
+      output_summary_json text not null,
+      target_type text not null,
+      target_id text not null,
+      status text not null,
+      error_code text,
+      duration_ms integer not null,
+      created_at text not null
+    );
+
+    create index if not exists idx_tool_events_bot_id
+      on tool_events (bot_id);
+
+    create index if not exists idx_tool_events_conversation_id
+      on tool_events (conversation_id);
+
+    create index if not exists idx_tool_events_tool_name
+      on tool_events (tool_name);
   `);
 }
 
@@ -250,6 +373,25 @@ function rowToAuditEvent(row: unknown): AuditEventRecord {
     target_type: record.target_type as string,
     target_id: record.target_id as string,
     metadata: JSON.parse(record.metadata_json as string),
+    created_at: record.created_at as string,
+  };
+}
+
+function rowToToolEvent(row: unknown): ToolEventRecord {
+  const record = row as Record<string, unknown>;
+  return {
+    event_id: record.event_id as string,
+    bot_id: record.bot_id as string,
+    user_id: record.user_id as string,
+    conversation_id: record.conversation_id as string,
+    tool_name: record.tool_name as string,
+    input_summary: JSON.parse(record.input_summary_json as string),
+    output_summary: JSON.parse(record.output_summary_json as string),
+    target_type: record.target_type as string,
+    target_id: record.target_id as string,
+    status: record.status as ToolEventRecord["status"],
+    ...(typeof record.error_code === "string" ? { error_code: record.error_code } : {}),
+    duration_ms: record.duration_ms as number,
     created_at: record.created_at as string,
   };
 }

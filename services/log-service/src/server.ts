@@ -34,6 +34,14 @@ export function createLogServiceServer(
         return handleListAuditEvents(url, store);
       }
 
+      if (request.method === "POST" && url.pathname === "/internal/tool-events") {
+        return handleRecordToolEvent(request, store);
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/tool-events") {
+        return handleListToolEvents(url, store);
+      }
+
       return jsonResponse({ error: "not found" }, 404);
     },
   };
@@ -91,8 +99,48 @@ function handleListAuditEvents(url: URL, store: LogStore): Response {
   }
 }
 
+async function handleRecordToolEvent(
+  request: Request,
+  store: LogStore,
+): Promise<Response> {
+  try {
+    return jsonResponse(store.recordToolEvent(await request.json()), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListToolEvents(url: URL, store: LogStore): Response {
+  try {
+    return jsonResponse(store.listToolEvents({
+      bot_id: url.searchParams.get("bot_id") ?? "",
+      conversation_id: optionalParam(url, "conversation_id"),
+      tool_name: optionalParam(url, "tool_name"),
+      status: optionalToolEventStatus(url, "status"),
+      limit: optionalNumberParam(url, "limit"),
+      offset: optionalNumberParam(url, "offset"),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
 function optionalParam(url: URL, name: string): string | undefined {
   return url.searchParams.get(name) ?? undefined;
+}
+
+function optionalToolEventStatus(
+  url: URL,
+  name: string,
+): "ok" | "error" | undefined {
+  const value = url.searchParams.get(name);
+  if (value === null) {
+    return undefined;
+  }
+  if (value === "ok" || value === "error") {
+    return value;
+  }
+  throw new Error("status must be ok or error");
 }
 
 function optionalNumberParam(url: URL, name: string): number | undefined {

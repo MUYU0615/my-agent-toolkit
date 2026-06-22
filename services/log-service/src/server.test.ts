@@ -168,4 +168,55 @@ describe("log-service server", () => {
       },
     ]);
   });
+
+  it("records and lists internal tool events over HTTP with redaction", async () => {
+    const server = createLogServiceServer();
+
+    const recordResponse = await server.fetch(
+      new Request("http://localhost/internal/tool-events", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          tool_name: "memory.write",
+          input_summary: {
+            content: "remember this",
+            api_key: "api-key-value",
+          },
+          output_summary: {
+            memory_id: "mem-1",
+          },
+          target_type: "memory",
+          target_id: "mem-1",
+          status: "ok",
+          duration_ms: 42,
+        }),
+      }),
+    );
+
+    expect(recordResponse.status).toBe(201);
+    const created = await recordResponse.json() as { event_id: string };
+    expect(JSON.stringify(created)).not.toContain("api-key-value");
+
+    const listResponse = await server.fetch(
+      new Request("http://localhost/internal/tool-events?bot_id=prd-bot"),
+    );
+
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject([
+      {
+        event_id: created.event_id,
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-1",
+        tool_name: "memory.write",
+        input_summary: {
+          content: "remember this",
+          api_key: "[REDACTED]",
+        },
+        status: "ok",
+      },
+    ]);
+  });
 });

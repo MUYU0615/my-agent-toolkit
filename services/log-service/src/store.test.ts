@@ -97,4 +97,50 @@ describe("log-service store", () => {
       target_id: "prd-bot",
     })).toEqual([event]);
   });
+
+  it("records redacted tool events and lists them by bot", () => {
+    const store = createLogStore();
+
+    const event = store.recordToolEvent({
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      tool_name: "memory.write",
+      input_summary: {
+        content: "remember this",
+        secret: "super-secret-value",
+        nested: {
+          api_key: "api-key-value",
+        },
+      },
+      output_summary: {
+        memory_id: "mem-1",
+        token: "runner-token-value",
+      },
+      target_type: "memory",
+      target_id: "mem-1",
+      status: "ok",
+      duration_ms: 42,
+    });
+
+    expect(event.event_id).toMatch(/^tool_/);
+    expect(event.created_at).toEqual(expect.any(String));
+    expect(JSON.stringify(event)).not.toContain("super-secret-value");
+    expect(JSON.stringify(event)).not.toContain("api-key-value");
+    expect(JSON.stringify(event)).not.toContain("runner-token-value");
+    expect(event.input_summary).toEqual({
+      content: "remember this",
+      secret: "[REDACTED]",
+      nested: {
+        api_key: "[REDACTED]",
+      },
+    });
+    expect(event.output_summary).toEqual({
+      memory_id: "mem-1",
+      token: "[REDACTED]",
+    });
+    expect(store.listToolEvents({
+      bot_id: "prd-bot",
+    })).toEqual([event]);
+  });
 });

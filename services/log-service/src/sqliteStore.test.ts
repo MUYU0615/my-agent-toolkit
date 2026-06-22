@@ -120,4 +120,37 @@ describe("sqlite log store", () => {
     })).toEqual([event]);
     second.close?.();
   });
+
+  it("persists redacted tool events across store instances", () => {
+    const dir = mkdtempSync(join(tmpdir(), "log-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "log.db");
+
+    const first = createSqliteLogStore(dbPath);
+    const event = first.recordToolEvent({
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      tool_name: "document.create",
+      input_summary: {
+        title: "语音转文字 API PRD",
+        claim_code: "123456",
+      },
+      output_summary: {
+        document_id: "doc-1",
+      },
+      target_type: "document",
+      target_id: "doc-1",
+      status: "ok",
+      duration_ms: 35,
+    });
+    first.close?.();
+
+    const second = createSqliteLogStore(dbPath);
+    expect(JSON.stringify(event)).not.toContain("123456");
+    expect(second.listToolEvents({
+      bot_id: "prd-bot",
+    })).toEqual([event]);
+    second.close?.();
+  });
 });
