@@ -84,4 +84,58 @@ describe("mcp-service server", () => {
       },
     });
   });
+
+  it("calls document tools for a valid MCP session", async () => {
+    const runnerSecret = "test-runner-secret";
+    const calls: unknown[] = [];
+    const server = createMcpServiceServer({
+      runnerSecret,
+      dataClient: {
+        async createDocument(input) {
+          calls.push(input);
+          return {
+            document_id: "doc-1",
+            title: input.title,
+            version: 1,
+          };
+        },
+      },
+    });
+    const token = signRunnerToken(runnerSecret, {
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      runtime: "kiro",
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/mcp/bots/prd-bot/sessions/conv-1/tools/call", {
+        method: "POST",
+        headers: {
+          "x-runner-token": token,
+        },
+        body: JSON.stringify({
+          tool: "document.create",
+          input: {
+            scope: "bot",
+            owner_id: "prd-bot",
+            title: "语音转文字 API PRD",
+            doc_type: "prd",
+            content: "# PRD",
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      ok: true,
+      result: {
+        document_id: "doc-1",
+        title: "语音转文字 API PRD",
+        version: 1,
+      },
+    });
+    expect(calls).toHaveLength(1);
+  });
 });
