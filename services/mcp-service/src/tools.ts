@@ -35,6 +35,135 @@ export type McpToolResult =
     };
   };
 
+export interface McpToolManifest {
+  version: 1;
+  directory_refs: string[];
+  tools: McpToolDescriptor[];
+}
+
+export interface McpToolDescriptor {
+  name: string;
+  category: "document" | "memory" | "search";
+  description: string;
+  input_schema: {
+    type: "object";
+    required: string[];
+    properties: Record<string, unknown>;
+  };
+  permissions: {
+    reads: McpScope[];
+    writes: McpScope[];
+  };
+}
+
+export function listMcpTools(options: {
+  allowedDirectoryRefs?: Record<string, string>;
+} = {}): McpToolManifest {
+  const directoryRefs = Object.keys(options.allowedDirectoryRefs ?? {}).sort();
+  return {
+    version: 1,
+    directory_refs: directoryRefs,
+    tools: [
+      toolDescriptor(
+        "document.create",
+        "document",
+        "Create a business document in data-service.",
+        ["scope", "owner_id", "title", "doc_type", "content"],
+        documentProperties(),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "document.ingest_file",
+        "document",
+        "Create a document record and index file content for retrieval.",
+        ["scope", "owner_id", "filename", "title", "doc_type", "content"],
+        { ...documentProperties(), filename: stringProperty() },
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "document.ingest_url",
+        "document",
+        "Create a document record and ask memory backend to fetch and index a URL.",
+        ["scope", "owner_id", "url", "title", "doc_type"],
+        { ...documentBaseProperties(), url: stringProperty({ format: "uri" }) },
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "document.scan",
+        "document",
+        "Scan an authorized directory ref as document sources.",
+        ["scope", "owner_id", "directory_ref", "doc_type"],
+        scanProperties(directoryRefs),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.write",
+        "memory",
+        "Store a long-term memory record and index it for retrieval.",
+        ["scope", "owner_id", "content"],
+        memoryWriteProperties(),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.ingest_file",
+        "memory",
+        "Index file content as memory without creating a business document.",
+        ["scope", "owner_id", "filename", "content"],
+        ingestFileProperties(),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.ingest_url",
+        "memory",
+        "Fetch and index a URL as memory without creating a business document.",
+        ["scope", "owner_id", "url"],
+        fetchUrlProperties(),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.scan",
+        "memory",
+        "Scan an authorized directory ref as memory.",
+        ["scope", "owner_id", "directory_ref"],
+        scanProperties(directoryRefs),
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.delete",
+        "memory",
+        "Delete a backend memory index record by id.",
+        ["memory_id"],
+        { memory_id: stringProperty() },
+        { writes: writableScopes(), reads: [] },
+      ),
+      toolDescriptor(
+        "memory.search",
+        "memory",
+        "Search scoped memories.",
+        ["query", "scopes", "owner_ids"],
+        searchProperties(),
+        { writes: [], reads: readableScopes() },
+      ),
+      toolDescriptor(
+        "memory.stats",
+        "memory",
+        "Read memory statistics for an optional scope and owner.",
+        [],
+        memoryStatsProperties(),
+        { writes: [], reads: readableScopes() },
+      ),
+      toolDescriptor(
+        "search.query",
+        "search",
+        "Search documents and memories through the unified backend index.",
+        ["query", "scopes", "owner_ids"],
+        searchProperties(),
+        { writes: [], reads: readableScopes() },
+      ),
+    ],
+  };
+}
+
 export async function callMcpTool(
   context: TrustedMcpContext,
   deps: McpToolDependencies,
@@ -285,6 +414,154 @@ function requireBackendMethod<T>(
     throw new StorageUnavailableError(`memory backend method is unavailable: ${name}`);
   }
   return method;
+}
+
+function toolDescriptor(
+  name: string,
+  category: McpToolDescriptor["category"],
+  description: string,
+  required: string[],
+  properties: Record<string, unknown>,
+  permissions: McpToolDescriptor["permissions"],
+): McpToolDescriptor {
+  return {
+    name,
+    category,
+    description,
+    input_schema: {
+      type: "object",
+      required,
+      properties,
+    },
+    permissions,
+  };
+}
+
+function documentProperties(): Record<string, unknown> {
+  return {
+    ...documentBaseProperties(),
+    content: stringProperty(),
+  };
+}
+
+function documentBaseProperties(): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+    title: stringProperty(),
+    doc_type: stringProperty(),
+    tags: stringArrayProperty(),
+    tier: tierProperty(),
+  };
+}
+
+function memoryWriteProperties(): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+    content: stringProperty(),
+    tags: stringArrayProperty(),
+    tier: tierProperty(),
+    source_type: stringProperty(),
+  };
+}
+
+function ingestFileProperties(): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+    filename: stringProperty(),
+    content: stringProperty(),
+    tags: stringArrayProperty(),
+    tier: tierProperty(),
+  };
+}
+
+function fetchUrlProperties(): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+    url: stringProperty({ format: "uri" }),
+    tags: stringArrayProperty(),
+    tier: tierProperty(),
+  };
+}
+
+function scanProperties(directoryRefs: string[]): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+    directory_ref: stringProperty(directoryRefs.length > 0 ? { enum: directoryRefs } : {}),
+    doc_type: stringProperty(),
+    tags: stringArrayProperty(),
+    tier: tierProperty(),
+  };
+}
+
+function searchProperties(): Record<string, unknown> {
+  return {
+    query: stringProperty(),
+    scopes: {
+      type: "array",
+      items: scopeProperty(),
+    },
+    owner_ids: stringArrayProperty(),
+    sources: {
+      type: "array",
+      items: {
+        type: "string",
+        enum: ["documents", "memories"],
+      },
+    },
+    tags: stringArrayProperty(),
+    limit: {
+      type: "integer",
+      minimum: 1,
+    },
+  };
+}
+
+function memoryStatsProperties(): Record<string, unknown> {
+  return {
+    scope: scopeProperty(),
+    owner_id: stringProperty(),
+  };
+}
+
+function writableScopes(): McpScope[] {
+  return ["bot", "user", "session"];
+}
+
+function readableScopes(): McpScope[] {
+  return ["system", "shared", "bot", "user", "session"];
+}
+
+function scopeProperty(): Record<string, unknown> {
+  return {
+    type: "string",
+    enum: ["system", "shared", "bot", "user", "session"],
+  };
+}
+
+function tierProperty(): Record<string, unknown> {
+  return {
+    type: "string",
+    enum: ["core", "reference", "temp"],
+  };
+}
+
+function stringArrayProperty(): Record<string, unknown> {
+  return {
+    type: "array",
+    items: stringProperty(),
+  };
+}
+
+function stringProperty(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "string",
+    ...extra,
+  };
 }
 
 function assertDocumentWritePermission(

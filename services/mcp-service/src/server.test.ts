@@ -62,6 +62,41 @@ describe("mcp-service server", () => {
     });
   });
 
+  it("lists MCP tools for a valid MCP session", async () => {
+    const server = createMcpServiceServer({
+      runnerSecret,
+      allowedDirectoryRefs: {
+        "knowledge-base": "/data/knowledge",
+      },
+    });
+    const token = signRunnerToken(runnerSecret, {
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      runtime: "kiro",
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/mcp/bots/prd-bot/sessions/conv-1/tools", {
+        headers: {
+          "x-runner-token": token,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      version: number;
+      directory_refs: string[];
+      tools: Array<{ name: string }>;
+    };
+    expect(body.version).toBe(1);
+    expect(body.directory_refs).toEqual(["knowledge-base"]);
+    expect(body.tools).toContainEqual(expect.objectContaining({
+      name: "document.create",
+    }));
+  });
+
   it("rejects a runner token for a different MCP session", async () => {
     const server = createMcpServiceServer({ runnerSecret });
     const token = signRunnerToken(runnerSecret, {

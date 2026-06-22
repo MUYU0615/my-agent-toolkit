@@ -4,7 +4,7 @@ import {
   createMemoryBackendClient,
   type MemoryBackendClient,
 } from "./memoryBackendClient.js";
-import { callMcpTool } from "./tools.js";
+import { callMcpTool, listMcpTools } from "./tools.js";
 
 export type McpMemoryBackendDependency = Pick<
   MemoryBackendClient,
@@ -56,6 +56,18 @@ export function createMcpServiceServer(
         );
       }
 
+      const toolsListRoute = url.pathname.match(
+        /^\/mcp\/bots\/([^/]+)\/sessions\/([^/]+)\/tools$/,
+      );
+      if (request.method === "GET" && toolsListRoute) {
+        return handleListTools(
+          request,
+          config,
+          decodeURIComponent(toolsListRoute[1]),
+          decodeURIComponent(toolsListRoute[2]),
+        );
+      }
+
       const toolRoute = url.pathname.match(
         /^\/mcp\/bots\/([^/]+)\/sessions\/([^/]+)\/tools\/call$/,
       );
@@ -73,6 +85,21 @@ export function createMcpServiceServer(
       return jsonResponse({ error: "not found" }, 404);
     },
   };
+}
+
+function handleListTools(
+  request: Request,
+  config: McpServiceConfig,
+  botId: string,
+  conversationId: string,
+): Response {
+  const context = authenticateRequest(request, config, botId, conversationId);
+  if (context instanceof Response) {
+    return context;
+  }
+  return jsonResponse(listMcpTools({
+    allowedDirectoryRefs: config.allowedDirectoryRefs ?? {},
+  }));
 }
 
 function handleGetContext(

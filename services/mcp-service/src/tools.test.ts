@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { TrustedMcpContext } from "@my-agent-toolkit/contracts";
-import { callMcpTool, type McpToolDependencies } from "./tools.js";
+import {
+  callMcpTool,
+  listMcpTools,
+  type McpToolDependencies,
+} from "./tools.js";
 
 describe("document MCP tools", () => {
   const context: TrustedMcpContext = {
@@ -813,6 +817,53 @@ describe("document MCP tools", () => {
       ok: true,
       result: {
         deleted: "mem-1",
+      },
+    });
+  });
+});
+
+describe("MCP tool discovery", () => {
+  it("lists available tools with schemas and directory ref names", () => {
+    const manifest = listMcpTools({
+      allowedDirectoryRefs: {
+        "knowledge-base": "/data/knowledge",
+        prd: "/data/prd",
+      },
+    });
+
+    expect(manifest.version).toBe(1);
+    expect(manifest.directory_refs).toEqual(["knowledge-base", "prd"]);
+    expect(manifest.tools.map((tool) => tool.name)).toEqual([
+      "document.create",
+      "document.ingest_file",
+      "document.ingest_url",
+      "document.scan",
+      "memory.write",
+      "memory.ingest_file",
+      "memory.ingest_url",
+      "memory.scan",
+      "memory.delete",
+      "memory.search",
+      "memory.stats",
+      "search.query",
+    ]);
+    expect(manifest.tools.find((tool) => tool.name === "document.create")).toMatchObject({
+      category: "document",
+      permissions: {
+        writes: ["bot", "user", "session"],
+        reads: [],
+      },
+      input_schema: {
+        required: ["scope", "owner_id", "title", "doc_type", "content"],
+      },
+    });
+    expect(manifest.tools.find((tool) => tool.name === "document.scan")).toMatchObject({
+      input_schema: {
+        properties: {
+          directory_ref: {
+            enum: ["knowledge-base", "prd"],
+          },
+        },
       },
     });
   });
