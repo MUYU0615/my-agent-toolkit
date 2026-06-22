@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { TrustedMcpContext } from "@my-agent-toolkit/contracts";
+import {
+  buildDefaultMcpCapabilityConfig,
+  type TrustedMcpContext,
+} from "@my-agent-toolkit/contracts";
 import {
   callMcpTool,
   listMcpTools,
@@ -389,6 +392,42 @@ describe("document MCP tools", () => {
     });
   });
 
+  it("rejects document writes outside bot capability writable scopes", async () => {
+    let called = false;
+    const deps = createNoopDeps();
+    deps.capabilityConfig = {
+      ...buildDefaultMcpCapabilityConfig(),
+      documents: {
+        enabled: true,
+        writable_scopes: ["user"],
+      },
+    };
+    deps.dataClient.createDocument = async () => {
+      called = true;
+      return {};
+    };
+
+    const result = await callMcpTool(context, deps, {
+      tool: "document.create",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        title: "语音转文字 API PRD",
+        doc_type: "prd",
+        content: "# PRD",
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "permission_denied",
+        message: "document writes to scope are disabled by bot capability config: bot",
+      },
+    });
+    expect(called).toBe(false);
+  });
+
   it("returns unsupported tool errors", async () => {
     const deps: McpToolDependencies = {
       dataClient: {
@@ -511,6 +550,46 @@ describe("document MCP tools", () => {
     });
   });
 
+  it("rejects memory writes outside bot capability writable scopes", async () => {
+    const calls: string[] = [];
+    const deps = createNoopDeps({
+      async storeMemory() {
+        calls.push("backend");
+        return {};
+      },
+    });
+    deps.capabilityConfig = {
+      ...buildDefaultMcpCapabilityConfig(),
+      memory: {
+        enabled: true,
+        readable_scopes: ["bot"],
+        writable_scopes: ["session"],
+      },
+    };
+    deps.dataClient.createMemory = async () => {
+      calls.push("data");
+      return {};
+    };
+
+    const result = await callMcpTool(context, deps, {
+      tool: "memory.write",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        content: "not allowed",
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "permission_denied",
+        message: "memory writes to scope are disabled by bot capability config: bot",
+      },
+    });
+    expect(calls).toEqual([]);
+  });
+
   it("searches memory through memory backend", async () => {
     const deps: McpToolDependencies = {
       dataClient: {
@@ -580,6 +659,42 @@ describe("document MCP tools", () => {
         ],
       },
     });
+  });
+
+  it("rejects memory reads outside bot capability readable scopes", async () => {
+    let called = false;
+    const deps = createNoopDeps({
+      async search() {
+        called = true;
+        return { results: [] };
+      },
+    });
+    deps.capabilityConfig = {
+      ...buildDefaultMcpCapabilityConfig(),
+      memory: {
+        enabled: true,
+        readable_scopes: ["bot"],
+        writable_scopes: ["bot"],
+      },
+    };
+
+    const result = await callMcpTool(context, deps, {
+      tool: "memory.search",
+      input: {
+        query: "PRD",
+        scopes: ["user"],
+        owner_ids: ["user-a"],
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        code: "permission_denied",
+        message: "memory reads from scope are disabled by bot capability config: user",
+      },
+    });
+    expect(called).toBe(false);
   });
 
   it("returns memory stats from data-service", async () => {

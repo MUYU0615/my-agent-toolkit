@@ -158,6 +158,7 @@ async function handleToolCall(
         config.allowedDirectoryRefs ?? {},
         capabilityConfig.directory_refs,
       ),
+      capabilityConfig,
     }, toolCall));
   } catch (error) {
     return mcpErrorResponse(

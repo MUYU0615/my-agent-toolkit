@@ -3,6 +3,7 @@ import {
   parseMcpScope,
   parseMcpTier,
   type DocumentCreateInput,
+  type McpCapabilityConfig,
   type McpScope,
   type McpTier,
   type TrustedMcpContext,
@@ -20,6 +21,7 @@ export interface McpToolDependencies {
   memoryBackend: Pick<MemoryBackendClient, "storeMemory" | "search"> &
     Partial<Pick<MemoryBackendClient, "ingestFile" | "fetchUrl" | "scanDirectory" | "deleteMemory">>;
   allowedDirectoryRefs?: Record<string, string>;
+  capabilityConfig?: McpCapabilityConfig;
 }
 
 export type McpToolResult =
@@ -178,6 +180,7 @@ export async function callMcpTool(
     if (call.tool === "document.create") {
       const input = parseDocumentCreateInput(call.input);
       assertDocumentWritePermission(context, input);
+      assertDocumentCapabilityWritePermission(deps, input.scope);
       return {
         ok: true,
         result: await deps.dataClient.createDocument(input),
@@ -187,6 +190,7 @@ export async function callMcpTool(
     if (call.tool === "document.ingest_file") {
       const input = parseDocumentIngestFileInput(call.input);
       assertDocumentWritePermission(context, input);
+      assertDocumentCapabilityWritePermission(deps, input.scope);
       const ingestFile = requireBackendMethod(deps.memoryBackend.ingestFile, "ingestFile");
       const document = await deps.dataClient.createDocument({
         scope: input.scope,
@@ -223,6 +227,7 @@ export async function callMcpTool(
     if (call.tool === "document.ingest_url") {
       const input = parseDocumentIngestUrlInput(call.input);
       assertScopedWritePermission(context, input);
+      assertDocumentCapabilityWritePermission(deps, input.scope);
       const fetchUrl = requireBackendMethod(deps.memoryBackend.fetchUrl, "fetchUrl");
       const document = await deps.dataClient.createDocument({
         scope: input.scope,
@@ -258,6 +263,7 @@ export async function callMcpTool(
     if (call.tool === "document.scan") {
       const input = parseDocumentScanInput(call.input);
       assertScopedWritePermission(context, input);
+      assertDocumentCapabilityWritePermission(deps, input.scope);
       const directory = deps.allowedDirectoryRefs?.[input.directory_ref];
       if (!directory) {
         throw new PermissionError("directory_ref is not authorized");
@@ -301,6 +307,7 @@ export async function callMcpTool(
     if (call.tool === "memory.write") {
       const input = parseMemoryWriteInput(call.input);
       assertScopedWritePermission(context, input);
+      assertMemoryCapabilityWritePermission(deps, input.scope);
       const memory = await deps.dataClient.createMemory({
         ...input,
         source_type: input.source_type ?? "text",
@@ -328,6 +335,7 @@ export async function callMcpTool(
     if (call.tool === "memory.search") {
       const input = parseSearchInput(call.input);
       assertScopedReadPermission(context, input);
+      assertMemoryCapabilityReadPermission(deps, input.scopes);
       return {
         ok: true,
         result: await deps.memoryBackend.search(input),
@@ -337,6 +345,9 @@ export async function callMcpTool(
     if (call.tool === "memory.stats") {
       const input = parseMemoryStatsInput(call.input);
       assertStatsPermission(context, input);
+      if (input.scope) {
+        assertMemoryCapabilityReadPermission(deps, [input.scope]);
+      }
       return {
         ok: true,
         result: await deps.dataClient.getMemoryStats(input),
@@ -346,6 +357,7 @@ export async function callMcpTool(
     if (call.tool === "memory.ingest_file") {
       const input = parseIngestFileInput(call.input);
       assertScopedWritePermission(context, input);
+      assertMemoryCapabilityWritePermission(deps, input.scope);
       const ingestFile = requireBackendMethod(deps.memoryBackend.ingestFile, "ingestFile");
       return {
         ok: true,
@@ -359,6 +371,7 @@ export async function callMcpTool(
     if (call.tool === "memory.ingest_url") {
       const input = parseFetchUrlInput(call.input);
       assertScopedWritePermission(context, input);
+      assertMemoryCapabilityWritePermission(deps, input.scope);
       const fetchUrl = requireBackendMethod(deps.memoryBackend.fetchUrl, "fetchUrl");
       return {
         ok: true,
@@ -372,6 +385,7 @@ export async function callMcpTool(
     if (call.tool === "memory.scan") {
       const input = parseScanInput(call.input);
       assertScopedWritePermission(context, input);
+      assertMemoryCapabilityWritePermission(deps, input.scope);
       const directory = deps.allowedDirectoryRefs?.[input.directory_ref];
       if (!directory) {
         throw new PermissionError("directory_ref is not authorized");
@@ -399,6 +413,7 @@ export async function callMcpTool(
     if (call.tool === "search.query") {
       const input = parseSearchInput(call.input);
       assertScopedReadPermission(context, input);
+      assertMemoryCapabilityReadPermission(deps, input.scopes);
       return {
         ok: true,
         result: await deps.memoryBackend.search(input),
@@ -574,6 +589,47 @@ function assertDocumentWritePermission(
   input: DocumentCreateInput,
 ): void {
   assertScopedWritePermission(context, input);
+}
+
+function assertDocumentCapabilityWritePermission(
+  deps: McpToolDependencies,
+  scope: McpScope,
+): void {
+  const allowed = deps.capabilityConfig?.documents.writable_scopes;
+  if (allowed && !allowed.includes(scope)) {
+    throw new PermissionError(
+      `document writes to scope are disabled by bot capability config: ${scope}`,
+    );
+  }
+}
+
+function assertMemoryCapabilityWritePermission(
+  deps: McpToolDependencies,
+  scope: McpScope,
+): void {
+  const allowed = deps.capabilityConfig?.memory.writable_scopes;
+  if (allowed && !allowed.includes(scope)) {
+    throw new PermissionError(
+      `memory writes to scope are disabled by bot capability config: ${scope}`,
+    );
+  }
+}
+
+function assertMemoryCapabilityReadPermission(
+  deps: McpToolDependencies,
+  scopes: McpScope[],
+): void {
+  const allowed = deps.capabilityConfig?.memory.readable_scopes;
+  if (!allowed) {
+    return;
+  }
+  for (const scope of scopes) {
+    if (!allowed.includes(scope)) {
+      throw new PermissionError(
+        `memory reads from scope are disabled by bot capability config: ${scope}`,
+      );
+    }
+  }
 }
 
 function assertScopedWritePermission(
