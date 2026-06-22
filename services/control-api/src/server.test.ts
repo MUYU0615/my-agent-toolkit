@@ -504,6 +504,9 @@ describe("control-api server", () => {
         if (request.method === "DELETE") {
           return Response.json({ bot_id: "prd-bot", runtime_enabled: false });
         }
+        if (request.url === "http://bot-host-real/internal/wecom-runtime/sync") {
+          return Response.json({ synced: true });
+        }
         return Response.json({ error: "unexpected" }, { status: 500 });
       },
     });
@@ -532,6 +535,7 @@ describe("control-api server", () => {
       "POST http://bot-host-real/internal/bots/prd-bot/initialization/restart",
       "POST http://log-service/v1/audit-events",
       "DELETE http://data-service/v1/bot-channels/wecom:prd-bot",
+      "POST http://bot-host-real/internal/wecom-runtime/sync",
       "POST http://log-service/v1/audit-events",
     ]);
   });

@@ -14,6 +14,7 @@ export interface BotHostServer {
 export interface BotHostWorker {
   start(): Promise<void>;
   stop(): void;
+  sync?(): Promise<void>;
   restartInitialization?(input: {
     botId: string;
     adminWeComUserId: string;
@@ -32,6 +33,9 @@ export interface BotHostServerConfig extends BotHostConfig {
       botId: string;
       adminWeComUserId: string;
     }): Promise<RestartInitializationResult>;
+  };
+  runtimeController?: {
+    sync(): Promise<void>;
   };
 }
 
@@ -108,6 +112,20 @@ export function createBotHostServer(config: BotHostServerConfig): BotHostServer 
 
       if (request.method === "POST" && url.pathname === "/v1/messages/wecom") {
         return handleWeComMessage(request, config);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/wecom-runtime/sync") {
+        if (!config.runtimeController) {
+          return jsonResponse({ error: "runtime controller is not configured" }, 503);
+        }
+        try {
+          await config.runtimeController.sync();
+          return jsonResponse({ synced: true });
+        } catch (error) {
+          return jsonResponse({
+            error: error instanceof Error ? error.message : "failed to sync runtime",
+          }, 500);
+        }
       }
 
       const restartInitializationMatch = url.pathname.match(
@@ -387,6 +405,9 @@ export function createBotHostSupervisor(
         entry.worker.stop();
       }
       workers.clear();
+    },
+    async sync() {
+      await sync();
     },
     async restartInitialization(input) {
       await sync();

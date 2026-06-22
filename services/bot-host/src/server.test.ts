@@ -769,6 +769,69 @@ describe("bot-host server", () => {
     ]);
   });
 
+  it("syncs supervised workers through the internal runtime endpoint", async () => {
+    let runtimeBots = [
+      {
+        bot_id: "prd-bot",
+        runtime: "mock" as const,
+        wecom_bot_id: "wecom-bot-a",
+        wecom_secret: "secret-a",
+      },
+    ];
+    const connected: string[] = [];
+    const disconnected: string[] = [];
+    const supervisor = createBotHostSupervisor({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      pollIntervalMs: 60_000,
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        if (request.url === "http://data-service/internal/wecom-runtime/bots") {
+          return Response.json(runtimeBots);
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+      createWeComClient(input) {
+        return {
+          async connect() {
+            connected.push(input.botId);
+          },
+          disconnect() {
+            disconnected.push(input.botId);
+          },
+          onMessage() {},
+          async sendText() {},
+        };
+      },
+    });
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async () => new Response("not used", { status: 500 }),
+      runtimeController: {
+        sync() {
+          return supervisor.sync!();
+        },
+      },
+    });
+
+    await supervisor.start();
+    runtimeBots = [];
+    const response = await server.fetch(
+      new Request("http://localhost/internal/wecom-runtime/sync", {
+        method: "POST",
+      }),
+    );
+    supervisor.stop();
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ synced: true });
+    expect(connected).toEqual(["wecom-bot-a"]);
+    expect(disconnected).toEqual(["wecom-bot-a"]);
+  });
+
   it("normalizes compact numeric choices and allows edits from the confirmation step", async () => {
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",

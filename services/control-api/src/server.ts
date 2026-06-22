@@ -62,17 +62,7 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         );
       }
       if (request.method === "DELETE" && channelRoute) {
-        return proxyJsonRequest(
-          request,
-          `${config.dataServiceUrl}/v1/bot-channels/wecom:${encodeURIComponent(channelRoute.botId)}`,
-          config,
-          {
-            action: "channel.delete",
-            targetType: "bot",
-            targetId: () => channelRoute.botId,
-            metadata: () => ({ channel_type: "wecom" }),
-          },
-        );
+        return handleDeleteBotChannel(request, config, channelRoute.botId);
       }
 
       const botMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)$/);
@@ -446,6 +436,43 @@ async function handleUpsertMemoryDocument(
   });
 }
 
+async function handleDeleteBotChannel(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  const response = await config.fetch(
+    new Request(`${config.dataServiceUrl}/v1/bot-channels/wecom:${encodeURIComponent(botId)}`, {
+      method: "DELETE",
+    }),
+  );
+  const responseText = await response.text();
+
+  if (response.ok) {
+    await syncWeComRuntime(config);
+    const body = parseJsonObject(await request.text());
+    const payload = parseJsonObject(responseText);
+    await recordAuditEvent(config, {
+      actor_id: readActorId(body),
+      action: "channel.delete",
+      target_type: "bot",
+      target_id: botId,
+      metadata: {
+        channel_type: "wecom",
+        runtime_enabled: payload.runtime_enabled,
+        runtime_status: payload.runtime_status,
+      },
+    });
+  }
+
+  return new Response(responseText, {
+    status: response.status,
+    headers: {
+      "content-type": response.headers.get("content-type") ?? "application/json",
+    },
+  });
+}
+
 async function handleRestartInitialization(
   config: ControlApiConfig,
   botId: string,
@@ -511,6 +538,20 @@ async function handleRestartInitialization(
       "content-type": triggerResponse.headers.get("content-type") ?? "application/json",
     },
   });
+}
+
+async function syncWeComRuntime(config: ControlApiConfig): Promise<void> {
+  if (!config.botHostUrl) {
+    return;
+  }
+  const response = await config.fetch(
+    new Request(`${config.botHostUrl}/internal/wecom-runtime/sync`, {
+      method: "POST",
+    }),
+  );
+  if (!response.ok) {
+    throw new Error("failed to sync wecom runtime");
+  }
 }
 
 async function recordAuditEvent(

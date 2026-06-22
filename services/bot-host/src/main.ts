@@ -34,6 +34,13 @@ const app = createBotHostServer({
       },
     }
     : undefined,
+  runtimeController: worker?.sync
+    ? {
+      sync() {
+        return worker.sync!();
+      },
+    }
+    : undefined,
 });
 
 const server = createServer(async (req, res) => {
