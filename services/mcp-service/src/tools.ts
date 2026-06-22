@@ -17,7 +17,9 @@ export interface McpToolCall {
 
 export interface McpToolDependencies {
   dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">;
-  memoryBackend: Pick<MemoryBackendClient, "storeMemory" | "search">;
+  memoryBackend: Pick<MemoryBackendClient, "storeMemory" | "search"> &
+    Partial<Pick<MemoryBackendClient, "ingestFile" | "fetchUrl" | "scanDirectory" | "deleteMemory">>;
+  allowedDirectoryRefs?: Record<string, string>;
 }
 
 export type McpToolResult =
@@ -93,6 +95,59 @@ export async function callMcpTool(
       };
     }
 
+    if (call.tool === "memory.ingest_file") {
+      const input = parseIngestFileInput(call.input);
+      assertScopedWritePermission(context, input);
+      const ingestFile = requireBackendMethod(deps.memoryBackend.ingestFile, "ingestFile");
+      return {
+        ok: true,
+        result: await ingestFile({
+          ...input,
+          source_kind: "memory",
+        }),
+      };
+    }
+
+    if (call.tool === "memory.ingest_url") {
+      const input = parseFetchUrlInput(call.input);
+      assertScopedWritePermission(context, input);
+      const fetchUrl = requireBackendMethod(deps.memoryBackend.fetchUrl, "fetchUrl");
+      return {
+        ok: true,
+        result: await fetchUrl({
+          ...input,
+          source_kind: "memory",
+        }),
+      };
+    }
+
+    if (call.tool === "memory.scan") {
+      const input = parseScanInput(call.input);
+      assertScopedWritePermission(context, input);
+      const directory = deps.allowedDirectoryRefs?.[input.directory_ref];
+      if (!directory) {
+        throw new PermissionError("directory_ref is not authorized");
+      }
+      const scanDirectory = requireBackendMethod(deps.memoryBackend.scanDirectory, "scanDirectory");
+      return {
+        ok: true,
+        result: await scanDirectory({
+          ...input,
+          directory,
+          source_kind: "memory",
+        }),
+      };
+    }
+
+    if (call.tool === "memory.delete") {
+      const input = parseDeleteInput(call.input);
+      const deleteMemory = requireBackendMethod(deps.memoryBackend.deleteMemory, "deleteMemory");
+      return {
+        ok: true,
+        result: await deleteMemory(input.memory_id),
+      };
+    }
+
     if (call.tool === "search.query") {
       const input = parseSearchInput(call.input);
       assertScopedReadPermission(context, input);
@@ -106,6 +161,16 @@ export async function callMcpTool(
   } catch (error) {
     return toolError(errorCodeFor(error), errorMessageFor(error));
   }
+}
+
+function requireBackendMethod<T>(
+  method: T | undefined,
+  name: string,
+): T {
+  if (!method) {
+    throw new StorageUnavailableError(`memory backend method is unavailable: ${name}`);
+  }
+  return method;
 }
 
 function assertDocumentWritePermission(
@@ -193,6 +258,35 @@ interface MemoryStatsInput {
   owner_id?: string;
 }
 
+interface IngestFileInput {
+  scope: McpScope;
+  owner_id: string;
+  filename: string;
+  content: string;
+  tags?: string[];
+  tier?: McpTier;
+}
+
+interface FetchUrlInput {
+  scope: McpScope;
+  owner_id: string;
+  url: string;
+  tags?: string[];
+  tier?: McpTier;
+}
+
+interface ScanInput {
+  scope: McpScope;
+  owner_id: string;
+  directory_ref: string;
+  tags?: string[];
+  tier?: McpTier;
+}
+
+interface DeleteInput {
+  memory_id: string;
+}
+
 function parseMemoryWriteInput(value: unknown): MemoryWriteInput {
   const record = requireRecord(value, "memory write input");
   return {
@@ -224,6 +318,47 @@ function parseMemoryStatsInput(value: unknown): MemoryStatsInput {
   return {
     ...(record.scope !== undefined ? { scope: parseMcpScope(record.scope) } : {}),
     ...(record.owner_id !== undefined ? { owner_id: readRequiredString(record, "owner_id") } : {}),
+  };
+}
+
+function parseIngestFileInput(value: unknown): IngestFileInput {
+  const record = requireRecord(value, "ingest file input");
+  return {
+    scope: parseMcpScope(record.scope),
+    owner_id: readRequiredString(record, "owner_id"),
+    filename: readRequiredString(record, "filename"),
+    content: readRequiredString(record, "content"),
+    ...(record.tags !== undefined ? { tags: parseStringArray(record.tags, "tags") } : {}),
+    ...(record.tier !== undefined ? { tier: parseMcpTier(record.tier) } : {}),
+  };
+}
+
+function parseFetchUrlInput(value: unknown): FetchUrlInput {
+  const record = requireRecord(value, "fetch url input");
+  return {
+    scope: parseMcpScope(record.scope),
+    owner_id: readRequiredString(record, "owner_id"),
+    url: readRequiredString(record, "url"),
+    ...(record.tags !== undefined ? { tags: parseStringArray(record.tags, "tags") } : {}),
+    ...(record.tier !== undefined ? { tier: parseMcpTier(record.tier) } : {}),
+  };
+}
+
+function parseScanInput(value: unknown): ScanInput {
+  const record = requireRecord(value, "scan input");
+  return {
+    scope: parseMcpScope(record.scope),
+    owner_id: readRequiredString(record, "owner_id"),
+    directory_ref: readRequiredString(record, "directory_ref"),
+    ...(record.tags !== undefined ? { tags: parseStringArray(record.tags, "tags") } : {}),
+    ...(record.tier !== undefined ? { tier: parseMcpTier(record.tier) } : {}),
+  };
+}
+
+function parseDeleteInput(value: unknown): DeleteInput {
+  const record = requireRecord(value, "delete input");
+  return {
+    memory_id: readRequiredString(record, "memory_id"),
   };
 }
 
@@ -302,6 +437,9 @@ function errorCodeFor(
   if (error instanceof PermissionError) {
     return "permission_denied";
   }
+  if (error instanceof StorageUnavailableError) {
+    return "storage_unavailable";
+  }
   return "validation_error";
 }
 
@@ -310,3 +448,4 @@ function errorMessageFor(error: unknown): string {
 }
 
 class PermissionError extends Error {}
+class StorageUnavailableError extends Error {}

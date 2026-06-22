@@ -1,9 +1,17 @@
 import { createServer } from "node:http";
-import { createMcpServiceServer } from "./server.js";
+import {
+  createMcpServiceServer,
+  parseAllowedDirectoryRefs,
+} from "./server.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8700", 10);
 const runnerSecret = process.env.MCP_RUNNER_SECRET ?? "";
-const app = createMcpServiceServer({ runnerSecret });
+const app = createMcpServiceServer({
+  runnerSecret,
+  dataServiceUrl: process.env.DATA_SERVICE_URL,
+  memoryBackendUrl: process.env.MEMORY_BACKEND_URL,
+  allowedDirectoryRefs: parseAllowedDirectoryRefs(process.env.MCP_ALLOWED_DIRECTORY_REFS ?? ""),
+});
 
 const server = createServer(async (req, res) => {
   const url = `http://${req.headers.host ?? `localhost:${port}`}${req.url ?? "/"}`;

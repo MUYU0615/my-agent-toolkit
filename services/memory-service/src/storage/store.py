@@ -50,6 +50,9 @@ class MemoryStorage:
             metadata={"hnsw:space": "cosine"}
         )
 
+    def scoped_namespace(self, scope: str, owner_id: str) -> str:
+        return f"{scope}__{owner_id}".replace("-", "_").replace(":", "_")
+
     def store(
         self,
         namespace: str,
@@ -67,7 +70,18 @@ class MemoryStorage:
         # Store vectors in ChromaDB
         col = self._collection(namespace)
         ids = [f"{memory_id}_chk{i}" for i in range(len(chunks))]
-        chunk_meta = [{"memory_id": memory_id, "chunk_index": i, "tier": tier} for i in range(len(chunks))]
+        chunk_meta = [
+            {
+                "memory_id": memory_id,
+                "chunk_index": i,
+                "tier": tier,
+                "scope": meta.get("scope", ""),
+                "owner_id": meta.get("owner_id", ""),
+                "source_kind": meta.get("source_kind", "memory"),
+                "source_id": meta.get("source_id", memory_id),
+            }
+            for i in range(len(chunks))
+        ]
         col.add(ids=ids, embeddings=embeddings, documents=chunks, metadatas=chunk_meta)
 
         # Store metadata in SQLite
@@ -79,6 +93,32 @@ class MemoryStorage:
         )
         self.db.commit()
         return memory_id
+
+    def store_scoped(
+        self,
+        scope: str,
+        owner_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        tier: str = "core",
+        tags: list[str] | None = None,
+        source: str = "text",
+        metadata: dict | None = None,
+    ) -> str:
+        scoped_metadata = {
+            **(metadata or {}),
+            "scope": scope,
+            "owner_id": owner_id,
+        }
+        return self.store(
+            namespace=self.scoped_namespace(scope, owner_id),
+            chunks=chunks,
+            embeddings=embeddings,
+            tier=tier,
+            tags=tags,
+            source=source,
+            metadata=scoped_metadata,
+        )
 
     def search(
         self,
@@ -128,6 +168,49 @@ class MemoryStorage:
             self.db.commit()
 
         return results[:limit]
+
+    def search_scoped(
+        self,
+        scopes: list[str],
+        owner_ids: list[str],
+        query_embedding: list[float],
+        limit: int = 5,
+        tags: list[str] | None = None,
+        sources: list[str] | None = None,
+    ) -> list[dict]:
+        results: list[dict] = []
+        for scope, owner_id in zip(scopes, owner_ids):
+            namespace = self.scoped_namespace(scope, owner_id)
+            scoped_results = self.search(
+                namespace=namespace,
+                query_embedding=query_embedding,
+                limit=limit,
+                tags=tags,
+                include_shared=False,
+            )
+            for result in scoped_results:
+                metadata = result.get("metadata", {}) or {}
+                if sources and metadata.get("source_kind") not in sources:
+                    continue
+                result["scope"] = scope
+                result["owner_id"] = owner_id
+                result["source"] = metadata.get("source_kind", "memory")
+                result["id"] = metadata.get("source_id") or metadata.get("memory_id") or result.get("chunk_id")
+                result["snippet"] = result.get("content", "")
+                results.append(result)
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return results[:limit]
+
+    def stats_scoped(self, scope: str | None = None, owner_id: str | None = None) -> dict:
+        if scope and owner_id:
+            return self.stats(self.scoped_namespace(scope, owner_id))
+        rows = self.db.execute(
+            "SELECT tier, COUNT(*) as cnt, SUM(chunks) as total_chunks FROM memories GROUP BY tier"
+        ).fetchall()
+        by_tier = {r["tier"]: {"memories": r["cnt"], "chunks": r["total_chunks"] or 0} for r in rows}
+        total = sum(v["memories"] for v in by_tier.values())
+        total_chunks = sum(v["chunks"] for v in by_tier.values())
+        return {"total_memories": total, "total_chunks": total_chunks, "by_tier": by_tier}
 
     def delete(self, memory_id: str) -> bool:
         row = self.db.execute("SELECT namespace, chunks FROM memories WHERE id = ?", (memory_id,)).fetchone()

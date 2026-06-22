@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { signRunnerToken } from "./context.js";
-import { createMcpServiceServer } from "./server.js";
+import {
+  createMcpServiceServer,
+  parseAllowedDirectoryRefs,
+} from "./server.js";
 
 describe("mcp-service server", () => {
   const runnerSecret = "test-runner-secret";
@@ -113,6 +116,18 @@ describe("mcp-service server", () => {
         async search() {
           return { results: [] };
         },
+        async ingestFile() {
+          return {};
+        },
+        async fetchUrl() {
+          return {};
+        },
+        async scanDirectory() {
+          return {};
+        },
+        async deleteMemory() {
+          return {};
+        },
       },
     });
     const token = signRunnerToken(runnerSecret, {
@@ -151,5 +166,87 @@ describe("mcp-service server", () => {
       },
     });
     expect(calls).toHaveLength(1);
+  });
+
+  it("passes configured directory refs to MCP tools", async () => {
+    const runnerSecret = "test-runner-secret";
+    const scanCalls: unknown[] = [];
+    const server = createMcpServiceServer({
+      runnerSecret,
+      allowedDirectoryRefs: {
+        "knowledge-base": "/data/knowledge",
+      },
+      dataClient: {
+        async createDocument() {
+          return {};
+        },
+        async createMemory() {
+          return {};
+        },
+        async getMemoryStats() {
+          return {};
+        },
+      },
+      memoryBackend: {
+        async storeMemory() {
+          return {};
+        },
+        async search() {
+          return { results: [] };
+        },
+        async ingestFile() {
+          return {};
+        },
+        async fetchUrl() {
+          return {};
+        },
+        async scanDirectory(input) {
+          scanCalls.push(input);
+          return { imported: 1 };
+        },
+        async deleteMemory() {
+          return {};
+        },
+      },
+    });
+    const token = signRunnerToken(runnerSecret, {
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      runtime: "kiro",
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/mcp/bots/prd-bot/sessions/conv-1/tools/call", {
+        method: "POST",
+        headers: {
+          "x-runner-token": token,
+        },
+        body: JSON.stringify({
+          tool: "memory.scan",
+          input: {
+            scope: "bot",
+            owner_id: "prd-bot",
+            directory_ref: "knowledge-base",
+          },
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(scanCalls).toEqual([
+      expect.objectContaining({
+        directory: "/data/knowledge",
+        scope: "bot",
+        owner_id: "prd-bot",
+      }),
+    ]);
+  });
+
+  it("parses allowed directory refs from env-style config", () => {
+    expect(parseAllowedDirectoryRefs("knowledge-base:/data/knowledge,prd:/data/prd")).toEqual({
+      "knowledge-base": "/data/knowledge",
+      prd: "/data/prd",
+    });
   });
 });

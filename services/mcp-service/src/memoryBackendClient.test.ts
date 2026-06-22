@@ -81,6 +81,80 @@ describe("memory backend client", () => {
       ],
     });
   });
+
+  it("ingests file references through the internal memory backend", async () => {
+    const client = createMemoryBackendClient({
+      baseUrl: "http://memory-service:8100",
+      fetch: async (url, init) => {
+        expect(String(url)).toBe("http://memory-service:8100/internal/v1/memories/ingest-file");
+        expect(init?.method).toBe("POST");
+        expect(init?.body).toBeInstanceOf(FormData);
+        return jsonResponse({
+          backend_memory_id: "mem-file",
+          chunks: 3,
+          filename: "guide.md",
+        }, 201);
+      },
+    });
+
+    await expect(client.ingestFile({
+      scope: "bot",
+      owner_id: "prd-bot",
+      filename: "guide.md",
+      content: "# Guide",
+      tags: ["guide"],
+      tier: "core",
+      source_kind: "memory",
+    })).resolves.toMatchObject({
+      backend_memory_id: "mem-file",
+      chunks: 3,
+    });
+  });
+
+  it("fetches urls scans directories and deletes backend memories", async () => {
+    const calls: string[] = [];
+    const client = createMemoryBackendClient({
+      baseUrl: "http://memory-service:8100",
+      fetch: async (url, init) => {
+        calls.push(`${init?.method ?? "GET"} ${String(url)}`);
+        if (String(url).endsWith("/fetch-url")) {
+          return jsonResponse({ backend_memory_id: "mem-url", chunks: 2 }, 201);
+        }
+        if (String(url).endsWith("/scan")) {
+          return jsonResponse({ scanned: 1, files: [] }, 201);
+        }
+        if (String(url).endsWith("/mem-1")) {
+          return jsonResponse({ deleted: "mem-1" });
+        }
+        return jsonResponse({}, 404);
+      },
+    });
+
+    await client.fetchUrl({
+      scope: "shared",
+      owner_id: "platform",
+      url: "https://example.com/policy",
+      tags: ["policy"],
+      tier: "reference",
+      source_kind: "memory",
+    });
+    await client.scanDirectory({
+      scope: "shared",
+      owner_id: "platform",
+      directory_ref: "knowledge-base",
+      directory: "/data/knowledge",
+      tags: ["kb"],
+      tier: "core",
+      source_kind: "memory",
+    });
+    await client.deleteMemory("mem-1");
+
+    expect(calls).toEqual([
+      "POST http://memory-service:8100/internal/v1/memories/fetch-url",
+      "POST http://memory-service:8100/internal/v1/memories/scan",
+      "DELETE http://memory-service:8100/internal/v1/memories/mem-1",
+    ]);
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

@@ -6,12 +6,18 @@ import {
 } from "./memoryBackendClient.js";
 import { callMcpTool } from "./tools.js";
 
+export type McpMemoryBackendDependency = Pick<
+  MemoryBackendClient,
+  "storeMemory" | "search" | "ingestFile" | "fetchUrl" | "scanDirectory" | "deleteMemory"
+>;
+
 export interface McpServiceConfig {
   runnerSecret: string;
   dataServiceUrl?: string;
   dataClient?: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">;
   memoryBackendUrl?: string;
-  memoryBackend?: Pick<MemoryBackendClient, "storeMemory" | "search">;
+  memoryBackend?: McpMemoryBackendDependency;
+  allowedDirectoryRefs?: Record<string, string>;
 }
 
 export interface McpServiceServer {
@@ -97,7 +103,7 @@ async function handleToolCall(
   request: Request,
   config: McpServiceConfig,
   dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">,
-  memoryBackend: Pick<MemoryBackendClient, "storeMemory" | "search">,
+  memoryBackend: McpMemoryBackendDependency,
   botId: string,
   conversationId: string,
 ): Promise<Response> {
@@ -109,6 +115,7 @@ async function handleToolCall(
     return jsonResponse(await callMcpTool(context, {
       dataClient,
       memoryBackend,
+      allowedDirectoryRefs: config.allowedDirectoryRefs ?? {},
     }, await request.json() as { tool: string; input: unknown }));
   } catch (error) {
     return mcpErrorResponse(
@@ -141,6 +148,26 @@ function authenticateRequest(
       403,
     );
   }
+}
+
+export function parseAllowedDirectoryRefs(value: string): Record<string, string> {
+  const refs: Record<string, string> = {};
+  for (const entry of value.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const separatorIndex = trimmed.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+      continue;
+    }
+    const key = trimmed.slice(0, separatorIndex).trim();
+    const path = trimmed.slice(separatorIndex + 1).trim();
+    if (key && path) {
+      refs[key] = path;
+    }
+  }
+  return refs;
 }
 
 function mcpErrorResponse(

@@ -471,9 +471,132 @@ describe("document MCP tools", () => {
       },
     });
   });
+
+  it("ingests files as memory through memory backend", async () => {
+    const deps = createNoopDeps({
+      async ingestFile(input) {
+        expect(input).toMatchObject({
+          scope: "bot",
+          owner_id: "prd-bot",
+          filename: "guide.md",
+          content: "# Guide",
+          source_kind: "memory",
+        });
+        return {
+          backend_memory_id: "mem-file",
+          chunks: 3,
+        };
+      },
+    });
+
+    const result = await callMcpTool(context, deps, {
+      tool: "memory.ingest_file",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        filename: "guide.md",
+        content: "# Guide",
+        tags: ["guide"],
+        tier: "core",
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: {
+        backend_memory_id: "mem-file",
+        chunks: 3,
+      },
+    });
+  });
+
+  it("fetches urls and scans authorized directories through memory backend", async () => {
+    const deps = createNoopDeps({
+      async fetchUrl(input) {
+        expect(input.url).toBe("https://example.com/policy");
+        return { backend_memory_id: "mem-url", chunks: 2 };
+      },
+      async scanDirectory(input) {
+        expect(input.directory_ref).toBe("knowledge-base");
+        expect(input.directory).toBe("/data/knowledge");
+        return { scanned: 1, files: [] };
+      },
+    }, {
+      "knowledge-base": "/data/knowledge",
+    });
+
+    await expect(callMcpTool(context, deps, {
+      tool: "memory.ingest_url",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        url: "https://example.com/policy",
+      },
+    })).resolves.toEqual({
+      ok: true,
+      result: {
+        backend_memory_id: "mem-url",
+        chunks: 2,
+      },
+    });
+
+    await expect(callMcpTool(context, deps, {
+      tool: "memory.scan",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        directory_ref: "knowledge-base",
+      },
+    })).resolves.toEqual({
+      ok: true,
+      result: {
+        scanned: 1,
+        files: [],
+      },
+    });
+  });
+
+  it("rejects unknown directory refs and deletes backend memory", async () => {
+    const deps = createNoopDeps({
+      async deleteMemory(memoryId) {
+        expect(memoryId).toBe("mem-1");
+        return { deleted: "mem-1" };
+      },
+    });
+
+    await expect(callMcpTool(context, deps, {
+      tool: "memory.scan",
+      input: {
+        scope: "bot",
+        owner_id: "prd-bot",
+        directory_ref: "missing",
+      },
+    })).resolves.toEqual({
+      ok: false,
+      error: {
+        code: "permission_denied",
+        message: "directory_ref is not authorized",
+      },
+    });
+
+    await expect(callMcpTool(context, deps, {
+      tool: "memory.delete",
+      input: {
+        memory_id: "mem-1",
+      },
+    })).resolves.toEqual({
+      ok: true,
+      result: {
+        deleted: "mem-1",
+      },
+    });
+  });
 });
 
-function createNoopDeps(): McpToolDependencies {
+function createNoopDeps(
+  memoryOverrides: Partial<McpToolDependencies["memoryBackend"]> = {},
+  allowedDirectoryRefs: Record<string, string> = {},
+): McpToolDependencies {
   return {
     dataClient: {
       async createDocument() {
@@ -493,6 +616,8 @@ function createNoopDeps(): McpToolDependencies {
       async search() {
         return { results: [] };
       },
+      ...memoryOverrides,
     },
+    allowedDirectoryRefs,
   };
 }
