@@ -49,7 +49,11 @@ describe("control-api server", () => {
     expect(html).toContain("复制认领命令");
     expect(html).toContain("已同步");
     expect(html).toContain("机器人配置");
+    expect(html).toContain("能力状态");
+    expect(html).toContain("MCP Tools");
+    expect(html).toContain("记忆索引");
     expect(html).toContain("config-status");
+    expect(html).toContain("capability_config");
     expect(html).toContain("最近更新");
     expect(html).toContain("Soul：机器人是谁，包括身份、性格、沟通风格、价值观和人格边界。");
     expect(html).toContain("Agents：机器人如何工作，包括能力范围、行为规则、任务流程、工具与文档规范。");
@@ -63,6 +67,7 @@ describe("control-api server", () => {
     expect(html).toContain("/admin/reset");
     expect(html).toContain("/v1/bot-channels");
     expect(html).toContain("/config-documents");
+    expect(html).toContain("/mcp-capabilities");
     expect(html).toContain("/initialization/restart");
     expect(html).toContain("setInterval");
     expect(html).not.toContain("模拟管理员启用");

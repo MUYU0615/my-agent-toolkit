@@ -882,6 +882,35 @@ function renderChannelWorkbenchPage(): string {
       font-size: 13px;
     }
     .config-note span { color: var(--muted); }
+    .capability-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .capability-card {
+      display: grid;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fbfcfd;
+      min-width: 0;
+    }
+    .capability-card strong { font-size: 13px; }
+    .capability-card span { color: var(--muted); font-size: 12px; word-break: break-word; }
+    .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 8px;
+      background: #fff;
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 650;
+    }
     .form-grid { display: grid; gap: 10px; }
     .row-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
     .empty { padding: 28px 16px; color: var(--muted); text-align: center; }
@@ -967,7 +996,7 @@ function renderChannelWorkbenchPage(): string {
     @media (max-width: 680px) {
       .top { align-items: flex-start; flex-direction: column; padding: 12px 0; }
       main { width: min(100vw - 20px, 1440px); }
-      .filters, .grid-2, .row-2, .config-note { grid-template-columns: 1fr; }
+      .filters, .grid-2, .row-2, .config-note, .capability-grid { grid-template-columns: 1fr; }
       .kv { grid-template-columns: 1fr; gap: 2px; }
     }
   </style>
@@ -1151,6 +1180,7 @@ function renderChannelWorkbenchPage(): string {
       const admin = detail.admin;
       const docs = detail.memory_documents || [];
       const configDocs = detail.config_documents || [];
+      const capabilities = detail.mcp_capabilities;
       const soul = configDocs.find((doc) => docTitle(doc) === "soul");
       const agents = configDocs.find((doc) => docTitle(doc) === "agents" || docTitle(doc) === "agents.md");
       const normalDocs = docs.filter((doc) => !isBotConfigDocument(doc));
@@ -1195,6 +1225,7 @@ function renderChannelWorkbenchPage(): string {
           configDocPreview("soul", soul),
           configDocPreview("agents.md", agents),
         ].join("")),
+        section("能力状态", renderCapabilities(capabilities)),
         section("文档", normalDocs.length ? normalDocs.map((doc) => docPreview(doc.title, doc)).join("") : '<div class="subtle">暂无普通文档。</div>'),
         sectionWithActions("危险操作", '<div class="subtle">删除 Channel 会清除企业微信 Bot ID 和 Secret，使 runtime 不再拉起该 Channel；不会删除 Bot、聊天记录、机器人配置或普通文档。</div>', '<button type="button" class="danger" data-action="delete-channel">删除 Channel</button>'),
       ].join("");
@@ -1232,6 +1263,42 @@ function renderChannelWorkbenchPage(): string {
         const kind = step.ok ? "ok" : "warn";
         return '<div class="timeline-step ' + kind + '"><span>' + (index + 1) + '</span><div><strong>' + escapeHtml(step.label) + '</strong><div class="subtle">' + escapeHtml(step.value) + '</div></div></div>';
       }).join("") + '</div>';
+    }
+
+    function renderCapabilities(capabilities) {
+      if (!capabilities) {
+        return '<div class="subtle">能力状态暂未加载。</div>';
+      }
+      const capability_config = capabilities.capability_config || {};
+      const memory = capabilities.memory || {};
+      const documents = capabilities.documents || {};
+      const tools = capability_config.tools?.enabled || [];
+      const readableScopes = capability_config.memory?.readable_scopes || [];
+      const writableScopes = capability_config.memory?.writable_scopes || [];
+      const directoryRefs = capability_config.directory_refs || [];
+      return [
+        '<div class="capability-grid">',
+          capabilityCard("MCP Tools", tools.length + " 个工具", tools.slice(0, 6).join("、") + (tools.length > 6 ? " 等" : "")),
+          capabilityCard("文档能力", documents.count + " 个普通文档", formatTypeStats(documents.by_type)),
+          capabilityCard("记忆索引", memory.memories + " 条记忆 / " + memory.chunks + " 个 chunk", "资产 " + memory.assets + "，记忆文档 " + memory.memory_documents),
+        '</div>',
+        '<div class="chip-list">',
+          '<span class="chip">读：' + escapeHtml(readableScopes.join(" / ") || "-") + '</span>',
+          '<span class="chip">写：' + escapeHtml(writableScopes.join(" / ") || "-") + '</span>',
+          '<span class="chip">目录：' + escapeHtml(directoryRefs.join(" / ") || "未授权") + '</span>',
+        '</div>',
+      ].join("");
+    }
+
+    function capabilityCard(title, value, detail) {
+      return '<div class="capability-card"><strong>' + escapeHtml(title) + '</strong><span>' + escapeHtml(value || "-") + '</span><span>' + escapeHtml(detail || "-") + '</span></div>';
+    }
+
+    function formatTypeStats(stats) {
+      if (!stats || Object.keys(stats).length === 0) return "暂无类型统计";
+      return Object.entries(stats)
+        .map(([type, count]) => type + " " + count)
+        .join("、");
     }
 
     function docPreview(label, doc) {
@@ -1289,7 +1356,13 @@ function renderChannelWorkbenchPage(): string {
       renderList();
       const detail = await requestJson("/v1/bot-channels/" + encodeURIComponent(channelId));
       if (detail?.bot?.bot_id) {
-        detail.config_documents = await requestJson("/v1/bots/" + encodeURIComponent(detail.bot.bot_id) + "/config-documents");
+        const botId = encodeURIComponent(detail.bot.bot_id);
+        const [configDocuments, mcpCapabilities] = await Promise.all([
+          requestJson("/v1/bots/" + botId + "/config-documents"),
+          requestJson("/v1/bots/" + botId + "/mcp-capabilities"),
+        ]);
+        detail.config_documents = configDocuments;
+        detail.mcp_capabilities = mcpCapabilities;
       }
       state.details.set(channelId, detail);
       renderDetail(detail);
