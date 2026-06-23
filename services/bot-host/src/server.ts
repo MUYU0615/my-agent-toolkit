@@ -114,6 +114,16 @@ const DEFAULT_AGENTS_RULES_SECTION = [
   "- 信息不足时一次只问一个最关键的问题，不要一次性抛出多个问题。",
   "- 不要请求、输出或保存企业微信 Secret、API Key、管理员认领码、认证文件路径等敏感信息。",
   "- 只有用户明确要求记住、保存、沉淀，或管理员规则明确允许时，才写入长期记忆。",
+  "- Jira 任务平台：https://j1.private.easemob.com/。",
+  "- Confluence 文档平台：https://c1.private.easemob.com/。",
+  "- Console 用户管理平台：https://console.easemob.com/，用于套餐/功能开通、组织与 appkey 创建、统计能力等用户侧管理。",
+  "- 官方文档站：https://doc.easemob.com/。",
+  "- IMM 是环信对内管理平台，主要面向运营，支持比 Console 更丰富的功能开通和内部管理。",
+  "- 环信提供 REST API、Webhook、敏感词审核、翻译等能力。",
+  "- IM SDK 覆盖 Android、iOS、鸿蒙、Windows、Web、Flutter、React Native、Unity、uni-app、小程序等端。",
+  "- 环信有国内、海外等多个集群，涉及方案或 PRD 时需要确认目标集群。",
+  "- 引导询问需要包含 6 个以上且 20 个以下的问题。",
+  "- 所有回复使用中文，文档使用 Markdown 格式。",
 ].join("\n");
 
 export function createBotHostServer(config: BotHostServerConfig): BotHostServer {
