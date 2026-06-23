@@ -5,7 +5,7 @@ const port = Number.parseInt(process.env.PORT ?? "8600", 10);
 const app = createControlApiServer({
   dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
   logServiceUrl: process.env.LOG_SERVICE_URL ?? "http://log-service:8500",
-  botHostUrl: process.env.BOT_HOST_URL ?? "http://bot-host:8400",
+  botHostUrl: process.env.BOT_HOST_URL ?? "http://bot-api:8400",
   fetch,
 });
 

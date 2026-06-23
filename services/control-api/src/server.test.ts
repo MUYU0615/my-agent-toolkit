@@ -93,7 +93,7 @@ describe("control-api server", () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
-      botHostUrl: "http://bot-host-real",
+      botHostUrl: "http://bot-api",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -150,7 +150,7 @@ describe("control-api server", () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
-      botHostUrl: "http://bot-host-real",
+      botHostUrl: "http://bot-api",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -474,7 +474,7 @@ describe("control-api server", () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
-      botHostUrl: "http://bot-host-real",
+      botHostUrl: "http://bot-api",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -491,7 +491,7 @@ describe("control-api server", () => {
         if (request.url.endsWith("/admin/reset")) {
           return Response.json({ bot_id: "prd-bot", code: "123456" }, { status: 201 });
         }
-        if (request.url === "http://bot-host-real/internal/bots/prd-bot/initialization/restart") {
+        if (request.url === "http://bot-api/internal/bots/prd-bot/initialization/restart") {
           return Response.json({
             bot_id: "prd-bot",
             admin_wecom_user_id: "admin-a",
@@ -504,7 +504,7 @@ describe("control-api server", () => {
         if (request.method === "DELETE") {
           return Response.json({ bot_id: "prd-bot", runtime_enabled: false });
         }
-        if (request.url === "http://bot-host-real/internal/wecom-runtime/sync") {
+        if (request.url === "http://bot-api/internal/wecom-runtime/sync") {
           return Response.json({ synced: true });
         }
         return Response.json({ error: "unexpected" }, { status: 500 });
@@ -532,20 +532,20 @@ describe("control-api server", () => {
       "POST http://log-service/v1/audit-events",
       "GET http://data-service/v1/bots/prd-bot/admin",
       "POST http://data-service/v1/bots/prd-bot/reset",
-      "POST http://bot-host-real/internal/bots/prd-bot/initialization/restart",
+      "POST http://bot-api/internal/bots/prd-bot/initialization/restart",
       "POST http://log-service/v1/audit-events",
       "DELETE http://data-service/v1/bot-channels/wecom:prd-bot",
-      "POST http://bot-host-real/internal/wecom-runtime/sync",
+      "POST http://bot-api/internal/wecom-runtime/sync",
       "POST http://log-service/v1/audit-events",
     ]);
   });
 
-  it("restarts initialization and asks bot-host to message the admin", async () => {
+  it("restarts initialization and asks bot-api to message the admin", async () => {
     const calls: Array<{ url: string; method: string; body?: unknown }> = [];
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
-      botHostUrl: "http://bot-host-real",
+      botHostUrl: "http://bot-api",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -562,7 +562,7 @@ describe("control-api server", () => {
         if (request.url === "http://data-service/v1/bots/prd-bot/reset") {
           return Response.json({ bot_id: "prd-bot", status: "initializing" });
         }
-        if (request.url === "http://bot-host-real/internal/bots/prd-bot/initialization/restart") {
+        if (request.url === "http://bot-api/internal/bots/prd-bot/initialization/restart") {
           return Response.json({
             bot_id: "prd-bot",
             admin_wecom_user_id: "admin-a",
@@ -598,7 +598,7 @@ describe("control-api server", () => {
         method: "POST",
       },
       {
-        url: "http://bot-host-real/internal/bots/prd-bot/initialization/restart",
+        url: "http://bot-api/internal/bots/prd-bot/initialization/restart",
         method: "POST",
         body: {
           admin_wecom_user_id: "admin-a",
@@ -621,12 +621,12 @@ describe("control-api server", () => {
     ]);
   });
 
-  it("proxies simulated wecom messages through bot-host", async () => {
+  it("proxies simulated wecom messages through bot-api", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
-      botHostUrl: "http://bot-host",
+      botHostUrl: "http://bot-api",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -660,7 +660,7 @@ describe("control-api server", () => {
     });
     expect(calls).toEqual([
       {
-        url: "http://bot-host/v1/messages/wecom",
+        url: "http://bot-api/v1/messages/wecom",
         body: {
           bot_id: "prd-bot",
           wecom_user_id: "admin-a",

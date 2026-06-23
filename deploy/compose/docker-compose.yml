@@ -7,7 +7,7 @@ services:
       PORT: "8600"
       DATA_SERVICE_URL: "http://data-service:8300"
       LOG_SERVICE_URL: "http://log-service:8500"
-      BOT_HOST_URL: "${BOT_HOST_URL:-http://bot-host:8400}"
+      BOT_HOST_URL: "${BOT_HOST_URL:-http://bot-api:8400}"
     ports:
       - "8600:8600"
     depends_on:
@@ -15,7 +15,7 @@ services:
         condition: service_healthy
       log-service:
         condition: service_healthy
-      bot-host:
+      bot-api:
         condition: service_healthy
     healthcheck:
       test:
@@ -30,10 +30,11 @@ services:
       retries: 5
       start_period: 5s
 
-  bot-host:
+  bot-api:
     build:
       context: ../..
       dockerfile: services/bot-host/Dockerfile
+    command: ["node", "services/bot-host/dist/botApiMain.js"]
     environment:
       PORT: "8400"
       DATA_SERVICE_URL: "http://data-service:8300"
@@ -61,12 +62,13 @@ services:
       retries: 5
       start_period: 5s
 
-  bot-host-real:
+  wecom-worker:
     profiles:
       - wecom
     build:
       context: ../..
       dockerfile: services/bot-host/Dockerfile
+    command: ["node", "services/bot-host/dist/wecomWorkerMain.js"]
     environment:
       PORT: "8401"
       WECOM_ENABLED: "true"

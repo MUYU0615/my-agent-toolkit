@@ -2,9 +2,9 @@
 
 这个目录用于在本机 Docker 中模拟平台容器化部署。
 
-默认启动的 `bot-host` 只提供 HTTP 模拟入口，不连接真实企业微信长连接。真实企业微信连接放在 `wecom` profile 下，避免本地开发、接口测试或重复启动时抢占线上长连接。
+默认启动拓扑包含 `control-api`、`bot-api`、`data-service`、`log-service`、`llm-runner`。其中 `bot-api` 只提供平台 HTTP API，不连接真实企业微信长连接。真实企业微信连接由 `wecom-worker` 承担，并放在 `wecom` profile 下，避免本地开发、接口测试或重复启动时抢占线上长连接。
 
-默认 `control-api` 会把消息转发到 `http://bot-host:8400`。如果需要让 WebUI 的“重置引导”等主动推送能力使用真实企业微信长连接 worker，启动时将 `BOT_HOST_URL` 覆盖为 `http://bot-host-real:8401`。
+默认 `control-api` 始终把平台请求转发到 `http://bot-api:8400`。`wecom-worker` 只负责企业微信长连接和 runtime sync，不作为 WebUI 的对外 API 入口。
 
 ## 启动基础服务
 
@@ -24,11 +24,12 @@ http://localhost:8600/
 curl http://localhost:8200/health
 curl http://localhost:8300/health
 curl http://localhost:8400/health
+curl http://localhost:8401/health
 curl http://localhost:8500/health
 curl http://localhost:8600/health
 ```
 
-## 启动真实企业微信 Bot Host
+## 启动真实企业微信 Worker
 
 先复制配置模板：
 
@@ -50,13 +51,13 @@ WECOM_SECRET=enterprise-wechat-secret
 启动真实长连接：
 
 ```bash
-BOT_HOST_URL=http://bot-host-real:8401 docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d control-api bot-host-real
+docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-worker
 ```
 
-检查真实 Bot Host：
+检查真实 Worker：
 
 ```bash
 curl http://localhost:8401/health
 ```
 
-注意：同一个企业微信 Bot ID 同时只应有一个长连接消费者。启动 `bot-host-real` 前，确认没有其他环境正在使用同一组企业微信凭证。
+注意：同一个企业微信 Bot ID 同时只应有一个长连接消费者。启动 `wecom-worker` 前，确认没有其他环境正在使用同一组企业微信凭证。
