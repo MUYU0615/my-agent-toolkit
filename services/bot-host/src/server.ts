@@ -1,7 +1,7 @@
 import {
+  applyAndConfirmPendingGeneratedDocuments,
   cancelPendingGeneratedDocuments,
   clearInitializationSession,
-  confirmPendingGeneratedDocuments,
   createPendingGeneratedDocument,
   getActiveInitializationSession,
   type InitializationSessionDto,
@@ -102,7 +102,6 @@ interface ConfigDocument {
 }
 
 interface GeneratedMarkdownDocument {
-  pending_id?: string;
   title: string;
   content: string;
 }
@@ -128,7 +127,6 @@ const MISSING_GENERATED_DOCUMENTS_MESSAGE = "初始化文档生成失败：没�
 const MISSING_SOUL_DOCUMENT_MESSAGE = "Soul 生成失败：没有生成 soul。请稍后重试或在 WebUI 重置引导。";
 const MISSING_AGENTS_DOCUMENT_MESSAGE = "工作方式生成失败：没有生成 agents.md。请稍后重试或在 WebUI 重置引导。";
 const INVALID_RUNTIME_OUTPUT_MESSAGE = "LLM 运行器没有生成有效回复，请稍后重试或检查 runtime 配置。";
-const PENDING_GENERATED_DOCUMENT_MARKER_DOC_TYPE = "pending_generated_document_marker";
 const WECOM_STREAM_REFRESH_INTERVAL_MS = 500;
 const DEFAULT_EASEMOB_BUSINESS_BACKGROUND = "环信是 IM 服务提供商，提供各种端的 SDK、REST API 等服务。";
 const DEFAULT_AGENTS_RULES_SECTION = [
@@ -1054,25 +1052,17 @@ async function handlePendingBusinessDocumentConfirmation(
     bot_id: input.bot_id,
     wecom_user_id: input.wecom_user_id,
     conversation_id: conversationId,
-  }))
-    .filter((document) => document.status === "pending")
-    .map((document) => ({
-      pending_id: document.pending_id,
-      title: document.title,
-      content: document.content,
-    }));
+  })).filter((document) => document.status === "pending");
   if (!documents || documents.length === 0) {
     return undefined;
   }
 
-  const saved = [];
-  for (const document of documents) {
-    saved.push(await saveBusinessDocument(config, input, document));
-  }
-  await confirmPendingGeneratedDocuments(config, {
+  const saved = await applyAndConfirmPendingGeneratedDocuments(config, {
     bot_id: input.bot_id,
     wecom_user_id: input.wecom_user_id,
     conversation_id: conversationId,
+    created_by_bot_id: input.bot_id,
+    created_by_user_id: input.wecom_user_id,
   });
 
   return {
@@ -1082,143 +1072,6 @@ async function handlePendingBusinessDocumentConfirmation(
       .map((document) => `已保存到长期文档存储：${document.title} v${document.version}。`)
       .join("\n"),
   };
-}
-
-async function saveBusinessDocument(
-  config: BotHostConfig,
-  input: WeComMessageInput,
-  document: GeneratedMarkdownDocument,
-): Promise<{ title: string; version: number }> {
-  const appliedMarker = document.pending_id
-    ? await findPendingGeneratedDocumentMarker(config, input.bot_id, document.pending_id)
-    : undefined;
-  if (appliedMarker) {
-    return {
-      title: document.title,
-      version: appliedMarker.applied_version,
-    };
-  }
-
-  const existing = await findExistingBusinessDocument(config, input.bot_id, document.title);
-  if (existing) {
-    const updated = await postJson<{ version: number }>(
-      config,
-      `${config.dataServiceUrl}/internal/documents/${encodeURIComponent(existing.document_id)}`,
-      {
-        content: document.content,
-        change_summary: "用户确认后更新文档",
-      },
-      "PATCH",
-    );
-    await createPendingGeneratedDocumentMarker(config, input, document, updated.version);
-    return {
-      title: document.title,
-      version: updated.version,
-    };
-  }
-
-  const created = await postJson<{ version: number }>(
-    config,
-    `${config.dataServiceUrl}/internal/documents`,
-    {
-      scope: "bot",
-      owner_id: input.bot_id,
-      title: document.title,
-      doc_type: "markdown",
-      content: document.content,
-      created_by_bot_id: input.bot_id,
-      created_by_user_id: input.wecom_user_id,
-      source_type: "document",
-      tags: ["generated", "pending-confirmed"],
-    },
-  );
-  await createPendingGeneratedDocumentMarker(config, input, document, created.version);
-  return {
-    title: document.title,
-    version: created.version,
-  };
-}
-
-async function findExistingBusinessDocument(
-  config: BotHostConfig,
-  botId: string,
-  title: string,
-): Promise<{ document_id: string } | undefined> {
-  const documents = await listBotOwnedBusinessDocuments(config, botId);
-  return documents.find((document) => document.title === title && document.doc_type !== PENDING_GENERATED_DOCUMENT_MARKER_DOC_TYPE);
-}
-
-async function findPendingGeneratedDocumentMarker(
-  config: BotHostConfig,
-  botId: string,
-  pendingId: string,
-): Promise<{ applied_version: number } | undefined> {
-  const markerTitle = pendingGeneratedDocumentMarkerTitle(pendingId);
-  const documents = await listBotOwnedBusinessDocuments(config, botId);
-  const marker = documents.find((document) =>
-    document.title === markerTitle && document.doc_type === PENDING_GENERATED_DOCUMENT_MARKER_DOC_TYPE
-  );
-  if (!marker) {
-    return undefined;
-  }
-  const appliedVersion = Number(
-    typeof marker.content === "string"
-      ? JSON.parse(marker.content).applied_version
-      : undefined,
-  );
-  if (!Number.isInteger(appliedVersion) || appliedVersion < 1) {
-    throw new Error(`invalid pending generated document marker: ${pendingId}`);
-  }
-  return { applied_version: appliedVersion };
-}
-
-async function createPendingGeneratedDocumentMarker(
-  config: BotHostConfig,
-  input: WeComMessageInput,
-  document: GeneratedMarkdownDocument,
-  appliedVersion: number,
-): Promise<void> {
-  if (!document.pending_id) {
-    return;
-  }
-  await postJson(
-    config,
-    `${config.dataServiceUrl}/internal/documents`,
-    {
-      scope: "bot",
-      owner_id: input.bot_id,
-      title: pendingGeneratedDocumentMarkerTitle(document.pending_id),
-      doc_type: PENDING_GENERATED_DOCUMENT_MARKER_DOC_TYPE,
-      content: JSON.stringify({
-        pending_id: document.pending_id,
-        target_title: document.title,
-        applied_version: appliedVersion,
-      }),
-      created_by_bot_id: input.bot_id,
-      created_by_user_id: input.wecom_user_id,
-      source_type: "document",
-      source_uri: pendingGeneratedDocumentMarkerSourceUri(document.pending_id),
-      tags: ["generated", "pending-confirmed", "idempotency-marker"],
-    },
-  );
-}
-
-async function listBotOwnedBusinessDocuments(
-  config: BotHostConfig,
-  botId: string,
-): Promise<Array<{ document_id: string; title: string; doc_type?: string; content?: string }>> {
-  return getJson(
-    config,
-    `${config.dataServiceUrl}/internal/documents?scope=bot&owner_id=${encodeURIComponent(botId)}`,
-  );
-}
-
-function pendingGeneratedDocumentMarkerTitle(pendingId: string): string {
-  return `_pending-generated-document-marker/${pendingId}.md`;
-}
-
-function pendingGeneratedDocumentMarkerSourceUri(pendingId: string): string {
-  return `pending-generated-document:${pendingId}`;
 }
 
 async function generateSoulFromWizardAnswers(

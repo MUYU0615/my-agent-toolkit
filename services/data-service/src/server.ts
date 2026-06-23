@@ -138,6 +138,13 @@ export function createDataServiceServer(
         return handleCancelPendingGeneratedDocuments(request, store);
       }
 
+      if (
+        request.method === "POST" &&
+        url.pathname === "/internal/pending-generated-documents/apply-and-confirm"
+      ) {
+        return handleApplyPendingGeneratedDocuments(request, store);
+      }
+
       if (request.method === "GET" && url.pathname === "/internal/memory-stats") {
         return handleGetMemoryStats(url, store);
       }
@@ -574,6 +581,17 @@ async function handleCancelPendingGeneratedDocuments(
 ): Promise<Response> {
   try {
     return jsonResponse(store.cancelPendingGeneratedDocuments(await request.json()));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleApplyPendingGeneratedDocuments(
+  request: Request,
+  store: DataStore,
+): Promise<Response> {
+  try {
+    return jsonResponse(store.applyPendingGeneratedDocuments(await request.json()));
   } catch (error) {
     return errorResponse(error);
   }

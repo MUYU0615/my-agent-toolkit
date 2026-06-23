@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createDataServiceServer } from "./server.js";
+import { createDataStore } from "./store.js";
 
 describe("data-service server", () => {
   it("responds to health checks", async () => {
@@ -1130,6 +1131,85 @@ describe("data-service server", () => {
         status: "cancelled",
       },
     ]);
+  });
+
+  it("applies and confirms pending generated documents over HTTP exactly once", async () => {
+    const server = createDataServiceServer(createDataStore());
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+        }),
+      }),
+    );
+
+    const firstCreate = await server.fetch(
+      new Request("http://localhost/internal/pending-generated-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          title: "prd/a.md",
+          content: "# A",
+          created_by_bot_id: "prd-bot",
+          created_by_user_id: "admin-a",
+        }),
+      }),
+    );
+    const first = await firstCreate.json() as { pending_id: string };
+
+    const secondCreate = await server.fetch(
+      new Request("http://localhost/internal/pending-generated-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          title: "prd/b.md",
+          content: "# B",
+          created_by_bot_id: "prd-bot",
+          created_by_user_id: "admin-a",
+        }),
+      }),
+    );
+    const second = await secondCreate.json() as { pending_id: string };
+
+    const applyResponse = await server.fetch(
+      new Request("http://localhost/internal/pending-generated-documents/apply-and-confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          created_by_bot_id: "prd-bot",
+          created_by_user_id: "admin-a",
+        }),
+      }),
+    );
+
+    expect(applyResponse.status).toBe(200);
+    await expect(applyResponse.json()).resolves.toEqual(expect.arrayContaining([
+      { pending_id: first.pending_id, title: "prd/a.md", version: 1 },
+      { pending_id: second.pending_id, title: "prd/b.md", version: 1 },
+    ]));
+
+    const repeatResponse = await server.fetch(
+      new Request("http://localhost/internal/pending-generated-documents/apply-and-confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          created_by_bot_id: "prd-bot",
+          created_by_user_id: "admin-a",
+        }),
+      }),
+    );
+    await expect(repeatResponse.json()).resolves.toEqual([]);
   });
 
   it("resets admin claim and bot initialization state over HTTP", async () => {

@@ -581,15 +581,11 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([]);
-        }
-
-        if (request.url === "http://data-service/internal/documents") {
-          return Response.json({
-            document_id: "doc-1",
-            version: 1,
-          }, { status: 201 });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm") {
+          pendingDocuments[0].status = "confirmed";
+          return Response.json([
+            { pending_id: pendingDocuments[0].pending_id, title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         return Response.json({ error: "unexpected" }, { status: 500 });
@@ -642,18 +638,14 @@ describe("bot-host server", () => {
         status: "confirmed",
       }),
     ]);
-    expect(calls.find((call) => call.url === "http://data-service/internal/documents")).toMatchObject({
+    expect(calls.find((call) => call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm")).toMatchObject({
       method: "POST",
       body: {
-        scope: "bot",
-        owner_id: "prd-bot",
-        title: "prd/asr-api.md",
-        doc_type: "markdown",
-        content: "# 语音转文字 API PRD\n## 背景\n提供 ASR 能力。",
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        conversation_id: "conv-1",
         created_by_bot_id: "prd-bot",
         created_by_user_id: "user-a",
-        source_type: "document",
-        tags: ["generated", "pending-confirmed"],
       },
     });
   });
@@ -716,29 +708,11 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm") {
+          pendingDocuments[0].status = "confirmed";
           return Response.json([
-            {
-              document_id: "doc-existing",
-              title: "prd/asr-api.md",
-              version: 1,
-              doc_type: "markdown",
-            },
+            { pending_id: pendingDocuments[0].pending_id, title: "prd/asr-api.md", version: 2 },
           ]);
-        }
-
-        if (request.url === "http://data-service/internal/documents/doc-existing") {
-          return Response.json({
-            document_id: "doc-existing",
-            version: 2,
-          });
-        }
-
-        if (request.url === "http://data-service/internal/documents" && request.method === "POST") {
-          return Response.json({
-            document_id: "marker-1",
-            version: 1,
-          }, { status: 201 });
         }
 
         return Response.json({ error: "unexpected" }, { status: 500 });
@@ -784,17 +758,16 @@ describe("bot-host server", () => {
         status: "confirmed",
       }),
     ]);
-    expect(calls.find((call) => call.url === "http://data-service/internal/documents/doc-existing")).toMatchObject({
-      method: "PATCH",
+    expect(calls.find((call) => call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm")).toMatchObject({
+      method: "POST",
       body: {
-        content: "# 语音转文字 API PRD\n第二版内容。",
-        change_summary: "用户确认后更新文档",
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        conversation_id: "conv-1",
+        created_by_bot_id: "prd-bot",
+        created_by_user_id: "user-a",
       },
     });
-    expect(calls.filter((call) =>
-      call.url === "http://data-service/internal/documents"
-      && (call.body as { doc_type?: string } | undefined)?.doc_type === "markdown"
-    )).toHaveLength(0);
   });
 
   it("confirms generated markdown documents from data-service state across bot-host instances", async () => {
@@ -858,15 +831,11 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([]);
-        }
-
-        if (request.url === "http://data-service/internal/documents") {
-          return Response.json({
-            document_id: "doc-1",
-            version: 1,
-          }, { status: 201 });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm") {
+          pendingDocuments[0].status = "confirmed";
+          return Response.json([
+            { pending_id: pendingDocuments[0].pending_id, title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         return Response.json({ error: "unexpected" }, { status: 500 });
@@ -924,7 +893,7 @@ describe("bot-host server", () => {
   it("keeps pending generated documents when business document save fails so confirm can retry", async () => {
     const pendingDocuments: MockPendingGeneratedDocument[] = [];
     const calls: Array<{ url: string; method: string; body: unknown }> = [];
-    let failCreate = true;
+    let failApply = true;
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
@@ -983,18 +952,14 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([]);
-        }
-
-        if (request.url === "http://data-service/internal/documents" && request.method === "POST") {
-          if (failCreate) {
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm" && request.method === "POST") {
+          if (failApply) {
             return Response.json({ error: "document store unavailable" }, { status: 503 });
           }
-          return Response.json({
-            document_id: "doc-1",
-            version: 1,
-          }, { status: 201 });
+          pendingDocuments[0].status = "confirmed";
+          return Response.json([
+            { pending_id: pendingDocuments[0].pending_id, title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
@@ -1023,7 +988,7 @@ describe("bot-host server", () => {
 
     expect(failedConfirm.status).toBe(400);
     await expect(failedConfirm.json()).resolves.toEqual({
-      error: "document store unavailable",
+      error: "failed to apply pending generated documents: 503 : document store unavailable",
     });
     expect(pendingDocuments).toEqual([
       expect.objectContaining({
@@ -1032,7 +997,7 @@ describe("bot-host server", () => {
       }),
     ]);
 
-    failCreate = false;
+    failApply = false;
 
     const retryConfirm = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
       method: "POST",
@@ -1056,7 +1021,7 @@ describe("bot-host server", () => {
         status: "confirmed",
       }),
     ]);
-    expect(calls.filter((call) => call.url === "http://data-service/internal/pending-generated-documents/confirm")).toHaveLength(1);
+    expect(calls.filter((call) => call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm")).toHaveLength(2);
   });
 
   it("replaces prior pending generated documents in the same conversation before saving new ones", async () => {
@@ -1122,22 +1087,15 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([]);
-        }
-
-        if (request.url === "http://data-service/internal/documents" && request.method === "POST") {
-          return Response.json({
-            document_id: "doc-1",
-            version: 1,
-          }, { status: 201 });
-        }
-
-        if (request.url === "http://data-service/internal/documents/doc-1" && request.method === "PATCH") {
-          return Response.json({
-            document_id: "doc-1",
-            version: 2,
-          });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm" && request.method === "POST") {
+          const currentPending = pendingDocuments.find((document) => document.status === "pending");
+          if (!currentPending) {
+            return Response.json([]);
+          }
+          currentPending.status = "confirmed";
+          return Response.json([
+            { pending_id: currentPending.pending_id, title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
@@ -1176,27 +1134,15 @@ describe("bot-host server", () => {
       run_id: expect.stringMatching(/^document_save_/),
       output: "已保存到长期文档存储：prd/asr-api.md v1。",
     });
-    expect(calls.filter((call) =>
-      call.url === "http://data-service/internal/documents"
-      && (call.body as { doc_type?: string } | undefined)?.doc_type === "markdown"
-    )).toHaveLength(1);
     expect(calls.find((call) =>
-      call.url === "http://data-service/internal/documents"
-      && (call.body as { doc_type?: string } | undefined)?.doc_type === "markdown"
+      call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm"
     )).toMatchObject({
       body: expect.objectContaining({
-        title: "prd/asr-api.md",
-        content: "# 同标题 PRD\n新内容。",
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        conversation_id: "conv-1",
       }),
     });
-    expect(calls).not.toContain(
-      expect.objectContaining({
-        url: "http://data-service/internal/documents",
-        body: expect.objectContaining({
-          content: "# 同标题 PRD\n旧内容。",
-        }),
-      }),
-    );
   });
 
   it("retries multi-document confirmation without creating an extra version for already-saved pending docs", async () => {
@@ -1224,10 +1170,8 @@ describe("bot-host server", () => {
         created_by_user_id: "user-a",
       },
     ];
-    const businessDocuments = new Map<string, { document_id: string; title: string; version: number; content: string }>();
-    const markerDocuments = new Map<string, { document_id: string; title: string; version: number; content: string; source_uri?: string }>();
     const calls: Array<{ url: string; method: string; body: unknown }> = [];
-    let doc2ShouldFail = true;
+    let applyAttempt = 0;
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
@@ -1274,54 +1218,18 @@ describe("bot-host server", () => {
           return Response.json([]);
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([
-            ...[...businessDocuments.values()].map(({ document_id, title, version }) => ({
-              document_id,
-              title,
-              version,
-              doc_type: "markdown",
-            })),
-            ...[...markerDocuments.values()].map(({ document_id, title, version, source_uri, content }) => ({
-              document_id,
-              title,
-              version,
-              doc_type: "pending_generated_document_marker",
-              source_uri,
-              content,
-            })),
-          ]);
-        }
-
-        if (request.url === "http://data-service/internal/documents" && request.method === "POST") {
-          const input = body as {
-            title: string;
-            content: string;
-            source_uri?: string;
-            doc_type: string;
-          };
-          if (input.doc_type === "markdown") {
-            if (input.title === "prd/doc-2.md" && doc2ShouldFail) {
-              return Response.json({ error: "document store unavailable" }, { status: 503 });
-            }
-            const document_id = `doc-${businessDocuments.size + 1}`;
-            businessDocuments.set(input.title, {
-              document_id,
-              title: input.title,
-              version: 1,
-              content: input.content,
-            });
-            return Response.json({ document_id, version: 1 }, { status: 201 });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm" && request.method === "POST") {
+          applyAttempt += 1;
+          if (applyAttempt === 1) {
+            return Response.json({ error: "document store unavailable" }, { status: 503 });
           }
-          const document_id = `marker-${markerDocuments.size + 1}`;
-          markerDocuments.set(input.title, {
-            document_id,
-            title: input.title,
-            version: 1,
-            content: input.content,
-            source_uri: input.source_uri,
+          pendingDocuments.forEach((document) => {
+            document.status = "confirmed";
           });
-          return Response.json({ document_id, version: 1 }, { status: 201 });
+          return Response.json([
+            { pending_id: "pending-1", title: "prd/doc-1.md", version: 1 },
+            { pending_id: "pending-2", title: "prd/doc-2.md", version: 1 },
+          ]);
         }
 
         return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
@@ -1339,13 +1247,10 @@ describe("bot-host server", () => {
     }));
 
     expect(firstConfirm.status).toBe(400);
-    await expect(firstConfirm.json()).resolves.toEqual({ error: "document store unavailable" });
-    expect(businessDocuments.get("prd/doc-1.md")).toMatchObject({ version: 1, content: "# 文档一\n第一次成功。" });
-    expect(businessDocuments.has("prd/doc-2.md")).toBe(false);
-    expect(markerDocuments.size).toBe(1);
+    await expect(firstConfirm.json()).resolves.toEqual({
+      error: "failed to apply pending generated documents: 503 : document store unavailable",
+    });
     expect(pendingDocuments.filter((document) => document.status === "pending")).toHaveLength(2);
-
-    doc2ShouldFail = false;
 
     const retryConfirm = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
       method: "POST",
@@ -1366,16 +1271,12 @@ describe("bot-host server", () => {
         "已保存到长期文档存储：prd/doc-2.md v1。",
       ].join("\n"),
     });
-    expect(businessDocuments.get("prd/doc-1.md")).toMatchObject({ version: 1, content: "# 文档一\n第一次成功。" });
-    expect(businessDocuments.get("prd/doc-2.md")).toMatchObject({ version: 1, content: "# 文档二\n第一次失败。" });
-    expect(markerDocuments.size).toBe(2);
     expect(calls.filter((call) =>
-      call.url === "http://data-service/internal/documents"
-      && (call.body as { title?: string } | undefined)?.title === "prd/doc-1.md"
-    )).toHaveLength(1);
+      call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm"
+    )).toHaveLength(2);
   });
 
-  it("does not create extra document versions when confirm state update fails after saves succeed", async () => {
+  it("does not create extra document versions when apply-and-confirm retries after an upstream failure", async () => {
     const pendingDocuments: MockPendingGeneratedDocument[] = [
       {
         pending_id: "pending-1",
@@ -1389,9 +1290,7 @@ describe("bot-host server", () => {
         created_by_user_id: "user-a",
       },
     ];
-    const businessDocuments = new Map<string, { document_id: string; title: string; version: number; content: string }>();
-    const markerDocuments = new Map<string, { document_id: string; title: string; version: number; content: string; source_uri?: string }>();
-    let confirmShouldFail = true;
+    let applyShouldFail = true;
     const calls: Array<{ url: string; method: string; body: unknown }> = [];
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
@@ -1405,8 +1304,14 @@ describe("bot-host server", () => {
           : undefined;
         calls.push({ url: request.url, method: request.method, body });
 
-        if (request.url === "http://data-service/internal/pending-generated-documents/confirm" && request.method === "POST" && confirmShouldFail) {
-          return Response.json({ error: "pending confirm unavailable" }, { status: 503 });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm" && request.method === "POST") {
+          if (applyShouldFail) {
+            return Response.json({ error: "apply pending generated documents unavailable" }, { status: 503 });
+          }
+          pendingDocuments[0].status = "confirmed";
+          return Response.json([
+            { pending_id: "pending-1", title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         const pendingGeneratedDocuments = mockPendingGeneratedDocumentsResponse(
@@ -1443,66 +1348,6 @@ describe("bot-host server", () => {
           return Response.json([]);
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([
-            ...[...businessDocuments.values()].map(({ document_id, title, version }) => ({
-              document_id,
-              title,
-              version,
-              doc_type: "markdown",
-            })),
-            ...[...markerDocuments.values()].map(({ document_id, title, version, source_uri, content }) => ({
-              document_id,
-              title,
-              version,
-              doc_type: "pending_generated_document_marker",
-              source_uri,
-              content,
-            })),
-          ]);
-        }
-
-        if (request.url === "http://data-service/internal/documents" && request.method === "POST") {
-          const input = body as {
-            title: string;
-            content: string;
-            source_uri?: string;
-            doc_type: string;
-          };
-          if (input.doc_type === "markdown") {
-            const document_id = businessDocuments.get(input.title)?.document_id ?? "doc-1";
-            const version = (businessDocuments.get(input.title)?.version ?? 0) + 1;
-            businessDocuments.set(input.title, {
-              document_id,
-              title: input.title,
-              version,
-              content: input.content,
-            });
-            return Response.json({ document_id, version }, { status: 201 });
-          }
-          const document_id = `marker-${markerDocuments.size + 1}`;
-          markerDocuments.set(input.title, {
-            document_id,
-            title: input.title,
-            version: 1,
-            content: input.content,
-            source_uri: input.source_uri,
-          });
-          return Response.json({ document_id, version: 1 }, { status: 201 });
-        }
-
-        if (request.url === "http://data-service/internal/documents/doc-1" && request.method === "PATCH") {
-          const current = businessDocuments.get("prd/asr-api.md");
-          const nextVersion = (current?.version ?? 0) + 1;
-          businessDocuments.set("prd/asr-api.md", {
-            document_id: "doc-1",
-            title: "prd/asr-api.md",
-            version: nextVersion,
-            content: (body as { content: string }).content,
-          });
-          return Response.json({ document_id: "doc-1", version: nextVersion });
-        }
-
         return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
       },
     });
@@ -1518,11 +1363,9 @@ describe("bot-host server", () => {
     }));
 
     expect(firstConfirm.status).toBe(400);
-    await expect(firstConfirm.json()).resolves.toEqual({ error: "failed to confirm pending generated documents: 503 : pending confirm unavailable" });
-    expect(businessDocuments.get("prd/asr-api.md")).toMatchObject({ version: 1, content: "# PRD\n确认状态失败后重试。" });
-    expect(markerDocuments.size).toBe(1);
+    await expect(firstConfirm.json()).resolves.toEqual({ error: "failed to apply pending generated documents: 503 : apply pending generated documents unavailable" });
 
-    confirmShouldFail = false;
+    applyShouldFail = false;
 
     const retryConfirm = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
       method: "POST",
@@ -1540,11 +1383,9 @@ describe("bot-host server", () => {
       run_id: expect.stringMatching(/^document_save_/),
       output: "已保存到长期文档存储：prd/asr-api.md v1。",
     });
-    expect(businessDocuments.get("prd/asr-api.md")).toMatchObject({ version: 1, content: "# PRD\n确认状态失败后重试。" });
     expect(calls.filter((call) =>
-      call.url === "http://data-service/internal/documents"
-      && (call.body as { title?: string } | undefined)?.title === "prd/asr-api.md"
-    )).toHaveLength(1);
+      call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm"
+    )).toHaveLength(2);
   });
 
   it("records successful chat events with memory refs", async () => {
@@ -3595,15 +3436,11 @@ describe("bot-host server", () => {
           });
         }
 
-        if (request.url === "http://data-service/internal/documents?scope=bot&owner_id=prd-bot") {
-          return Response.json([]);
-        }
-
-        if (request.url === "http://data-service/internal/documents") {
-          return Response.json({
-            document_id: "doc-1",
-            version: 1,
-          }, { status: 201 });
+        if (request.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm") {
+          pendingDocuments[0].status = "confirmed";
+          return Response.json([
+            { pending_id: pendingDocuments[0].pending_id, title: "prd/asr-api.md", version: 1 },
+          ]);
         }
 
         if (request.url === "http://log-service/v1/chat-events") {
@@ -3659,18 +3496,14 @@ describe("bot-host server", () => {
         status: "confirmed",
       }),
     ]);
-    expect(calls.find((call) => call.url === "http://data-service/internal/documents")).toMatchObject({
+    expect(calls.find((call) => call.url === "http://data-service/internal/pending-generated-documents/apply-and-confirm")).toMatchObject({
       method: "POST",
       body: {
-        scope: "bot",
-        owner_id: "prd-bot",
-        title: "prd/asr-api.md",
-        doc_type: "markdown",
-        content: "# ASR PRD\n内容。",
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        conversation_id: "conv-1",
         created_by_bot_id: "prd-bot",
         created_by_user_id: "user-a",
-        source_type: "document",
-        tags: ["generated", "pending-confirmed"],
       },
     });
   });

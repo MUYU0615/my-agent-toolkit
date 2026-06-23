@@ -147,6 +147,30 @@ export async function cancelPendingGeneratedDocuments(
   return await response.json() as PendingGeneratedDocumentDto[];
 }
 
+export async function applyAndConfirmPendingGeneratedDocuments(
+  config: BotHostConfig,
+  input: {
+    bot_id: string;
+    wecom_user_id: string;
+    conversation_id: string;
+    created_by_bot_id: string;
+    created_by_user_id: string;
+  },
+): Promise<Array<{ pending_id: string; title: string; version: number }>> {
+  const response = await config.fetch(
+    new Request(`${config.dataServiceUrl}/internal/pending-generated-documents/apply-and-confirm`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+  if (!response.ok) {
+    const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
+    throw new Error(buildPendingGeneratedDocumentError("apply pending generated documents", response, errorPayload(payload)));
+  }
+  return await response.json() as Array<{ pending_id: string; title: string; version: number }>;
+}
+
 function activeInitializationSessionUrl(
   config: BotHostConfig,
   input: { bot_id: string; wecom_user_id: string; conversation_id: string },

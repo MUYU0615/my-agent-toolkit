@@ -554,6 +554,62 @@ describe("data-service store", () => {
     })).toThrow("bot config documents must use /v1/bot-config-documents");
   });
 
+  it("atomically applies and confirms pending generated documents exactly once", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const first = store.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/a.md",
+      content: "# A",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+    const second = store.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/b.md",
+      content: "# B",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+
+    const applied = store.applyPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+
+    expect(applied).toEqual([
+      { pending_id: first.pending_id, title: "prd/a.md", version: 1 },
+      { pending_id: second.pending_id, title: "prd/b.md", version: 1 },
+    ]);
+    expect(store.listPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toEqual([]);
+    expect(store.listBusinessDocuments({
+      scope: "bot",
+      owner_id: "prd-bot",
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "prd/a.md", version: 1 }),
+      expect.objectContaining({ title: "prd/b.md", version: 1 }),
+    ]));
+    expect(store.applyPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    })).toEqual([]);
+  });
+
   it("stores memory metadata chunks assets and stats", () => {
     const store = createDataStore();
 

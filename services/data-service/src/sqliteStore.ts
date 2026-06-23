@@ -48,6 +48,8 @@ import {
   type MemoryStats,
   type MemoryStatsInput,
   type MemoryDocumentRecord,
+  type ApplyPendingGeneratedDocumentsInput,
+  type AppliedPendingGeneratedDocumentResult,
   type CreatePendingGeneratedDocumentInput,
   type PendingGeneratedDocumentQuery,
   type PendingGeneratedDocumentRecord,
@@ -370,6 +372,10 @@ export function createSqliteDataStore(
 
     cancelPendingGeneratedDocuments(input) {
       return updatePendingGeneratedDocuments(db, input, "cancelled");
+    },
+
+    applyPendingGeneratedDocuments(input) {
+      return applyPendingGeneratedDocuments(db, input);
     },
 
     upsertBotConfigDocument(input) {
@@ -1704,6 +1710,151 @@ function updatePendingGeneratedDocuments(
     }
   })();
   return updated;
+}
+
+function applyPendingGeneratedDocuments(
+  db: Database.Database,
+  input: ApplyPendingGeneratedDocumentsInput,
+): AppliedPendingGeneratedDocumentResult[] {
+  const query = normalizePendingGeneratedDocumentQuery(db, input);
+  const createdByBotId = requireText(input.created_by_bot_id, "created_by_bot_id");
+  const createdByUserId = requireText(input.created_by_user_id, "created_by_user_id");
+  const selectPending = db.prepare(
+    `
+      select *
+      from pending_generated_documents
+      where bot_id = ?
+        and wecom_user_id = ?
+        and conversation_id = ?
+        and status = 'pending'
+      order by created_at asc, pending_id asc
+    `,
+  );
+  const selectExistingDocument = db.prepare(
+    `
+      select document_id, title, version, updated_at
+      from business_documents
+      where scope = 'bot'
+        and owner_id = ?
+        and title = ?
+      order by created_at asc, document_id asc
+      limit 1
+    `,
+  );
+  const selectLatestVersion = db.prepare(
+    `
+      select content
+      from business_document_versions
+      where document_id = ?
+      order by version desc
+      limit 1
+    `,
+  );
+  const insertDocument = db.prepare(
+    `
+      insert into business_documents (
+        document_id, scope, owner_id, title, doc_type, visibility, tier,
+        source_type, source_uri, content_hash, created_by_bot_id, created_by_user_id,
+        version, created_at, updated_at, last_hit_at, hit_count, status
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+  );
+  const insertVersion = db.prepare(
+    `
+      insert into business_document_versions (
+        document_id, version, content, change_summary, created_at, chunk_count
+      ) values (?, ?, ?, ?, ?, ?)
+    `,
+  );
+  const insertTag = db.prepare(
+    "insert or ignore into business_document_tags (document_id, tag) values (?, ?)",
+  );
+  const updateDocument = db.prepare(
+    "update business_documents set version = ?, updated_at = ? where document_id = ?",
+  );
+  const confirmPending = db.prepare(
+    "update pending_generated_documents set status = 'confirmed', updated_at = ? where pending_id = ? and status = 'pending'",
+  );
+
+  return db.transaction(() => {
+    const pending = selectPending
+      .all(query.bot_id, query.wecom_user_id, query.conversation_id)
+      .map(mapPendingGeneratedDocumentRecord);
+    const saved: AppliedPendingGeneratedDocumentResult[] = [];
+
+    for (const pendingDocument of pending) {
+      const existing = selectExistingDocument.get(query.bot_id, pendingDocument.title) as
+        | { document_id: string; version: number; updated_at: string }
+        | undefined;
+
+      if (!existing) {
+        const now = new Date().toISOString();
+        const documentId = `doc_${crypto.randomUUID()}`;
+        insertDocument.run(
+          documentId,
+          "bot",
+          query.bot_id,
+          pendingDocument.title,
+          "markdown",
+          "bot",
+          "core",
+          "document",
+          null,
+          null,
+          createdByBotId,
+          createdByUserId,
+          1,
+          now,
+          now,
+          null,
+          0,
+          "active",
+        );
+        insertVersion.run(documentId, 1, pendingDocument.content, null, now, 0);
+        insertTag.run(documentId, "generated");
+        insertTag.run(documentId, "pending-confirmed");
+        saved.push({
+          pending_id: pendingDocument.pending_id,
+          title: pendingDocument.title,
+          version: 1,
+        });
+        continue;
+      }
+
+      const latest = selectLatestVersion.get(existing.document_id) as { content: string } | undefined;
+      if (latest?.content === pendingDocument.content) {
+        saved.push({
+          pending_id: pendingDocument.pending_id,
+          title: pendingDocument.title,
+          version: existing.version,
+        });
+        continue;
+      }
+
+      const now = nextIsoTimestamp(existing.updated_at);
+      const nextVersion = existing.version + 1;
+      insertVersion.run(
+        existing.document_id,
+        nextVersion,
+        pendingDocument.content,
+        "用户确认后更新文档",
+        now,
+        0,
+      );
+      updateDocument.run(nextVersion, now, existing.document_id);
+      saved.push({
+        pending_id: pendingDocument.pending_id,
+        title: pendingDocument.title,
+        version: nextVersion,
+      });
+    }
+
+    for (const pendingDocument of pending) {
+      confirmPending.run(nextIsoTimestamp(pendingDocument.updated_at), pendingDocument.pending_id);
+    }
+
+    return saved;
+  })();
 }
 
 function normalizePendingGeneratedDocumentQuery(

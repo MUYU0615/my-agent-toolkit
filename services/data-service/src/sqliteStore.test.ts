@@ -248,6 +248,64 @@ describe("sqlite data store", () => {
     third.close?.();
   });
 
+  it("applies pending generated documents atomically across sqlite store instances", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    const pendingA = first.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/a.md",
+      content: "# A",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+    const pendingB = first.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/b.md",
+      content: "# B",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.applyPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    })).toEqual([
+      { pending_id: pendingA.pending_id, title: "prd/a.md", version: 1 },
+      { pending_id: pendingB.pending_id, title: "prd/b.md", version: 1 },
+    ]);
+    second.close?.();
+
+    const third = createSqliteDataStore(dbPath);
+    expect(third.applyPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    })).toEqual([]);
+    expect(third.listBusinessDocuments({
+      scope: "bot",
+      owner_id: "prd-bot",
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "prd/a.md", version: 1 }),
+      expect.objectContaining({ title: "prd/b.md", version: 1 }),
+    ]));
+    third.close?.();
+  });
+
   it("rejects duplicate persisted wecom bot bindings", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);

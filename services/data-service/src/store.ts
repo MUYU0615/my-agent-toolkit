@@ -186,6 +186,17 @@ export interface PendingGeneratedDocumentQuery {
   conversation_id: string;
 }
 
+export interface ApplyPendingGeneratedDocumentsInput extends PendingGeneratedDocumentQuery {
+  created_by_bot_id: string;
+  created_by_user_id: string;
+}
+
+export interface AppliedPendingGeneratedDocumentResult {
+  pending_id: string;
+  title: string;
+  version: number;
+}
+
 export interface ResolveConversationInput {
   bot_id: string;
   wecom_user_id: string;
@@ -490,6 +501,9 @@ export interface DataStore {
   cancelPendingGeneratedDocuments(
     input: PendingGeneratedDocumentQuery,
   ): PendingGeneratedDocumentRecord[];
+  applyPendingGeneratedDocuments(
+    input: ApplyPendingGeneratedDocumentsInput,
+  ): AppliedPendingGeneratedDocumentResult[];
   upsertBotConfigDocument(input: UpsertBotConfigDocumentInput): BotConfigDocumentRecord;
   listBotConfigDocuments(botId: string): BotConfigDocumentRecord[];
   upsertMemoryDocument(input: UpsertMemoryDocumentInput): MemoryDocumentRecord;
@@ -987,6 +1001,106 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         query,
         "cancelled",
       );
+    },
+
+    applyPendingGeneratedDocuments(input) {
+      const query = normalizePendingGeneratedDocumentQuery(input, bots);
+      requireText(input.created_by_bot_id, "created_by_bot_id");
+      requireText(input.created_by_user_id, "created_by_user_id");
+      const pending = [...pendingGeneratedDocuments.values()]
+        .filter((document) => matchesPendingGeneratedDocumentQuery(document, query))
+        .sort(comparePendingGeneratedDocuments);
+      const saved: AppliedPendingGeneratedDocumentResult[] = [];
+
+      for (const pendingDocument of pending) {
+        const existing = [...businessDocuments.values()]
+          .filter((document) =>
+            document.scope === "bot" &&
+            document.owner_id === query.bot_id &&
+            document.title === pendingDocument.title &&
+            !isBotConfigDocumentTitle(document.title)
+          )
+          .sort((left, right) => left.created_at.localeCompare(right.created_at))[0];
+
+        if (!existing) {
+          const now = new Date().toISOString();
+          const created: BusinessDocumentRecord = {
+            document_id: `doc_${crypto.randomUUID()}`,
+            scope: "bot",
+            owner_id: query.bot_id,
+            title: pendingDocument.title,
+            doc_type: "markdown",
+            visibility: "bot",
+            tier: "core",
+            source_type: "document",
+            created_by_bot_id: input.created_by_bot_id,
+            created_by_user_id: input.created_by_user_id,
+            version: 1,
+            tags: ["generated", "pending-confirmed"],
+            created_at: now,
+            updated_at: now,
+            hit_count: 0,
+            status: "active",
+          };
+          const version: BusinessDocumentVersionRecord = {
+            document_id: created.document_id,
+            version: 1,
+            content: pendingDocument.content,
+            created_at: now,
+            chunk_count: 0,
+          };
+          businessDocuments.set(created.document_id, created);
+          businessDocumentVersions.set(created.document_id, [version]);
+          saved.push({
+            pending_id: pendingDocument.pending_id,
+            title: pendingDocument.title,
+            version: created.version,
+          });
+          continue;
+        }
+
+        const latestVersion = (businessDocumentVersions.get(existing.document_id) ?? []).at(-1);
+        if (latestVersion?.content === pendingDocument.content) {
+          saved.push({
+            pending_id: pendingDocument.pending_id,
+            title: pendingDocument.title,
+            version: existing.version,
+          });
+          continue;
+        }
+
+        const versions = businessDocumentVersions.get(existing.document_id) ?? [];
+        const now = nextIsoTimestamp(existing.updated_at);
+        const updated: BusinessDocumentVersionRecord = {
+          document_id: existing.document_id,
+          version: versions.length + 1,
+          content: pendingDocument.content,
+          change_summary: "用户确认后更新文档",
+          created_at: now,
+          chunk_count: 0,
+        };
+        businessDocumentVersions.set(existing.document_id, [...versions, updated]);
+        businessDocuments.set(existing.document_id, {
+          ...existing,
+          version: updated.version,
+          updated_at: now,
+        });
+        saved.push({
+          pending_id: pendingDocument.pending_id,
+          title: pendingDocument.title,
+          version: updated.version,
+        });
+      }
+
+      for (const pendingDocument of pending) {
+        pendingGeneratedDocuments.set(pendingDocument.pending_id, {
+          ...pendingDocument,
+          status: "confirmed",
+          updated_at: nextIsoTimestamp(pendingDocument.updated_at),
+        });
+      }
+
+      return saved;
     },
 
     upsertBotConfigDocument(input) {
