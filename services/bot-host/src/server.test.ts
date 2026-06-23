@@ -835,7 +835,6 @@ describe("bot-host server", () => {
       "1",
       "1",
       "1",
-      "环信，即时通讯云服务商，提供 IM SDK 和 REST API",
       "1",
       "1",
       "1",
@@ -864,13 +863,12 @@ describe("bot-host server", () => {
     expect(outputs).toEqual([
       "Soul 引导 2/3：你希望我的性格是什么样的？\n1. 冷静务实\n2. 严谨审慎\n3. 主动推进\n4. 友好耐心\n5. 其他，请直接说明\n\n回复编号或直接输入。",
       "Soul 引导 3/3：你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
-      "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n开始配置工作方式。\n\nAgents 引导 1/7：业务背景是什么？公司/团队是做什么的？\n1. 跳过，后续再补充\n2. 直接输入业务背景\n\n回复编号或直接输入。",
-      "Agents 引导 2/7：这个机器人只负责一类核心工作，你希望它的核心工作是什么？\n1. 撰写/维护 PRD\n2. 竞品分析\n3. 需求评审与拆解\n4. 用户故事编写\n5. 数据指标定义\n6. QA 测试\n7. 技术文档\n8. 项目管理\n9. 其他，请直接说明\n\n回复编号或直接输入。",
-      "Agents 引导 3/7：你希望它用什么方式和用户交互？\n1. 逐句引导，一次只问一个问题\n2. 批量引导，一次列出多个待确认项\n3. 先给推荐方案，再让用户确认\n4. 其他，请直接说明\n\n回复编号或直接输入。",
-      "Agents 引导 4/7：是否使用长期存储或长期记忆？\n1. 使用，确认后的业务规则和文档需要沉淀\n2. 不使用，只保留当前会话\n3. 待定\n\n回复编号或直接输入。",
-      "Agents 引导 5/7：是否需要保存它生成的文档？\n1. 需要，生成的 PRD/方案/纪要要保存\n2. 不需要，只在对话中输出\n3. 待定\n\n回复编号或直接输入。",
-      "Agents 引导 6/7：是否有固定 Skill / MCP / 工具约束？\n1. 跳过，暂不固定\n2. 直接输入 Skill / MCP / 工具约束\n\n回复编号或直接输入。",
-      "Agents 引导 7/7：有没有必须遵守的工作规则？\n1. 跳过，暂无额外规则\n2. 直接输入必须遵守的工作规则\n\n回复编号或直接输入。",
+      "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n开始配置工作方式。\n\nAgents 引导 1/6：这个机器人只负责一类核心工作，你希望它的核心工作是什么？\n1. 撰写/维护 PRD\n2. 竞品分析\n3. 需求评审与拆解\n4. 用户故事编写\n5. 数据指标定义\n6. QA 测试\n7. 技术文档\n8. 项目管理\n9. 其他，请直接说明\n\n回复编号或直接输入。",
+      "Agents 引导 2/6：你希望它用什么方式和用户交互？\n1. 逐句引导，一次只问一个问题\n2. 批量引导，一次列出多个待确认项\n3. 先给推荐方案，再让用户确认\n4. 其他，请直接说明\n\n回复编号或直接输入。",
+      "Agents 引导 3/6：是否使用长期存储或长期记忆？\n1. 使用，确认后的业务规则和文档需要沉淀\n2. 不使用，只保留当前会话\n3. 待定\n\n回复编号或直接输入。",
+      "Agents 引导 4/6：是否需要保存它生成的文档？\n1. 需要，生成的 PRD/方案/纪要要保存\n2. 不需要，只在对话中输出\n3. 待定\n\n回复编号或直接输入。",
+      "Agents 引导 5/6：是否有固定 Skill / MCP / 工具约束？\n1. 跳过，暂不固定\n2. 直接输入 Skill / MCP / 工具约束\n\n回复编号或直接输入。",
+      "Agents 引导 6/6：有没有必须遵守的工作规则？\n1. 跳过，暂无额外规则\n2. 直接输入必须遵守的工作规则\n\n回复编号或直接输入。",
       "工作方式配置已确认，正在生成 agents.md。\n\n初始化完成，可以开始工作。",
     ]);
     const llmCalls = calls.filter((call) => call.url === "http://llm-runner/v1/chat");
@@ -883,6 +881,7 @@ describe("bot-host server", () => {
     });
     expect((llmCalls[0].body as { prompt: string }).prompt).toContain("我是谁：产品经理助手");
     expect((llmCalls[1].body as { prompt: string }).prompt).toContain("核心工作：撰写/维护 PRD");
+    expect((llmCalls[1].body as { prompt: string }).prompt).toContain("业务背景：环信是 IM 服务提供商，提供各种端的 SDK、REST API 等服务");
     expect((llmCalls[1].body as { prompt: string }).prompt).toContain("不得要求用户使用组合格式一次回复多个确认项");
     expect(calls.filter((call) => call.url === "http://data-service/v1/bot-config-documents").map((call) => call.body)).toEqual([
       {
@@ -898,6 +897,7 @@ describe("bot-host server", () => {
           "核心工作：撰写/维护 PRD。PRD 交付前必须逐项确认 Console、IMM、计量计费；一次只能问一个确认项；不得要求用户使用 1a 2a 3a 这种组合格式。",
           "",
           "## 默认规则背景",
+          "- 环信是 IM 服务提供商，提供各种端的 SDK、REST API 等服务。",
           "- 默认使用中文回复，除非用户明确要求其他语言。",
           "- 优先遵守当前 bot 的 soul 与 agents.md；如有冲突，安全、合规和管理员规则优先。",
           "- 信息不足时一次只问一个最关键的问题，不要一次性抛出多个问题。",
@@ -1123,7 +1123,7 @@ describe("bot-host server", () => {
       },
     });
 
-    const messages = ["1", "1", "1", "环信，即时通讯运营商", "1,2", "1"];
+    const messages = ["1", "1", "1", "1,2", "1"];
     const outputs: string[] = [];
     for (const text of messages) {
       const response = await server.fetch(
@@ -1142,8 +1142,8 @@ describe("bot-host server", () => {
       outputs.push(payload.output);
     }
 
-    expect(outputs[4]).toBe("核心工作只能选择一个。请重新回复一个选项编号，或直接说明一个核心工作。");
-    expect(outputs[5]).toContain("Agents 引导 3/7：你希望它用什么方式和用户交互？");
+    expect(outputs[3]).toBe("核心工作只能选择一个。请重新回复一个选项编号，或直接说明一个核心工作。");
+    expect(outputs[4]).toContain("Agents 引导 2/6：你希望它用什么方式和用户交互？");
   });
 
   it("allows natural core work text that contains a slash", async () => {
@@ -1198,7 +1198,7 @@ describe("bot-host server", () => {
       },
     });
 
-    const messages = ["1", "1", "1", "环信，即时通讯运营商", "撰写/维护 PRD"];
+    const messages = ["1", "1", "1", "撰写/维护 PRD"];
     const outputs: string[] = [];
     for (const text of messages) {
       const response = await server.fetch(
@@ -1217,7 +1217,7 @@ describe("bot-host server", () => {
       outputs.push(payload.output);
     }
 
-    expect(outputs.at(-1)).toContain("Agents 引导 3/7：你希望它用什么方式和用户交互？");
+    expect(outputs.at(-1)).toContain("Agents 引导 2/6：你希望它用什么方式和用户交互？");
   });
 
   it("rejects placeholder initialization documents without marking ready", async () => {
@@ -1340,7 +1340,7 @@ describe("bot-host server", () => {
       },
     });
 
-    const messages = ["1", "1", "1", "背景", "1", "1", "1", "1", "跳过", "PRD 需要逐项确认 Console、IMM、计量计费"];
+    const messages = ["1", "1", "1", "1", "1", "1", "1", "跳过", "PRD 需要逐项确认 Console、IMM、计量计费"];
     let last: { output: string; ready?: boolean } | undefined;
     for (const text of messages) {
       const response = await server.fetch(
@@ -1394,7 +1394,8 @@ describe("bot-host server", () => {
     expect(agents).toContain("REST API、Webhook");
     expect(agents).toContain("引导询问需要包含 6 个以上且 20 个以下的问题");
     expect(agents).not.toContain("角色定位：");
-    expect(agents).toContain("业务背景：背景");
+    expect(agents).toContain("业务背景：环信是 IM 服务提供商，提供各种端的 SDK、REST API 等服务");
+    expect(agents).not.toContain("业务背景：背景");
     expect(calls.map((call) => call.url)).toContain("http://data-service/v1/bots/prd-bot/ready");
   });
 
@@ -2636,10 +2637,9 @@ describe("bot-host server", () => {
         text,
       });
     }
-    await waitForSentText("Agents 引导 1/7");
+    await waitForSentText("Agents 引导 1/6");
 
     for (const text of [
-      "环信，即时通讯云服务商，提供 IM SDK 和 REST API",
       "1",
       "1",
       "1",
@@ -2792,7 +2792,7 @@ describe("bot-host server", () => {
     await messageHandler?.({
       conversationId: "admin-a",
       userId: "admin-a",
-      text: "旧业务背景",
+      text: "旧角色",
     });
     expect(sent.at(-1)?.text).toContain("Soul 引导 2/3");
 
@@ -2805,7 +2805,7 @@ describe("bot-host server", () => {
     await messageHandler?.({
       conversationId: "admin-a",
       userId: "admin-a",
-      text: "新业务背景",
+      text: "新角色",
     });
     expect(sent.at(-1)?.text).toContain("Soul 引导 2/3");
   });
