@@ -1555,7 +1555,7 @@ function createPendingGeneratedDocument(
   const bot = getRequiredBot(db, input.bot_id);
   const now = new Date().toISOString();
   const record: PendingGeneratedDocumentRecord = {
-    pending_id: input.pending_id ?? `pending_${crypto.randomUUID()}`,
+    pending_id: `pending_${crypto.randomUUID()}`,
     bot_id: bot.bot_id,
     wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
     conversation_id: requireText(input.conversation_id, "conversation_id"),
@@ -1619,7 +1619,7 @@ function updatePendingGeneratedDocuments(
 ): PendingGeneratedDocumentRecord[] {
   const pending = listPendingGeneratedDocuments(db, input);
   const update = db.prepare(
-    "update pending_generated_documents set status = ?, updated_at = ? where pending_id = ?",
+    "update pending_generated_documents set status = ?, updated_at = ? where pending_id = ? and status = 'pending'",
   );
   const updated = pending.map((document) => ({
     ...document,

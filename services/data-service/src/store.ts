@@ -156,7 +156,6 @@ export interface PendingGeneratedDocumentRecord {
 }
 
 export interface CreatePendingGeneratedDocumentInput {
-  pending_id?: string;
   bot_id: string;
   wecom_user_id: string;
   conversation_id: string;
@@ -906,7 +905,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       const bot = getRequiredBot(bots, input.bot_id);
       const now = new Date().toISOString();
       const record: PendingGeneratedDocumentRecord = {
-        pending_id: input.pending_id ?? `pending_${crypto.randomUUID()}`,
+        pending_id: `pending_${crypto.randomUUID()}`,
         bot_id: bot.bot_id,
         wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
         conversation_id: requireText(input.conversation_id, "conversation_id"),

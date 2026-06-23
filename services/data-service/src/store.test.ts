@@ -333,6 +333,49 @@ describe("data-service store", () => {
     );
   });
 
+  it("generates pending ids instead of accepting caller supplied ids", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const first = store.createPendingGeneratedDocument({
+      pending_id: "pending_client_supplied",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "First PRD",
+      content: "# first",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    } as Parameters<typeof store.createPendingGeneratedDocument>[0] & {
+      pending_id: string;
+    });
+    const second = store.createPendingGeneratedDocument({
+      pending_id: "pending_client_supplied",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "Second PRD",
+      content: "# second",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    } as Parameters<typeof store.createPendingGeneratedDocument>[0] & {
+      pending_id: string;
+    });
+
+    expect(first.pending_id).toMatch(/^pending_/);
+    expect(second.pending_id).toMatch(/^pending_/);
+    expect(first.pending_id).not.toBe("pending_client_supplied");
+    expect(second.pending_id).not.toBe("pending_client_supplied");
+    expect(second.pending_id).not.toBe(first.pending_id);
+    const listed = store.listPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    });
+    expect(listed).toHaveLength(2);
+    expect(listed).toEqual(expect.arrayContaining([first, second]));
+  });
+
   it("creates versioned business documents and rejects bot config document titles", () => {
     const store = createDataStore();
 
