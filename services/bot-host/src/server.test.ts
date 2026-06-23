@@ -2226,6 +2226,71 @@ describe("bot-host server", () => {
     expect(sent.at(-1)?.text).toContain("Soul 引导 2/3");
   });
 
+  it("continues an in-memory initialization wizard before ready streaming", async () => {
+    const sent: Array<{ conversationId: string; text: string; finish?: boolean }> = [];
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "mock",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-chat",
+              purpose: "normal_chat",
+            },
+          });
+        }
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(conversationId, text, options) {
+          sent.push({ conversationId, text, finish: options?.finish });
+        },
+      },
+    });
+
+    await worker.start();
+    await worker.restartInitialization?.({
+      botId: "prd-bot",
+      adminWeComUserId: "admin-a",
+    });
+    sent.length = 0;
+
+    await messageHandler?.({
+      conversationId: "admin-a",
+      userId: "admin-a",
+      text: "产品经理",
+    });
+
+    expect(sent).toEqual([
+      {
+        conversationId: "admin-a",
+        text: "Soul 引导 2/3：你希望我的性格是什么样的？",
+        finish: undefined,
+      },
+    ]);
+  });
+
   it("supervises wecom workers from data-service runtime config", async () => {
     const connected: string[] = [];
     const disconnected: string[] = [];

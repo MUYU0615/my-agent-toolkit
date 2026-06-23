@@ -297,6 +297,9 @@ async function shouldStreamReply(
   if (parseClaimAdminCommand(input.text) || isMarkReadyCommand(input.text)) {
     return false;
   }
+  if (hasWizardStateForUser(input, config)) {
+    return false;
+  }
 
   try {
     const context = await resolveMessageContext(config, input);
@@ -509,7 +512,7 @@ async function processWeComMessage(
       throw new Error("conversation_id is required");
     }
 
-    if (context.reason === "initializing") {
+    if (context.reason === "initializing" || hasWizardStateForUser(input, config)) {
       return handleWizardMessage(input, config, context.conversation.conversation_id);
     }
 
@@ -561,13 +564,41 @@ function startInitializationWizard(
   ].join("\n");
 }
 
+function hasWizardStateForUser(
+  input: WeComMessageInput,
+  config: BotHostConfig,
+): boolean {
+  const prefix = `${input.bot_id}:${input.wecom_user_id}:`;
+  for (const key of getWizardStates(config).keys()) {
+    if (key.startsWith(prefix)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function findWizardKeyForUser(
+  input: WeComMessageInput,
+  config: BotHostConfig,
+): string | undefined {
+  const prefix = `${input.bot_id}:${input.wecom_user_id}:`;
+  for (const key of getWizardStates(config).keys()) {
+    if (key.startsWith(prefix)) {
+      return key;
+    }
+  }
+  return undefined;
+}
+
 async function handleWizardMessage(
   input: WeComMessageInput,
   config: BotHostConfig,
   conversationId: string,
 ): Promise<Record<string, unknown>> {
-  const key = wizardKey(input, conversationId);
   const wizardStates = getWizardStates(config);
+  const key = wizardStates.has(wizardKey(input, conversationId))
+    ? wizardKey(input, conversationId)
+    : findWizardKeyForUser(input, config) ?? wizardKey(input, conversationId);
   const state = wizardStates.get(key) ?? {
     phase: "soul" as const,
     soulAnswers: [],
