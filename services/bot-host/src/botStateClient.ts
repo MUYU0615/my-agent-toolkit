@@ -21,10 +21,11 @@ export async function getActiveInitializationSession(
     return undefined;
   }
 
-  const payload = await response.json() as InitializationSessionDto | null | { error?: string };
   if (!response.ok) {
+    const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
     throw new Error(buildInitializationSessionError("get active initialization session", response, errorPayload(payload)));
   }
+  const payload = await response.json() as InitializationSessionDto | null;
   return payload === null ? undefined : payload as InitializationSessionDto;
 }
 
@@ -39,10 +40,11 @@ export async function upsertInitializationSession(
       body: JSON.stringify(input),
     }),
   );
-  const payload = await response.json() as InitializationSessionDto | { error?: string };
   if (!response.ok) {
+    const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
     throw new Error(buildInitializationSessionError("upsert initialization session", response, errorPayload(payload)));
   }
+  const payload = await response.json() as InitializationSessionDto;
   return payload as InitializationSessionDto;
 }
 

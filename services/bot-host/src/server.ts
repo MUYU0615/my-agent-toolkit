@@ -114,6 +114,11 @@ interface WizardState {
   generationInProgress?: "soul" | "agents";
 }
 
+interface LoadedWizardState {
+  state: WizardState;
+  conversationId: string;
+}
+
 const pendingBusinessDocumentsByConfig = new WeakMap<BotHostConfig, Map<string, PendingBusinessDocument[]>>();
 const MISSING_GENERATED_DOCUMENTS_MESSAGE = "初始化文档生成失败：没有生成 soul 和 agents.md。请回复“确认”重新生成，或说明需要修改的配置。";
 const MISSING_SOUL_DOCUMENT_MESSAGE = "Soul 生成失败：没有生成 soul。请稍后重试或在 WebUI 重置引导。";
@@ -265,7 +270,16 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
           });
         return;
       }
-      const wizardGeneration = await beginWizardGenerationIfReady(messageInput, config);
+      let wizardGeneration: { notice: string; shouldProcess: boolean } | undefined;
+      try {
+        wizardGeneration = await beginWizardGenerationIfReady(messageInput, config);
+      } catch (_error) {
+        await config.wecomClient.sendText(
+          message.conversationId,
+          "初始化状态读取失败，请稍后重试。",
+        );
+        return;
+      }
       if (wizardGeneration) {
         await config.wecomClient.sendText(message.conversationId, wizardGeneration.notice);
         if (wizardGeneration.shouldProcess) {
@@ -286,17 +300,31 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
         }
         return;
       }
-      if (await shouldStreamReply(config, messageInput)) {
+      const wizardLookup = await shouldDeferStreamingForWizardState(config, messageInput);
+      if (wizardLookup.failed) {
+        await config.wecomClient.sendText(
+          message.conversationId,
+          "初始化状态读取失败，请稍后重试。",
+        );
+        return;
+      }
+      if (wizardLookup.hasWizardState) {
+        result = await processWeComMessage(
+          messageInput,
+          config,
+        );
+      } else if (await shouldStreamReply(config, messageInput)) {
         await config.wecomClient.sendText(message.conversationId, "正在思考...", {
           finish: false,
         });
         await streamAllowedWeComMessage(messageInput, config, message.conversationId);
         return;
+      } else {
+        result = await processWeComMessage(
+          messageInput,
+          config,
+        );
       }
-      result = await processWeComMessage(
-        messageInput,
-        config,
-      );
     } catch (error) {
       await config.wecomClient.sendText(
         message.conversationId,
@@ -363,15 +391,31 @@ async function shouldStreamReply(
 
   try {
     const context = await resolveMessageContext(config, input);
-    if (
-      context.reason === "ready"
-      && await hasWizardStateForUser(input, config, context.conversation?.conversation_id).catch(() => false)
-    ) {
-      return false;
-    }
     return context.allowed && context.reason === "ready";
   } catch (_error) {
     return false;
+  }
+}
+
+async function shouldDeferStreamingForWizardState(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+): Promise<{ failed: boolean; hasWizardState: boolean }> {
+  if (parseClaimAdminCommand(input.text) || isMarkReadyCommand(input.text)) {
+    return { failed: false, hasWizardState: false };
+  }
+
+  const context = await resolveMessageContext(config, input);
+  if (context.reason !== "ready") {
+    return { failed: false, hasWizardState: false };
+  }
+  try {
+    return {
+      failed: false,
+      hasWizardState: await hasWizardStateForUser(input, config, context.conversation?.conversation_id),
+    };
+  } catch (_error) {
+    return { failed: true, hasWizardState: false };
   }
 }
 
@@ -662,10 +706,15 @@ async function beginWizardGenerationIfReady(
   if (parseClaimAdminCommand(input.text) || isMarkReadyCommand(input.text)) {
     return undefined;
   }
-  const conversationId = await resolveWizardConversationId(config, input);
-  const state = conversationId
-    ? await loadWizardState(config, input, conversationId).catch(() => undefined)
+  const context = await resolveMessageContext(config, input);
+  if (context.reason !== "ready" && context.reason !== "initializing") {
+    return undefined;
+  }
+  const conversationId = context.conversation?.conversation_id ?? input.conversation_id;
+  const loaded = conversationId
+    ? await loadWizardState(config, input, conversationId)
     : undefined;
+  const state = loaded?.state;
   if (!state) {
     return undefined;
   }
@@ -693,7 +742,8 @@ async function clearWizardGenerationInProgress(
   config: BotHostConfig,
 ): Promise<void> {
   const conversationId = await resolveWizardConversationId(config, input);
-  const state = conversationId ? await loadWizardState(config, input, conversationId) : undefined;
+  const loaded = conversationId ? await loadWizardState(config, input, conversationId) : undefined;
+  const state = loaded?.state;
   if (state) {
     delete state.generationInProgress;
     await saveWizardState(config, input, conversationId, state);
@@ -705,11 +755,19 @@ async function handleWizardMessage(
   config: BotHostConfig,
   conversationId: string,
 ): Promise<Record<string, unknown>> {
-  const state = await loadWizardState(config, input, conversationId) ?? {
+  const loaded = await loadWizardState(config, input, conversationId);
+  const state = loaded?.state ?? {
     phase: "soul" as const,
     soulAnswers: [],
     agentsAnswers: [],
   };
+  if (loaded && loaded.conversationId !== conversationId) {
+    await clearInitializationSession(config, {
+      bot_id: input.bot_id,
+      wecom_user_id: input.wecom_user_id,
+      conversation_id: loaded.conversationId,
+    });
+  }
   const normalized = normalizeWizardAnswer(input.text);
 
   if (state.phase === "soul") {
@@ -796,7 +854,7 @@ async function loadWizardState(
   config: BotHostConfig,
   input: WeComMessageInput,
   conversationId: string,
-): Promise<WizardState | undefined> {
+): Promise<LoadedWizardState | undefined> {
   const candidateIds = wizardConversationCandidates(input, conversationId);
   for (const candidateId of candidateIds) {
     const session = await getActiveInitializationSession(config, {
@@ -805,7 +863,10 @@ async function loadWizardState(
       conversation_id: candidateId,
     });
     if (session) {
-      return wizardStateFromDto(session);
+      return {
+        state: wizardStateFromDto(session),
+        conversationId: candidateId,
+      };
     }
   }
   return undefined;

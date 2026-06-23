@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  getActiveInitializationSession,
+  upsertInitializationSession,
+} from "./botStateClient.js";
+import {
   createBotHostServer,
   createBotHostSupervisor,
   createBotHostWorker,
@@ -65,7 +69,53 @@ function initializationSessionKey(input: {
   return `${input.bot_id}:${input.wecom_user_id}:${input.conversation_id}`;
 }
 
+function noActiveInitializationSessionResponse(request: Request): Response | undefined {
+  const url = new URL(request.url);
+  if (
+    url.origin === "http://data-service"
+    && url.pathname === "/internal/initialization-sessions/active"
+    && request.method === "GET"
+  ) {
+    return Response.json(null);
+  }
+  return undefined;
+}
+
 describe("bot-host server", () => {
+  it("reports non-json initialization session lookup errors", async () => {
+    await expect(getActiveInitializationSession({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async () => new Response("upstream unavailable", {
+        status: 503,
+        statusText: "Service Unavailable",
+      }),
+    }, {
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-init",
+    })).rejects.toThrow("failed to get active initialization session: 503 Service Unavailable");
+  });
+
+  it("reports non-json initialization session upsert errors", async () => {
+    await expect(upsertInitializationSession({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async () => new Response("bad gateway", {
+        status: 502,
+        statusText: "Bad Gateway",
+      }),
+    }, {
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "pending",
+      phase: "soul",
+      soul_answers: [],
+      agents_answers: [],
+      status: "active",
+    })).rejects.toThrow("failed to upsert initialization session: 502 Bad Gateway");
+  });
+
   it("responds to health checks", async () => {
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
@@ -93,6 +143,10 @@ describe("bot-host server", () => {
         }
         const body = request.method === "POST" ? await request.json() : undefined;
         calls.push({ url: request.url, body });
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -192,6 +246,10 @@ describe("bot-host server", () => {
         }
         const body = request.method === "POST" ? await request.json() : undefined;
         calls.push({ url: request.url, body });
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -593,6 +651,10 @@ describe("bot-host server", () => {
         }
         const body = request.method === "POST" ? await request.json() : undefined;
         calls.push({ url: request.url, body });
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -1113,6 +1175,7 @@ describe("bot-host server", () => {
     expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
       soul_answers: ["产品经理助手", "冷静务实"],
     });
+    expect(initializationSessions.has("prd-bot:admin-a:pending")).toBe(false);
   });
 
   it("keeps wizard question numbers separate from option labels", async () => {
@@ -1856,6 +1919,10 @@ describe("bot-host server", () => {
           throw new Error("expected Request");
         }
         const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2057,6 +2124,10 @@ describe("bot-host server", () => {
         }
         const body = request.method === "POST" ? await request.json() : undefined;
         calls.push({ url: request.url, body });
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2130,6 +2201,75 @@ describe("bot-host server", () => {
     });
   });
 
+  it("does not stream normal chat when wizard state lookup fails", async () => {
+    const sent: Array<{ conversationId: string; text: string }> = [];
+    const calls: string[] = [];
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "mock",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        calls.push(request.url);
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: {
+              conversation_id: "conv-1",
+            },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/internal/initialization-sessions/active?")) {
+          return Response.json({ error: "data-service unavailable" }, { status: 500 });
+        }
+
+        if (request.url === "http://llm-runner/v1/chat/stream") {
+          return Response.json({ error: "should not stream" }, { status: 500 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(conversationId, text) {
+          sent.push({ conversationId, text });
+        },
+      },
+    });
+
+    await worker.start();
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "admin-a",
+      text: "hello",
+    });
+
+    expect(sent).toEqual([
+      {
+        conversationId: "conversation-a",
+        text: "初始化状态读取失败，请稍后重试。",
+      },
+    ]);
+    expect(calls).not.toContain("http://llm-runner/v1/chat/stream");
+  });
+
   it("streams llm chunks to real wecom messages", async () => {
     const sent: Array<{ conversationId: string; text: string; finish: boolean }> = [];
     let messageHandler:
@@ -2149,6 +2289,10 @@ describe("bot-host server", () => {
           throw new Error("expected Request");
         }
         const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2239,6 +2383,10 @@ describe("bot-host server", () => {
           ? await request.json().catch(() => undefined)
           : undefined;
         calls.push({ url: request.url, method: request.method, body });
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2352,6 +2500,10 @@ describe("bot-host server", () => {
           throw new Error("expected Request");
         }
         const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2433,6 +2585,10 @@ describe("bot-host server", () => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
         }
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
           return Response.json({
@@ -2511,6 +2667,10 @@ describe("bot-host server", () => {
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
+        }
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
         }
 
         if (request.url === "http://data-service/v1/message-context/resolve") {
