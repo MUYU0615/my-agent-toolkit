@@ -24,29 +24,13 @@ http://localhost:8600/
 curl http://localhost:8200/health
 curl http://localhost:8300/health
 curl http://localhost:8400/health
-curl http://localhost:8401/health
 curl http://localhost:8500/health
 curl http://localhost:8600/health
 ```
 
 ## 启动真实企业微信 Worker
 
-先复制配置模板：
-
-```bash
-cp deploy/compose/.env.wecom.example deploy/compose/.env.wecom
-```
-
-填写本地文件 `deploy/compose/.env.wecom`：
-
-```env
-BOT_ID=control-api-or-data-service-created-platform-bot-id
-BOT_RUNTIME=mock
-WECOM_BOT_ID=enterprise-wechat-bot-id
-WECOM_SECRET=enterprise-wechat-secret
-```
-
-`BOT_ID` 是平台内部 Bot ID，`WECOM_BOT_ID` 是企业微信后台的 Bot ID。`deploy/compose/.env.wecom` 已被 `.gitignore` 忽略，不要提交真实凭证。
+`wecom-worker` 当前不通过 `deploy/compose/.env.wecom` 读取凭证。它只负责长连接和 runtime sync，真实企业微信 Bot 的运行配置来自平台数据面：Bot 记录、runtime 配置以及数据服务中持久化的企业微信渠道信息。
 
 启动真实长连接：
 
@@ -60,4 +44,4 @@ docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-
 curl http://localhost:8401/health
 ```
 
-注意：同一个企业微信 Bot ID 同时只应有一个长连接消费者。启动 `wecom-worker` 前，确认没有其他环境正在使用同一组企业微信凭证。
+注意：同一个企业微信 Bot ID 同时只应有一个长连接消费者。启动 `wecom-worker` 前，确认没有其他环境正在使用同一组企业微信凭证，并确认对应 bot 的企业微信配置已经通过平台写入数据服务。
