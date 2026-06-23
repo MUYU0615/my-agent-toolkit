@@ -1767,20 +1767,79 @@ const AGENTS_WIZARD_FIELDS: Array<{ key: AgentsWizardFieldKey; label: string }> 
 ];
 
 const SOUL_WIZARD_QUESTIONS = [
-  "Soul 引导 1/3：你希望我扮演什么角色？",
-  "Soul 引导 2/3：你希望我的性格是什么样的？",
-  "Soul 引导 3/3：你希望我的沟通风格是什么？",
+  withWizardOptions("Soul 引导 1/3：你希望我扮演什么角色？", {
+    "1": "产品经理助手",
+    "2": "QA 测试助手",
+    "3": "技术文档助手",
+    "4": "项目管理助手",
+    "5": "其他，请直接说明",
+  }),
+  withWizardOptions("Soul 引导 2/3：你希望我的性格是什么样的？", {
+    "1": "冷静务实",
+    "2": "严谨审慎",
+    "3": "主动推进",
+    "4": "友好耐心",
+    "5": "其他，请直接说明",
+  }),
+  withWizardOptions("Soul 引导 3/3：你希望我的沟通风格是什么？", {
+    "1": "简洁直接",
+    "2": "严谨完整",
+    "3": "先问清楚再回答",
+    "4": "给出选项辅助决策",
+    "5": "其他，请直接说明",
+  }),
 ];
 
 const AGENTS_WIZARD_QUESTIONS = [
-  "Agents 引导 1/7：业务背景是什么？公司/团队是做什么的？（可回复“跳过”）",
-  "Agents 引导 2/7：这个机器人只负责一类核心工作，你希望它的核心工作是什么？",
-  "Agents 引导 3/7：你希望它用什么方式和用户交互？",
-  "Agents 引导 4/7：是否使用长期存储或长期记忆？",
-  "Agents 引导 5/7：是否需要保存它生成的文档？",
-  "Agents 引导 6/7：是否有固定 Skill / MCP / 工具约束？（可回复“跳过”）",
-  "Agents 引导 7/7：有没有必须遵守的工作规则？（可回复“跳过”）",
+  withWizardOptions("Agents 引导 1/7：业务背景是什么？公司/团队是做什么的？", {
+    "1": "跳过，后续再补充",
+    "2": "直接输入业务背景",
+  }),
+  withWizardOptions("Agents 引导 2/7：这个机器人只负责一类核心工作，你希望它的核心工作是什么？", {
+    "1": "撰写/维护 PRD",
+    "2": "竞品分析",
+    "3": "需求评审与拆解",
+    "4": "用户故事编写",
+    "5": "数据指标定义",
+    "6": "QA 测试",
+    "7": "技术文档",
+    "8": "项目管理",
+    "9": "其他，请直接说明",
+  }),
+  withWizardOptions("Agents 引导 3/7：你希望它用什么方式和用户交互？", {
+    "1": "逐句引导，一次只问一个问题",
+    "2": "批量引导，一次列出多个待确认项",
+    "3": "先给推荐方案，再让用户确认",
+    "4": "其他，请直接说明",
+  }),
+  withWizardOptions("Agents 引导 4/7：是否使用长期存储或长期记忆？", {
+    "1": "使用，确认后的业务规则和文档需要沉淀",
+    "2": "不使用，只保留当前会话",
+    "3": "待定",
+  }),
+  withWizardOptions("Agents 引导 5/7：是否需要保存它生成的文档？", {
+    "1": "需要，生成的 PRD/方案/纪要要保存",
+    "2": "不需要，只在对话中输出",
+    "3": "待定",
+  }),
+  withWizardOptions("Agents 引导 6/7：是否有固定 Skill / MCP / 工具约束？", {
+    "1": "跳过，暂不固定",
+    "2": "直接输入 Skill / MCP / 工具约束",
+  }),
+  withWizardOptions("Agents 引导 7/7：有没有必须遵守的工作规则？", {
+    "1": "跳过，暂无额外规则",
+    "2": "直接输入必须遵守的工作规则",
+  }),
 ];
+
+function withWizardOptions(question: string, options: Record<string, string>): string {
+  return [
+    question,
+    ...Object.entries(options).map(([key, label]) => `${key}. ${label}`),
+    "",
+    "回复编号或直接输入。",
+  ].join("\n");
+}
 
 const SOUL_IDENTITY_OPTIONS: Record<string, string> = {
   "1": "产品经理助手",
