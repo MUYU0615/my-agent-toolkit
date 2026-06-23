@@ -461,4 +461,57 @@ describe("sqlite data store", () => {
     });
     second.close?.();
   });
+
+  it("persists active initialization sessions across store instances", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    const created = first.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: ["第一题"],
+      agents_answers: [],
+      generation_in_progress: "soul",
+      status: "active",
+    });
+    const updated = first.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "agents",
+      soul_answers: ["第一题", "第二题"],
+      agents_answers: ["写 PRD"],
+      generation_in_progress: "agents",
+      status: "active",
+    });
+    first.close?.();
+
+    expect(updated.session_id).toBe(created.session_id);
+    expect(updated.created_at).toBe(created.created_at);
+    expect(updated.updated_at).not.toBe(created.updated_at);
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toEqual(updated);
+
+    second.clearInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    });
+    expect(second.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toBeUndefined();
+    second.close?.();
+  });
 });

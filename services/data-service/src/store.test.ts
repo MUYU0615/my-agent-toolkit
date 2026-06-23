@@ -88,6 +88,95 @@ describe("data-service store", () => {
     })).toThrow("scope must be system, shared, bot, user, or session");
   });
 
+  it("upserts and clears active initialization sessions", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const created = store.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: ["第一题"],
+      agents_answers: [],
+      generation_in_progress: "soul",
+      status: "active",
+    });
+
+    expect(created).toMatchObject({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: ["第一题"],
+      agents_answers: [],
+      generation_in_progress: "soul",
+      status: "active",
+    });
+    expect(created.session_id).toMatch(/^init_/);
+
+    const updated = store.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "agents",
+      soul_answers: ["第一题", "第二题"],
+      agents_answers: ["写 PRD"],
+      status: "active",
+    });
+
+    expect(updated.session_id).toBe(created.session_id);
+    expect(updated.created_at).toBe(created.created_at);
+    expect(updated.updated_at).not.toBe(created.updated_at);
+    expect(updated).toMatchObject({
+      phase: "agents",
+      soul_answers: ["第一题", "第二题"],
+      agents_answers: ["写 PRD"],
+      status: "active",
+    });
+    expect(updated.generation_in_progress).toBeUndefined();
+    expect(store.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toEqual(updated);
+
+    store.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "agents",
+      soul_answers: ["第一题", "第二题"],
+      agents_answers: ["写 PRD"],
+      status: "completed",
+    });
+    expect(store.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toBeUndefined();
+
+    store.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: [],
+      agents_answers: [],
+      status: "active",
+    });
+    store.clearInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    });
+    expect(store.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toBeUndefined();
+  });
+
   it("creates versioned business documents and rejects bot config document titles", () => {
     const store = createDataStore();
 

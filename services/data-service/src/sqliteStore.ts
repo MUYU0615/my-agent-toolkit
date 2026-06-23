@@ -9,11 +9,16 @@ import {
   buildWeComConnectionTestResult,
   configDocumentOrder,
   hashClaimCode,
+  initializationSessionKey,
   isBotConfigDocumentTitle,
   nextIsoTimestamp,
+  normalizeAnswerArray,
   optionalText,
   requireBotConfigDocumentTitle,
   requireBotStatus,
+  requireInitializationGenerationInProgress,
+  requireInitializationPhase,
+  requireInitializationSessionStatus,
   requireText,
   type AdminClaimRecord,
   type AdminRecord,
@@ -31,6 +36,8 @@ import {
   type CreateMemoryRecordInput,
   type DataStore,
   type KnowledgeTier,
+  type InitializationSessionRecord,
+  type InitializationSessionKeyInput,
   type ListBusinessDocumentsInput,
   type ListCurrentMemoryDocumentsInput,
   type ListMemoriesInput,
@@ -43,6 +50,7 @@ import {
   type ResolveConversationInput,
   type TransferAdminInput,
   type UpdateBusinessDocumentInput,
+  type UpsertInitializationSessionInput,
   type UpsertMemoryDocumentInput,
   type UpsertBotConfigDocumentInput,
   type CreateBotInput,
@@ -317,6 +325,18 @@ export function createSqliteDataStore(
 
     resolveConversation(input) {
       return resolveConversation(db, input);
+    },
+
+    upsertInitializationSession(input) {
+      return upsertInitializationSession(db, input);
+    },
+
+    getActiveInitializationSession(input) {
+      return getActiveInitializationSession(db, input);
+    },
+
+    clearInitializationSession(input) {
+      clearInitializationSession(db, input);
     },
 
     upsertBotConfigDocument(input) {
@@ -1121,6 +1141,21 @@ function migrate(db: Database.Database): void {
       updated_at text not null
     );
 
+    create table if not exists initialization_sessions (
+      session_key text primary key,
+      session_id text not null,
+      bot_id text not null,
+      wecom_user_id text not null,
+      conversation_id text not null,
+      phase text not null,
+      soul_answers_json text not null,
+      agents_answers_json text not null,
+      generation_in_progress text,
+      status text not null,
+      created_at text not null,
+      updated_at text not null
+    );
+
     create table if not exists memory_document_versions (
       memory_doc_id text not null,
       version integer not null,
@@ -1392,6 +1427,91 @@ function resolveConversation(
   return conversation;
 }
 
+function upsertInitializationSession(
+  db: Database.Database,
+  input: UpsertInitializationSessionInput,
+): InitializationSessionRecord {
+  const bot = getRequiredBot(db, input.bot_id);
+  const key = initializationSessionKey({
+    bot_id: bot.bot_id,
+    wecom_user_id: input.wecom_user_id,
+    conversation_id: input.conversation_id,
+  });
+  const existing = mapInitializationSessionRecord(
+    db.prepare("select * from initialization_sessions where session_key = ?").get(key),
+  );
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: InitializationSessionRecord = {
+    session_id: existing?.session_id ?? `init_${crypto.randomUUID()}`,
+    bot_id: bot.bot_id,
+    wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+    conversation_id: requireText(input.conversation_id, "conversation_id"),
+    phase: requireInitializationPhase(input.phase),
+    soul_answers: normalizeAnswerArray(input.soul_answers, "soul_answers"),
+    agents_answers: normalizeAnswerArray(input.agents_answers, "agents_answers"),
+    ...(input.generation_in_progress
+      ? { generation_in_progress: requireInitializationGenerationInProgress(input.generation_in_progress) }
+      : {}),
+    status: requireInitializationSessionStatus(input.status),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  db.prepare(
+    `
+      insert into initialization_sessions (
+        session_key, session_id, bot_id, wecom_user_id, conversation_id, phase,
+        soul_answers_json, agents_answers_json, generation_in_progress,
+        status, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(session_key) do update set
+        session_id = excluded.session_id,
+        bot_id = excluded.bot_id,
+        wecom_user_id = excluded.wecom_user_id,
+        conversation_id = excluded.conversation_id,
+        phase = excluded.phase,
+        soul_answers_json = excluded.soul_answers_json,
+        agents_answers_json = excluded.agents_answers_json,
+        generation_in_progress = excluded.generation_in_progress,
+        status = excluded.status,
+        updated_at = excluded.updated_at
+    `,
+  ).run(
+    key,
+    record.session_id,
+    record.bot_id,
+    record.wecom_user_id,
+    record.conversation_id,
+    record.phase,
+    JSON.stringify(record.soul_answers),
+    JSON.stringify(record.agents_answers),
+    record.generation_in_progress ?? null,
+    record.status,
+    record.created_at,
+    record.updated_at,
+  );
+  return record;
+}
+
+function getActiveInitializationSession(
+  db: Database.Database,
+  input: InitializationSessionKeyInput,
+): InitializationSessionRecord | undefined {
+  return mapInitializationSessionRecord(
+    db.prepare(
+      "select * from initialization_sessions where session_key = ? and status = 'active'",
+    ).get(initializationSessionKey(input)),
+  );
+}
+
+function clearInitializationSession(
+  db: Database.Database,
+  input: InitializationSessionKeyInput,
+): void {
+  db.prepare(
+    "delete from initialization_sessions where session_key = ? and status = 'active'",
+  ).run(initializationSessionKey(input));
+}
+
 function getRequiredBot(db: Database.Database, botId: string): BotRecord {
   const bot = mapBotRecord(db.prepare("select * from bots where bot_id = ?").get(botId));
   if (!bot) {
@@ -1427,6 +1547,40 @@ function mapBotRecord(row: unknown): BotRecord | undefined {
     ...(typeof record.last_wecom_error === "string"
       ? { last_wecom_error: record.last_wecom_error }
       : {}),
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapInitializationSessionRecord(
+  row: unknown,
+): InitializationSessionRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    session_id: record.session_id as string,
+    bot_id: record.bot_id as string,
+    wecom_user_id: record.wecom_user_id as string,
+    conversation_id: record.conversation_id as string,
+    phase: requireInitializationPhase(record.phase as string),
+    soul_answers: normalizeAnswerArray(
+      JSON.parse(record.soul_answers_json as string) as string[],
+      "soul_answers",
+    ),
+    agents_answers: normalizeAnswerArray(
+      JSON.parse(record.agents_answers_json as string) as string[],
+      "agents_answers",
+    ),
+    ...(typeof record.generation_in_progress === "string"
+      ? {
+        generation_in_progress: requireInitializationGenerationInProgress(
+          record.generation_in_progress,
+        ),
+      }
+      : {}),
+    status: requireInitializationSessionStatus(record.status as string),
     created_at: record.created_at as string,
     updated_at: record.updated_at as string,
   };

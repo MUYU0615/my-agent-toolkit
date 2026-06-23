@@ -89,6 +89,27 @@ export function createDataServiceServer(
         return handleRecordAsset(request, store);
       }
 
+      if (
+        request.method === "PUT" &&
+        url.pathname === "/internal/initialization-sessions"
+      ) {
+        return handleUpsertInitializationSession(request, store);
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/internal/initialization-sessions/active"
+      ) {
+        return handleGetActiveInitializationSession(url, store);
+      }
+
+      if (
+        request.method === "DELETE" &&
+        url.pathname === "/internal/initialization-sessions/active"
+      ) {
+        return handleClearInitializationSession(url, store);
+      }
+
       if (request.method === "GET" && url.pathname === "/internal/memory-stats") {
         return handleGetMemoryStats(url, store);
       }
@@ -417,6 +438,48 @@ async function handleRecordAsset(
 ): Promise<Response> {
   try {
     return jsonResponse(store.recordAsset(await request.json()), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpsertInitializationSession(
+  request: Request,
+  store: DataStore,
+): Promise<Response> {
+  try {
+    return jsonResponse(store.upsertInitializationSession(await request.json()));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetActiveInitializationSession(
+  url: URL,
+  store: DataStore,
+): Response {
+  try {
+    return jsonResponse(store.getActiveInitializationSession({
+      bot_id: url.searchParams.get("bot_id") ?? "",
+      wecom_user_id: url.searchParams.get("wecom_user_id") ?? "",
+      conversation_id: url.searchParams.get("conversation_id") ?? "",
+    }) ?? null);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleClearInitializationSession(
+  url: URL,
+  store: DataStore,
+): Response {
+  try {
+    store.clearInitializationSession({
+      bot_id: url.searchParams.get("bot_id") ?? "",
+      wecom_user_id: url.searchParams.get("wecom_user_id") ?? "",
+      conversation_id: url.searchParams.get("conversation_id") ?? "",
+    });
+    return jsonResponse({ cleared: true });
   } catch (error) {
     return errorResponse(error);
   }

@@ -7,6 +7,9 @@ import {
 export type BotStatus = "draft" | "initializing" | "ready";
 export type ConversationPurpose = "normal_chat" | "init" | "doc_generation";
 export type ConversationChannel = "wecom_direct" | "wecom_group";
+export type InitializationPhase = "soul" | "agents";
+export type InitializationSessionStatus = "active" | "completed" | "cancelled";
+export type InitializationGenerationInProgress = "soul" | "agents";
 export type MemoryScope = "system" | "shared" | "bot" | "user" | "session";
 export const MEMORY_SCOPES = [
   "system",
@@ -104,6 +107,37 @@ export interface ConversationRecord {
   purpose: ConversationPurpose;
   created_at: string;
   updated_at: string;
+}
+
+export interface InitializationSessionRecord {
+  session_id: string;
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
+  phase: InitializationPhase;
+  soul_answers: string[];
+  agents_answers: string[];
+  generation_in_progress?: InitializationGenerationInProgress;
+  status: InitializationSessionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertInitializationSessionInput {
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
+  phase: InitializationPhase;
+  soul_answers: string[];
+  agents_answers: string[];
+  generation_in_progress?: InitializationGenerationInProgress;
+  status: InitializationSessionStatus;
+}
+
+export interface InitializationSessionKeyInput {
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
 }
 
 export interface ResolveConversationInput {
@@ -388,6 +422,11 @@ export interface DataStore {
   markBotReady(botId: string): BotRecord;
   resolveMessageContext(input: ResolveConversationInput): MessageContext;
   resolveConversation(input: ResolveConversationInput): ConversationRecord;
+  upsertInitializationSession(input: UpsertInitializationSessionInput): InitializationSessionRecord;
+  getActiveInitializationSession(
+    input: InitializationSessionKeyInput,
+  ): InitializationSessionRecord | undefined;
+  clearInitializationSession(input: InitializationSessionKeyInput): void;
   upsertBotConfigDocument(input: UpsertBotConfigDocumentInput): BotConfigDocumentRecord;
   listBotConfigDocuments(botId: string): BotConfigDocumentRecord[];
   upsertMemoryDocument(input: UpsertMemoryDocumentInput): MemoryDocumentRecord;
@@ -424,6 +463,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   const admins = new Map<string, AdminRecord>();
   const adminClaims = new Map<string, AdminClaimRecord>();
   const conversations = new Map<string, ConversationRecord>();
+  const initializationSessions = new Map<string, InitializationSessionRecord>();
   const memoryDocuments = new Map<string, MemoryDocumentRecord[]>();
   const botConfigDocuments = new Map<string, BotConfigDocumentRecord>();
   const businessDocuments = new Map<string, BusinessDocumentRecord>();
@@ -774,6 +814,47 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       };
       conversations.set(key, conversation);
       return conversation;
+    },
+
+    upsertInitializationSession(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const key = initializationSessionKey({
+        bot_id: bot.bot_id,
+        wecom_user_id: input.wecom_user_id,
+        conversation_id: input.conversation_id,
+      });
+      const existing = initializationSessions.get(key);
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: InitializationSessionRecord = {
+        session_id: existing?.session_id ?? `init_${crypto.randomUUID()}`,
+        bot_id: bot.bot_id,
+        wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+        conversation_id: requireText(input.conversation_id, "conversation_id"),
+        phase: requireInitializationPhase(input.phase),
+        soul_answers: normalizeAnswerArray(input.soul_answers, "soul_answers"),
+        agents_answers: normalizeAnswerArray(input.agents_answers, "agents_answers"),
+        ...(input.generation_in_progress
+          ? { generation_in_progress: requireInitializationGenerationInProgress(input.generation_in_progress) }
+          : {}),
+        status: requireInitializationSessionStatus(input.status),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      initializationSessions.set(key, record);
+      return record;
+    },
+
+    getActiveInitializationSession(input) {
+      const record = initializationSessions.get(initializationSessionKey(input));
+      return record?.status === "active" ? record : undefined;
+    },
+
+    clearInitializationSession(input) {
+      const key = initializationSessionKey(input);
+      const record = initializationSessions.get(key);
+      if (record?.status === "active") {
+        initializationSessions.delete(key);
+      }
     },
 
     upsertBotConfigDocument(input) {
@@ -1214,6 +1295,48 @@ export function requireBotStatus(value: string): BotStatus {
     throw new Error("status is invalid");
   }
   return value as BotStatus;
+}
+
+export function requireInitializationPhase(value: string): InitializationPhase {
+  if (value !== "soul" && value !== "agents") {
+    throw new Error("phase is invalid");
+  }
+  return value;
+}
+
+export function requireInitializationSessionStatus(
+  value: string,
+): InitializationSessionStatus {
+  if (value !== "active" && value !== "completed" && value !== "cancelled") {
+    throw new Error("status is invalid");
+  }
+  return value;
+}
+
+export function requireInitializationGenerationInProgress(
+  value: string,
+): InitializationGenerationInProgress {
+  if (value !== "soul" && value !== "agents") {
+    throw new Error("generation_in_progress is invalid");
+  }
+  return value;
+}
+
+export function normalizeAnswerArray(value: string[], field: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${field} is required`);
+  }
+  return value.map((answer) => requireText(answer, field));
+}
+
+export function initializationSessionKey(
+  input: InitializationSessionKeyInput,
+): string {
+  return [
+    requireText(input.bot_id, "bot_id"),
+    requireText(input.wecom_user_id, "wecom_user_id"),
+    requireText(input.conversation_id, "conversation_id"),
+  ].join(":");
 }
 
 export function hashClaimCode(code: string): string {

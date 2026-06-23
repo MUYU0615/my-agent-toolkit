@@ -1032,4 +1032,76 @@ describe("data-service server", () => {
       },
     ]);
   });
+
+  it("stores initialization sessions over HTTP", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+        }),
+      }),
+    );
+
+    const putResponse = await server.fetch(
+      new Request("http://localhost/internal/initialization-sessions", {
+        method: "PUT",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          phase: "soul",
+          soul_answers: ["第一题"],
+          agents_answers: [],
+          generation_in_progress: "soul",
+          status: "active",
+        }),
+      }),
+    );
+
+    expect(putResponse.status).toBe(200);
+    const created = await putResponse.json() as { session_id: string; created_at: string };
+    expect(created).toMatchObject({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: ["第一题"],
+      agents_answers: [],
+      generation_in_progress: "soul",
+      status: "active",
+    });
+
+    const getResponse = await server.fetch(
+      new Request(
+        "http://localhost/internal/initialization-sessions/active?bot_id=prd-bot&wecom_user_id=admin-a&conversation_id=conv-a",
+      ),
+    );
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.json()).resolves.toMatchObject({
+      session_id: created.session_id,
+      created_at: created.created_at,
+      status: "active",
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(
+        "http://localhost/internal/initialization-sessions/active?bot_id=prd-bot&wecom_user_id=admin-a&conversation_id=conv-a",
+        { method: "DELETE" },
+      ),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ cleared: true });
+
+    const missingResponse = await server.fetch(
+      new Request(
+        "http://localhost/internal/initialization-sessions/active?bot_id=prd-bot&wecom_user_id=admin-a&conversation_id=conv-a",
+      ),
+    );
+    expect(missingResponse.status).toBe(200);
+    await expect(missingResponse.json()).resolves.toBeNull();
+  });
 });
