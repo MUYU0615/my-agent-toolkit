@@ -981,8 +981,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
     listPendingGeneratedDocuments(input) {
       const query = normalizePendingGeneratedDocumentQuery(input, bots);
       return [...pendingGeneratedDocuments.values()]
-        .filter((document) => matchesPendingGeneratedDocumentQuery(document, query))
-        .sort(comparePendingGeneratedDocuments);
+        .filter((document) => matchesPendingGeneratedDocumentQuery(document, query));
     },
 
     confirmPendingGeneratedDocuments(input) {
@@ -1008,8 +1007,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       requireText(input.created_by_bot_id, "created_by_bot_id");
       requireText(input.created_by_user_id, "created_by_user_id");
       const pending = [...pendingGeneratedDocuments.values()]
-        .filter((document) => matchesPendingGeneratedDocumentQuery(document, query))
-        .sort(comparePendingGeneratedDocuments);
+        .filter((document) => matchesPendingGeneratedDocumentQuery(document, query));
       const saved: AppliedPendingGeneratedDocumentResult[] = [];
 
       for (const pendingDocument of pending) {
@@ -1434,8 +1432,7 @@ function updateMatchingPendingGeneratedDocuments(
 ): PendingGeneratedDocumentRecord[] {
   const updated: PendingGeneratedDocumentRecord[] = [];
   const matches = [...documents.values()]
-    .filter((document) => matchesPendingGeneratedDocumentQuery(document, input))
-    .sort(comparePendingGeneratedDocuments);
+    .filter((document) => matchesPendingGeneratedDocumentQuery(document, input));
   for (const document of matches) {
     const next: PendingGeneratedDocumentRecord = {
       ...document,
@@ -1446,14 +1443,6 @@ function updateMatchingPendingGeneratedDocuments(
     updated.push(next);
   }
   return updated;
-}
-
-function comparePendingGeneratedDocuments(
-  left: PendingGeneratedDocumentRecord,
-  right: PendingGeneratedDocumentRecord,
-): number {
-  return left.created_at.localeCompare(right.created_at) ||
-    left.pending_id.localeCompare(right.pending_id);
 }
 
 function matchesMemoryQuery(memory: MemoryRecord, input: ListMemoriesInput): boolean {

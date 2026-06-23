@@ -306,6 +306,58 @@ describe("sqlite data store", () => {
     third.close?.();
   });
 
+  it("applies pending generated documents in insertion order when timestamps tie", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-23T10:00:00.000Z"));
+
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    const pendingA = first.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/a.md",
+      content: "# A",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+    const pendingB = first.createPendingGeneratedDocument({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      title: "prd/b.md",
+      content: "# B",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.listPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    }).map((document) => document.pending_id)).toEqual([
+      pendingA.pending_id,
+      pendingB.pending_id,
+    ]);
+    expect(second.applyPendingGeneratedDocuments({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      created_by_bot_id: "prd-bot",
+      created_by_user_id: "admin-a",
+    })).toEqual([
+      { pending_id: pendingA.pending_id, title: "prd/a.md", version: 1 },
+      { pending_id: pendingB.pending_id, title: "prd/b.md", version: 1 },
+    ]);
+    second.close?.();
+  });
+
   it("rejects duplicate persisted wecom bot bindings", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);

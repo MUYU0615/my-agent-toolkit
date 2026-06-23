@@ -1681,7 +1681,7 @@ function listPendingGeneratedDocuments(
         and wecom_user_id = ?
         and conversation_id = ?
         and status = 'pending'
-      order by created_at asc, pending_id asc
+      order by rowid asc
     `,
   ).all(
     query.bot_id,
@@ -1727,7 +1727,7 @@ function applyPendingGeneratedDocuments(
         and wecom_user_id = ?
         and conversation_id = ?
         and status = 'pending'
-      order by created_at asc, pending_id asc
+      order by rowid asc
     `,
   );
   const selectExistingDocument = db.prepare(
