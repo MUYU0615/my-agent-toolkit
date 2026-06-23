@@ -680,7 +680,17 @@ describe("bot-host server", () => {
       {
         bot_id: "prd-bot",
         title: "agents.md",
-        content: "# AGENTS\n核心工作：撰写/维护 PRD。PRD 交付前必须逐项确认 Console、IMM、计量计费；一次只能问一个确认项；不得要求用户使用 1a 2a 3a 这种组合格式。",
+        content: [
+          "# AGENTS",
+          "核心工作：撰写/维护 PRD。PRD 交付前必须逐项确认 Console、IMM、计量计费；一次只能问一个确认项；不得要求用户使用 1a 2a 3a 这种组合格式。",
+          "",
+          "## 默认规则背景",
+          "- 默认使用中文回复，除非用户明确要求其他语言。",
+          "- 优先遵守当前 bot 的 soul 与 agents.md；如有冲突，安全、合规和管理员规则优先。",
+          "- 信息不足时一次只问一个最关键的问题，不要一次性抛出多个问题。",
+          "- 不要请求、输出或保存企业微信 Secret、API Key、管理员认领码、认证文件路径等敏感信息。",
+          "- 只有用户明确要求记住、保存、沉淀，或管理员规则明确允许时，才写入长期记忆。",
+        ].join("\n"),
       },
     ]);
     expect(calls.map((call) => call.url)).toContain("http://data-service/v1/bots/prd-bot/ready");
@@ -1155,6 +1165,8 @@ describe("bot-host server", () => {
     expect(soul).not.toContain("Skill / MCP");
     expect(agents).toContain("撰写/维护 PRD");
     expect(agents).toContain("交互规则");
+    expect(agents).toContain("## 默认规则背景");
+    expect(agents).toContain("默认使用中文回复");
     expect(agents).not.toContain("角色定位：");
     expect(agents).toContain("业务背景：背景");
     expect(calls.map((call) => call.url)).toContain("http://data-service/v1/bots/prd-bot/ready");
