@@ -1464,10 +1464,6 @@ function upsertInitializationSession(
         status, created_at, updated_at
       ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(session_key) do update set
-        session_id = excluded.session_id,
-        bot_id = excluded.bot_id,
-        wecom_user_id = excluded.wecom_user_id,
-        conversation_id = excluded.conversation_id,
         phase = excluded.phase,
         soul_answers_json = excluded.soul_answers_json,
         agents_answers_json = excluded.agents_answers_json,
@@ -1489,7 +1485,13 @@ function upsertInitializationSession(
     record.created_at,
     record.updated_at,
   );
-  return record;
+  const persisted = mapInitializationSessionRecord(
+    db.prepare("select * from initialization_sessions where session_key = ?").get(key),
+  );
+  if (!persisted) {
+    throw new Error("initialization session was not persisted");
+  }
+  return persisted;
 }
 
 function getActiveInitializationSession(

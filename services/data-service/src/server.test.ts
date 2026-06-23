@@ -1104,4 +1104,39 @@ describe("data-service server", () => {
     expect(missingResponse.status).toBe(200);
     await expect(missingResponse.json()).resolves.toBeNull();
   });
+
+  it("rejects invalid initialization generation progress over HTTP", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+        }),
+      }),
+    );
+
+    const response = await server.fetch(
+      new Request("http://localhost/internal/initialization-sessions", {
+        method: "PUT",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          conversation_id: "conv-a",
+          phase: "soul",
+          soul_answers: [],
+          agents_answers: [],
+          generation_in_progress: "",
+          status: "active",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "generation_in_progress is invalid",
+    });
+  });
 });

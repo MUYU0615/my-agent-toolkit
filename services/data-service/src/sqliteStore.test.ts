@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_CLAIM_TTL_MS } from "./store.js";
 import { createSqliteDataStore } from "./sqliteStore.js";
 
@@ -9,6 +10,8 @@ describe("sqlite data store", () => {
   const dirs: string[] = [];
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -512,6 +515,63 @@ describe("sqlite data store", () => {
       wecom_user_id: "admin-a",
       conversation_id: "conv-a",
     })).toBeUndefined();
+    second.close?.();
+  });
+
+  it("preserves initialization session identity on conflicting sqlite upserts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    first.close?.();
+
+    const db = new Database(dbPath);
+    db.exec(`
+      create trigger simulate_concurrent_initialization_session_insert
+      before insert on initialization_sessions
+      when NEW.session_key = '["prd-bot","admin-a","conv-a"]'
+        and not exists (
+          select 1
+          from initialization_sessions
+          where session_key = NEW.session_key
+        )
+      begin
+        insert into initialization_sessions (
+          session_key, session_id, bot_id, wecom_user_id, conversation_id,
+          phase, soul_answers_json, agents_answers_json,
+          generation_in_progress, status, created_at, updated_at
+        ) values (
+          NEW.session_key, 'init_concurrent', NEW.bot_id, NEW.wecom_user_id,
+          NEW.conversation_id, 'soul', '["first"]', '[]',
+          null, 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
+        );
+      end;
+    `);
+    db.close();
+
+    vi.setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+    const second = createSqliteDataStore(dbPath);
+    const updated = second.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "agents",
+      soul_answers: ["first", "second"],
+      agents_answers: ["agent"],
+      status: "active",
+    });
+
+    expect(updated.session_id).toBe("init_concurrent");
+    expect(updated.created_at).toBe("2026-01-01T00:00:00.000Z");
+    expect(updated.updated_at).toBe("2026-01-01T00:00:01.000Z");
+    expect(second.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toEqual(updated);
     second.close?.();
   });
 
