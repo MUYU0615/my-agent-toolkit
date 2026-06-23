@@ -221,16 +221,11 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
     try {
       const context = await resolveMessageContext(config, messageInput);
       conversationId = context.conversation?.conversation_id;
-      if (conversationId) {
-        await clearInitializationSession(config, {
-          bot_id: messageInput.bot_id,
-          wecom_user_id: messageInput.wecom_user_id,
-          conversation_id: conversationId,
-        });
-      }
     } catch (_error) {
       conversationId = input.adminWeComUserId;
     }
+    conversationId ??= input.adminWeComUserId;
+    await clearWizardState(config, messageInput, conversationId);
     const output = await startInitializationWizard(messageInput, config, conversationId);
     await config.wecomClient.sendText(input.adminWeComUserId, output, { forceActive: true });
     return {
@@ -855,6 +850,7 @@ function wizardConversationCandidates(
   return [
     conversationId,
     input.conversation_id,
+    "pending",
   ].filter((candidate, index, candidates): candidate is string =>
     typeof candidate === "string" && candidate.length > 0 && candidates.indexOf(candidate) === index
   );
