@@ -25,6 +25,123 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return htmlResponse(renderChannelWorkbenchPage());
       }
 
+      const roleAdminPageMatch = url.pathname.match(/^\/admin\/roles\/([^/]+)$/);
+      if (request.method === "GET" && roleAdminPageMatch) {
+        return handleRoleDetailPage(config, roleAdminPageMatch[1]);
+      }
+
+      const roleDocumentSaveMatch = url.pathname.match(/^\/admin\/roles\/([^/]+)\/documents\/save$/);
+      if (request.method === "POST" && roleDocumentSaveMatch) {
+        return handleRoleDocumentSave(request, config, roleDocumentSaveMatch[1]);
+      }
+
+      const roleQuestionSaveMatch = url.pathname.match(/^\/admin\/roles\/([^/]+)\/questions\/save$/);
+      if (request.method === "POST" && roleQuestionSaveMatch) {
+        return handleRoleQuestionSave(request, config, roleQuestionSaveMatch[1]);
+      }
+
+      const botConfigPageMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config$/);
+      if (request.method === "GET" && botConfigPageMatch) {
+        return handleBotConfigEditorPage(config, botConfigPageMatch[1]);
+      }
+
+      const botSoulSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/soul$/);
+      if (request.method === "POST" && botSoulSaveMatch) {
+        return handleBotConfigDocumentSave(request, config, botSoulSaveMatch[1], "soul");
+      }
+
+      const botAgentsSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/agents$/);
+      if (request.method === "POST" && botAgentsSaveMatch) {
+        return handleBotConfigDocumentSave(request, config, botAgentsSaveMatch[1], "agents.md");
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/global-documents") {
+        return proxyGetRequest(`${config.dataServiceUrl}/v1/global-documents`, config);
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/global-documents") {
+        return proxyJsonRequest(request, `${config.dataServiceUrl}/v1/global-documents`, config, {
+          action: "global_document.upsert",
+          targetType: "global_document",
+          targetId: (_body, payload) => String(payload.document_id ?? ""),
+          metadata: (body, payload) => ({
+            slug: payload.slug ?? body.slug,
+            enabled: payload.enabled ?? body.enabled,
+            sort_order: payload.sort_order ?? body.sort_order,
+            title: payload.title ?? body.title,
+          }),
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/roles") {
+        return proxyGetRequest(`${config.dataServiceUrl}/v1/roles`, config);
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/roles") {
+        return proxyJsonRequest(request, `${config.dataServiceUrl}/v1/roles`, config, {
+          action: "role.upsert",
+          targetType: "role",
+          targetId: (_body, payload) => String(payload.role_id ?? ""),
+          metadata: (body, payload) => ({
+            slug: payload.slug ?? body.slug,
+            name: payload.name ?? body.name,
+            enabled: payload.enabled ?? body.enabled,
+            sort_order: payload.sort_order ?? body.sort_order,
+          }),
+        });
+      }
+
+      const roleDocumentsMatch = url.pathname.match(/^\/v1\/roles\/([^/]+)\/documents$/);
+      if (request.method === "GET" && roleDocumentsMatch) {
+        return proxyGetRequest(
+          `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleDocumentsMatch[1])}/documents`,
+          config,
+        );
+      }
+      if (request.method === "POST" && roleDocumentsMatch) {
+        return proxyJsonRequest(
+          request,
+          `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleDocumentsMatch[1])}/documents`,
+          config,
+          {
+            action: "role_document.upsert",
+            targetType: "role",
+            targetId: () => roleDocumentsMatch[1],
+            metadata: (body, payload) => ({
+              role_document_id: payload.role_document_id,
+              title: payload.title ?? body.title,
+              enabled: payload.enabled ?? body.enabled,
+            }),
+          },
+        );
+      }
+
+      const roleQuestionsMatch = url.pathname.match(/^\/v1\/roles\/([^/]+)\/questions$/);
+      if (request.method === "GET" && roleQuestionsMatch) {
+        return proxyGetRequest(
+          `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleQuestionsMatch[1])}/questions`,
+          config,
+        );
+      }
+      if (request.method === "POST" && roleQuestionsMatch) {
+        return proxyJsonRequest(
+          request,
+          `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleQuestionsMatch[1])}/questions`,
+          config,
+          {
+            action: "role_question.upsert",
+            targetType: "role",
+            targetId: () => roleQuestionsMatch[1],
+            metadata: (body, payload) => ({
+              question_id: payload.question_id,
+              key: payload.key ?? body.key,
+              enabled: payload.enabled ?? body.enabled,
+              sort_order: payload.sort_order ?? body.sort_order,
+            }),
+          },
+        );
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/bots") {
         return proxyJsonRequest(request, `${config.dataServiceUrl}/v1/bots`, config, {
           action: "bot.create",
@@ -130,6 +247,22 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return proxyGetRequest(
           `${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botConfigDocumentsMatch[1])}/config-documents`,
           config,
+        );
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/bot-config-documents") {
+        return proxyJsonRequest(
+          request,
+          `${config.dataServiceUrl}/v1/bot-config-documents`,
+          config,
+          {
+            action: "bot_config_document.upsert",
+            targetType: "bot",
+            targetId: (body, payload) => String(payload.bot_id ?? body.bot_id ?? ""),
+            metadata: (body, payload) => ({
+              title: payload.title ?? body.title,
+            }),
+          },
         );
       }
 
@@ -344,6 +477,158 @@ async function handleGetMcpCapabilities(
     memory: memoryStats,
     capability_config: capabilityConfig,
   });
+}
+
+async function handleRoleDetailPage(
+  config: ControlApiConfig,
+  roleId: string,
+): Promise<Response> {
+  const encodedRoleId = encodeURIComponent(roleId);
+  const [roleResponse, documentsResponse, questionsResponse] = await Promise.all([
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/roles/${encodedRoleId}`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/roles/${encodedRoleId}/documents`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/roles/${encodedRoleId}/questions`)),
+  ]);
+  if (!roleResponse.ok) {
+    return cloneJsonResponse(roleResponse);
+  }
+  if (!documentsResponse.ok) {
+    return cloneJsonResponse(documentsResponse);
+  }
+  if (!questionsResponse.ok) {
+    return cloneJsonResponse(questionsResponse);
+  }
+
+  const role = await roleResponse.json() as Record<string, unknown>;
+  const documents = await documentsResponse.json() as Array<Record<string, unknown>>;
+  const questions = await questionsResponse.json() as Array<Record<string, unknown>>;
+  return htmlResponse(renderRoleDetailPage(roleId, role, documents, questions));
+}
+
+async function handleBotConfigEditorPage(
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  const encodedBotId = encodeURIComponent(botId);
+  const [botResponse, documentsResponse] = await Promise.all([
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}/config-documents`)),
+  ]);
+  if (!botResponse.ok) {
+    return cloneJsonResponse(botResponse);
+  }
+  if (!documentsResponse.ok) {
+    return cloneJsonResponse(documentsResponse);
+  }
+
+  const bot = await botResponse.json() as Record<string, unknown>;
+  const documents = await documentsResponse.json() as Array<Record<string, unknown>>;
+  return htmlResponse(renderBotConfigEditorPage(botId, bot, documents));
+}
+
+async function handleRoleDocumentSave(
+  request: Request,
+  config: ControlApiConfig,
+  roleId: string,
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  await proxyJsonRequest(
+    new Request(`http://localhost/v1/roles/${encodeURIComponent(roleId)}/documents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor_id: form.actor_id,
+        title: form.title,
+        content: form.content,
+        enabled: form.enabled === "true",
+      }),
+    }),
+    `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleId)}/documents`,
+    config,
+    {
+      action: "role_document.upsert",
+      targetType: "role",
+      targetId: () => roleId,
+      metadata: (body, payload) => ({
+        role_document_id: payload.role_document_id,
+        title: payload.title ?? body.title,
+        enabled: payload.enabled ?? body.enabled,
+      }),
+    },
+  );
+  return redirectResponse(`/admin/roles/${encodeURIComponent(roleId)}`);
+}
+
+async function handleRoleQuestionSave(
+  request: Request,
+  config: ControlApiConfig,
+  roleId: string,
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  await proxyJsonRequest(
+    new Request(`http://localhost/v1/roles/${encodeURIComponent(roleId)}/questions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor_id: form.actor_id,
+        key: form.key,
+        title: form.title,
+        description: form.description ?? "",
+        question_type: form.question_type,
+        options_json: parseJsonArrayField(form.options_json),
+        required: form.required === "true",
+        enabled: form.enabled === "true",
+        sort_order: Number(form.sort_order ?? 0),
+        depends_on_json: parseJsonArrayField(form.depends_on_json),
+      }),
+    }),
+    `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleId)}/questions`,
+    config,
+    {
+      action: "role_question.upsert",
+      targetType: "role",
+      targetId: () => roleId,
+      metadata: (body, payload) => ({
+        question_id: payload.question_id,
+        key: payload.key ?? body.key,
+        enabled: payload.enabled ?? body.enabled,
+        sort_order: payload.sort_order ?? body.sort_order,
+      }),
+    },
+  );
+  return redirectResponse(`/admin/roles/${encodeURIComponent(roleId)}`);
+}
+
+async function handleBotConfigDocumentSave(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+  title: "soul" | "agents.md",
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  await proxyJsonRequest(
+    new Request("http://localhost/v1/bot-config-documents", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor_id: form.actor_id,
+        bot_id: botId,
+        title,
+        content: form.content,
+      }),
+    }),
+    `${config.dataServiceUrl}/v1/bot-config-documents`,
+    config,
+    {
+      action: "bot_config_document.upsert",
+      targetType: "bot",
+      targetId: (body, payload) => String(payload.bot_id ?? body.bot_id ?? ""),
+      metadata: (body, payload) => ({
+        title: payload.title ?? body.title,
+      }),
+    },
+  );
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/config`);
 }
 
 function summarizeConfigDocuments(documents: unknown[]): {
@@ -712,6 +997,135 @@ function htmlResponse(body: string): Response {
       "pragma": "no-cache",
     },
   });
+}
+
+function redirectResponse(location: string): Response {
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location,
+    },
+  });
+}
+
+async function readUrlEncodedForm(request: Request): Promise<Record<string, string>> {
+  const formData = await request.formData();
+  const result: Record<string, string> = {};
+  for (const [key, value] of formData.entries()) {
+    result[key] = String(value);
+  }
+  return result;
+}
+
+function parseJsonArrayField(raw: string | undefined): unknown[] {
+  if (!raw || raw.trim() === "") {
+    return [];
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function escapeHtmlValue(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function pageShell(title: string, body: string): string {
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtmlValue(title)} - Bot Control</title>
+  <style>
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #f6f7f9; color: #17202e; }
+    main { width: min(1080px, calc(100vw - 32px)); margin: 0 auto; padding: 24px 0 40px; display: grid; gap: 16px; }
+    .card { background: #fff; border: 1px solid #d9e1ea; border-radius: 8px; padding: 16px; }
+    h1, h2, h3 { margin: 0; }
+    .muted { color: #647184; font-size: 13px; }
+    .stack { display: grid; gap: 10px; }
+    textarea, input { width: 100%; box-sizing: border-box; border: 1px solid #d9e1ea; border-radius: 8px; padding: 10px 12px; font: inherit; background: #fff; }
+    textarea { min-height: 180px; resize: vertical; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { border-bottom: 1px solid #d9e1ea; padding: 10px 8px; text-align: left; vertical-align: top; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #111827; color: #eef4ff; border-radius: 8px; padding: 12px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn { display: inline-flex; align-items: center; min-height: 40px; padding: 0 14px; border-radius: 8px; text-decoration: none; border: 1px solid #d9e1ea; background: #fff; color: #17202e; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <main>${body}</main>
+</body>
+</html>`;
+}
+
+function renderRoleDetailPage(
+  roleId: string,
+  role: Record<string, unknown>,
+  documents: Array<Record<string, unknown>>,
+  questions: Array<Record<string, unknown>>,
+): string {
+  const firstDocument = documents[0];
+  return pageShell("角色详情", [
+    `<section class="card stack">`,
+    `<div class="actions"><a class="btn" href="/">返回 Channel 管理</a></div>`,
+    `<h1>角色详情</h1>`,
+    `<div class="muted">${escapeHtmlValue(roleId)}</div>`,
+    `<h2>${escapeHtmlValue(role.name)}</h2>`,
+    `<div class="muted">${escapeHtmlValue(role.description)}</div>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>角色规则文档</h2>`,
+    `<div class="muted">提交目标：/v1/roles/${escapeHtmlValue(roleId)}/documents</div>`,
+    `<label class="stack"><span class="muted">role.md</span><textarea>${escapeHtmlValue(firstDocument?.content ?? "")}</textarea></label>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>角色问题</h2>`,
+    `<div class="muted">提交目标：/v1/roles/${escapeHtmlValue(roleId)}/questions</div>`,
+    `<table><thead><tr><th>key</th><th>标题</th><th>类型</th><th>排序</th></tr></thead><tbody>`,
+    ...questions.map((question) => `<tr><td><code>${escapeHtmlValue(question.key)}</code></td><td>${escapeHtmlValue(question.title)}</td><td>${escapeHtmlValue(question.question_type)}</td><td>${escapeHtmlValue(question.sort_order)}</td></tr>`),
+    `</tbody></table>`,
+    `</section>`,
+  ].join(""));
+}
+
+function renderBotConfigEditorPage(
+  botId: string,
+  bot: Record<string, unknown>,
+  documents: Array<Record<string, unknown>>,
+): string {
+  const soul = documents.find((document) => {
+    const title = String(document.title ?? "").toLowerCase();
+    return title === "soul" || title === "soul.md";
+  });
+  const agents = documents.find((document) => {
+    const title = String(document.title ?? "").toLowerCase();
+    return title === "agents" || title === "agents.md";
+  });
+  return pageShell("Bot 配置编辑", [
+    `<section class="card stack">`,
+    `<div class="actions"><a class="btn" href="/">返回 Channel 管理</a></div>`,
+    `<h1>Bot 配置编辑</h1>`,
+    `<h2>${escapeHtmlValue(bot.name ?? botId)}</h2>`,
+    `<div class="muted">${escapeHtmlValue(botId)}</div>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>Soul</h2>`,
+    `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
+    `<div class="actions"><span class="btn">保存 Soul</span></div>`,
+    `<textarea>${escapeHtmlValue(soul?.content ?? "")}</textarea>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>Agents</h2>`,
+    `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
+    `<div class="actions"><span class="btn">保存 Agents</span></div>`,
+    `<textarea>${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `</section>`,
+  ].join(""));
 }
 
 function renderChannelWorkbenchPage(): string {
@@ -1125,6 +1539,8 @@ function renderChannelWorkbenchPage(): string {
         <p>管理企业微信 Channel、管理员认领、Bot 初始化和文档上下文。</p>
       </div>
       <div class="tools">
+        <a href="/admin/global-documents">全局配置</a>
+        <a href="/admin/roles">角色管理</a>
         <span class="toast" id="toast">等待操作。</span>
         <button type="button" class="secondary" id="refreshButton">刷新</button>
         <button type="button" id="newChannelButton">新增 Channel</button>

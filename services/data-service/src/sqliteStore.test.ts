@@ -4,7 +4,53 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_CLAIM_TTL_MS } from "./store.js";
-import { createSqliteDataStore } from "./sqliteStore.js";
+import { createSqliteDataStore, seedDefaultRoleConfig } from "./sqliteStore.js";
+
+function withInjectedUniqueCollision(
+  dbPath: string,
+  sqlFragment: string,
+  injector: () => void,
+): void {
+  const originalPrepare = Database.prototype.prepare;
+  let injected = false;
+
+  vi.spyOn(Database.prototype, "prepare").mockImplementation(function mockedPrepare(
+    this: Database.Database,
+    sql: string,
+    ...args: any[]
+  ) {
+    const callPrepare = originalPrepare as unknown as (
+      this: Database.Database,
+      sql: string,
+      ...rest: any[]
+    ) => ReturnType<typeof Database.prototype.prepare>;
+    const statement = callPrepare.call(this, sql, ...args);
+    if (!sql.includes(sqlFragment)) {
+      return statement;
+    }
+
+    return new Proxy(statement, {
+      get(target, property, receiver) {
+        if (property !== "run") {
+          return Reflect.get(target, property, receiver);
+        }
+
+        return (...runArgs: any[]) => {
+          if (!injected) {
+            injected = true;
+            const raw = new Database(dbPath);
+            try {
+              injector();
+            } finally {
+              raw.close();
+            }
+          }
+          return Reflect.apply(target.run as (...args: any[]) => unknown, target, runArgs);
+        };
+      },
+    });
+  });
+}
 
 describe("sqlite data store", () => {
   const dirs: string[] = [];
@@ -180,6 +226,433 @@ describe("sqlite data store", () => {
     expect(repeated.created_at).toBe(updated.created_at);
     expect(repeated.updated_at).not.toBe(updated.updated_at);
     second.close?.();
+  });
+
+  it("persists global documents with enabled filtering ordering and logical-key upserts", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    const disabled = first.upsertGlobalDocument({
+      title: "Safety",
+      slug: "safety",
+      content: "# Safety",
+      enabled: false,
+      sort_order: 10,
+    });
+    const created = first.upsertGlobalDocument({
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+      enabled: true,
+      sort_order: 20,
+    });
+    const updated = first.upsertGlobalDocument({
+      title: "Playground Guide",
+      slug: "playground",
+      content: "# Playground v2",
+      enabled: true,
+      sort_order: 30,
+    });
+
+    expect(updated.document_id).toBe(created.document_id);
+    expect(updated.created_at).toBe(created.created_at);
+    expect(updated.updated_at).not.toBe(created.updated_at);
+    expect(first.listGlobalDocuments({ includeDisabled: true }).map((document) => document.slug)).toEqual([
+      "safety",
+      "playground",
+    ]);
+    expect(first.listGlobalDocuments().map((document) => document.slug)).toEqual(["playground"]);
+    expect(() => first.upsertGlobalDocument({
+      document_id: "global_doc_missing",
+      title: "Missing",
+      slug: "missing",
+      content: "# Missing",
+    })).toThrow("global document not found: global_doc_missing");
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.listGlobalDocuments({ includeDisabled: true })).toEqual([
+      disabled,
+      updated,
+    ]);
+    second.close?.();
+  });
+
+  it("persists roles role documents and role questions with task-1 semantics", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    const disabledRole = first.upsertRole({
+      name: "Disabled role",
+      slug: "disabled-role",
+      description: "disabled",
+      enabled: false,
+      sort_order: 5,
+    });
+    const createdRole = first.upsertRole({
+      name: "Product Manager",
+      slug: "product-manager",
+      description: "产品经理角色",
+      enabled: true,
+      sort_order: 10,
+    });
+    const updatedRole = first.upsertRole({
+      name: "Senior Product Manager",
+      slug: "product-manager",
+      description: "更新后的产品经理角色",
+      enabled: true,
+      sort_order: 20,
+    });
+    expect(updatedRole.role_id).toBe(createdRole.role_id);
+    expect(updatedRole.created_at).toBe(createdRole.created_at);
+    expect(updatedRole.updated_at).not.toBe(createdRole.updated_at);
+    expect(first.listRoles({ includeDisabled: true }).map((role) => role.slug)).toEqual([
+      "disabled-role",
+      "product-manager",
+    ]);
+    expect(first.listRoles().map((role) => role.slug)).toEqual(["product-manager"]);
+    expect(() => first.upsertRole({
+      role_id: "role_missing",
+      name: "Ghost",
+      slug: "ghost",
+      description: "ghost",
+    })).toThrow("role not found: role_missing");
+
+    const disabledDocument = first.upsertRoleDocument({
+      role_id: updatedRole.role_id,
+      title: "disabled.md",
+      content: "# Disabled",
+      enabled: false,
+    });
+    const createdDocument = first.upsertRoleDocument({
+      role_id: updatedRole.role_id,
+      title: "role.md",
+      content: "# Role",
+      enabled: true,
+    });
+    const updatedDocument = first.upsertRoleDocument({
+      role_id: updatedRole.role_id,
+      title: "role.md",
+      content: "# Role v2",
+      enabled: true,
+    });
+    expect(updatedDocument.role_document_id).toBe(createdDocument.role_document_id);
+    expect(updatedDocument.created_at).toBe(createdDocument.created_at);
+    expect(updatedDocument.updated_at).not.toBe(createdDocument.updated_at);
+    expect(first.listRoleDocuments(updatedRole.role_id, { includeDisabled: true })).toEqual([
+      disabledDocument,
+      updatedDocument,
+    ]);
+    expect(first.listRoleDocuments(updatedRole.role_id)).toEqual([updatedDocument]);
+    expect(() => first.upsertRoleDocument({
+      role_document_id: "role_doc_missing",
+      role_id: updatedRole.role_id,
+      title: "missing.md",
+      content: "# Missing",
+    })).toThrow("role document not found: role_doc_missing");
+
+    const disabledQuestion = first.upsertRoleQuestion({
+      role_id: updatedRole.role_id,
+      key: "legacy_mode",
+      title: "Legacy mode?",
+      description: "legacy",
+      question_type: "free_text",
+      enabled: false,
+      sort_order: 5,
+    });
+    const createdQuestion = first.upsertRoleQuestion({
+      role_id: updatedRole.role_id,
+      key: "interaction_mode",
+      title: "How should it interact?",
+      description: "Choose the operating style",
+      question_type: "single_choice",
+      options_json: [{ value: "step_by_step", label: "Step by step" }],
+      required: true,
+      enabled: true,
+      sort_order: 10,
+      depends_on_json: [{ key: "team_mode", equals: "enabled" }],
+    });
+    const updatedQuestion = first.upsertRoleQuestion({
+      role_id: updatedRole.role_id,
+      key: "interaction_mode",
+      title: "How should it interact now?",
+      description: "Updated guidance",
+      question_type: "single_choice",
+      options_json: [{ value: "direct", label: "Direct" }],
+      required: true,
+      enabled: true,
+      sort_order: 20,
+      depends_on_json: [{ key: "team_mode", equals: "enabled" }],
+    });
+    expect(updatedQuestion.question_id).toBe(createdQuestion.question_id);
+    expect(updatedQuestion.created_at).toBe(createdQuestion.created_at);
+    expect(updatedQuestion.updated_at).not.toBe(createdQuestion.updated_at);
+    expect(first.listRoleQuestions(updatedRole.role_id, { includeDisabled: true })).toEqual([
+      disabledQuestion,
+      updatedQuestion,
+    ]);
+    expect(first.listRoleQuestions(updatedRole.role_id)).toEqual([updatedQuestion]);
+    expect(updatedQuestion.description).toBe("Updated guidance");
+    expect(updatedQuestion.depends_on_json).toEqual([{ key: "team_mode", equals: "enabled" }]);
+    expect(() => first.upsertRoleQuestion({
+      question_id: "question_missing",
+      role_id: updatedRole.role_id,
+      key: "missing_question",
+      title: "Missing question",
+      question_type: "free_text",
+    })).toThrow("role question not found: question_missing");
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.listRoles({ includeDisabled: true })).toEqual([
+      disabledRole,
+      updatedRole,
+    ]);
+    expect(second.listRoleDocuments(updatedRole.role_id, { includeDisabled: true })).toEqual([
+      disabledDocument,
+      updatedDocument,
+    ]);
+    expect(second.listRoleQuestions(updatedRole.role_id, { includeDisabled: true })).toEqual([
+      disabledQuestion,
+      updatedQuestion,
+    ]);
+
+    second.deleteRole(updatedRole.role_id);
+    expect(second.listRoleDocuments(updatedRole.role_id, { includeDisabled: true })).toEqual([]);
+    expect(second.listRoleQuestions(updatedRole.role_id, { includeDisabled: true })).toEqual([]);
+    second.close?.();
+  });
+
+  it("seeds default role configuration when sqlite config tables are empty", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    seedDefaultRoleConfig(first);
+    seedDefaultRoleConfig(first);
+
+    expect(first.listGlobalDocuments().map((document) => document.slug)).toEqual(["playground"]);
+    const roles = first.listRoles();
+    expect(roles.map((role) => role.slug)).toEqual(["product-manager"]);
+    const productManager = roles[0];
+    expect(productManager).toMatchObject({
+      name: "产品经理助手",
+      slug: "product-manager",
+    });
+    expect(first.listRoleDocuments(productManager.role_id)).toHaveLength(1);
+    expect(first.listRoleQuestions(productManager.role_id)).not.toHaveLength(0);
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    const [persistedRole] = second.listRoles();
+    expect(second.listGlobalDocuments().map((document) => document.slug)).toEqual(["playground"]);
+    expect(second.listRoleDocuments(persistedRole.role_id)).toHaveLength(1);
+    expect(second.listRoleQuestions(persistedRole.role_id)[0]).toMatchObject({
+      role_id: persistedRole.role_id,
+      description: expect.any(String),
+      depends_on_json: expect.any(Array),
+    });
+    second.close?.();
+  });
+
+  it("does not overwrite customized seeded role configuration on repeated bootstrap", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const store = createSqliteDataStore(dbPath);
+    seedDefaultRoleConfig(store);
+
+    const [seededPlayground] = store.listGlobalDocuments({ includeDisabled: true });
+    const [seededRole] = store.listRoles({ includeDisabled: true });
+    const [seededRoleDocument] = store.listRoleDocuments(seededRole.role_id, {
+      includeDisabled: true,
+    });
+    const seededQuestions = store.listRoleQuestions(seededRole.role_id, {
+      includeDisabled: true,
+    });
+    const seededMemoryStorage = seededQuestions.find((question) => question.key === "memory_storage");
+    const seededInteractionMode = seededQuestions.find(
+      (question) => question.key === "interaction_mode",
+    );
+    const seededWorkRules = seededQuestions.find((question) => question.key === "work_rules");
+
+    expect(seededMemoryStorage).toBeDefined();
+    expect(seededInteractionMode).toBeDefined();
+    expect(seededWorkRules).toBeDefined();
+
+    const customizedPlayground = store.upsertGlobalDocument({
+      document_id: seededPlayground.document_id,
+      title: "Custom Playground",
+      slug: seededPlayground.slug,
+      content: "# Custom Playground",
+      enabled: false,
+      sort_order: 99,
+    });
+    const customizedRole = store.upsertRole({
+      role_id: seededRole.role_id,
+      name: "Custom Product Manager",
+      slug: seededRole.slug,
+      description: "Custom role guidance.",
+      enabled: false,
+      sort_order: 99,
+    });
+    const customizedRoleDocument = store.upsertRoleDocument({
+      role_document_id: seededRoleDocument.role_document_id,
+      role_id: seededRole.role_id,
+      title: seededRoleDocument.title,
+      content: "# Custom Role",
+      enabled: false,
+    });
+    const customizedMemoryStorage = store.upsertRoleQuestion({
+      question_id: seededMemoryStorage!.question_id,
+      role_id: seededRole.role_id,
+      key: seededMemoryStorage!.key,
+      title: "Custom memory storage",
+      description: "Custom memory guidance.",
+      question_type: "single_choice",
+      options_json: [{ value: "beta", label: "Beta" }],
+      required: false,
+      enabled: false,
+      sort_order: 99,
+      depends_on_json: [],
+    });
+    const customizedInteractionMode = store.upsertRoleQuestion({
+      question_id: seededInteractionMode!.question_id,
+      role_id: seededRole.role_id,
+      key: seededInteractionMode!.key,
+      title: "Custom interaction mode",
+      description: "Custom interaction guidance.",
+      question_type: "single_choice",
+      options_json: [{ value: "async", label: "Async" }],
+      required: false,
+      enabled: false,
+      sort_order: 100,
+      depends_on_json: [{ key: "memory_storage", equals: "beta" }],
+    });
+    const customizedWorkRules = store.upsertRoleQuestion({
+      question_id: seededWorkRules!.question_id,
+      role_id: seededRole.role_id,
+      key: seededWorkRules!.key,
+      title: "Custom work rules",
+      description: "Custom work rule guidance.",
+      question_type: "single_choice",
+      options_json: [{ value: "policy", label: "Policy" }],
+      required: false,
+      enabled: false,
+      sort_order: 101,
+      depends_on_json: [{ key: "interaction_mode", equals: "async" }],
+    });
+
+    seedDefaultRoleConfig(store);
+
+    expect(store.listGlobalDocuments({ includeDisabled: true })).toEqual([customizedPlayground]);
+    expect(store.listRoles({ includeDisabled: true })).toEqual([customizedRole]);
+    expect(
+      store.listRoleDocuments(customizedRole.role_id, { includeDisabled: true }),
+    ).toEqual([customizedRoleDocument]);
+    expect(
+      store.listRoleQuestions(customizedRole.role_id, { includeDisabled: true }),
+    ).toEqual([customizedMemoryStorage, customizedInteractionMode, customizedWorkRules]);
+    store.close?.();
+  });
+
+  it("backfills missing seeded records by logical key without overwriting customized state", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const store = createSqliteDataStore(dbPath);
+    const existingGlobal = store.upsertGlobalDocument({
+      title: "Safety",
+      slug: "safety",
+      content: "# Safety",
+      enabled: false,
+      sort_order: 50,
+    });
+    const productManager = store.upsertRole({
+      name: "Custom Product Manager",
+      slug: "product-manager",
+      description: "Customized role guidance.",
+      enabled: false,
+      sort_order: 77,
+    });
+    const existingQuestion = store.upsertRoleQuestion({
+      role_id: productManager.role_id,
+      key: "memory_storage",
+      title: "Custom memory storage",
+      description: "Keep this customization.",
+      question_type: "single_choice",
+      options_json: [{ value: "beta", label: "Beta" }],
+      required: false,
+      enabled: false,
+      sort_order: 99,
+      depends_on_json: [],
+    });
+
+    seedDefaultRoleConfig(store);
+
+    expect(store.listGlobalDocuments({ includeDisabled: true })).toEqual([
+      expect.objectContaining({ slug: "playground", title: "playground.md" }),
+      expect.objectContaining({ document_id: existingGlobal.document_id, slug: "safety" }),
+    ]);
+    expect(store.listRoles({ includeDisabled: true })).toEqual([productManager]);
+    expect(store.listRoleDocuments(productManager.role_id, { includeDisabled: true })).toEqual([
+      expect.objectContaining({
+        role_id: productManager.role_id,
+        title: "role.md",
+        content: expect.stringContaining("# Role: Product Manager"),
+      }),
+    ]);
+    expect(store.listRoleQuestions(productManager.role_id, { includeDisabled: true })).toEqual([
+      expect.objectContaining({
+        role_id: productManager.role_id,
+        key: "interaction_mode",
+        title: "你希望它用什么方式和你交互？",
+      }),
+      expect.objectContaining({
+        role_id: productManager.role_id,
+        key: "work_rules",
+        title: "有没有必须遵守的工作规则？",
+      }),
+      existingQuestion,
+    ]);
+    store.close?.();
+  });
+
+  it("adds missing seeded playground and product-manager even when collections are already populated", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const store = createSqliteDataStore(dbPath);
+    const existingGlobal = store.upsertGlobalDocument({
+      title: "Safety",
+      slug: "safety",
+      content: "# Safety",
+    });
+    const existingRole = store.upsertRole({
+      name: "Designer",
+      slug: "designer",
+      description: "Existing role.",
+    });
+
+    seedDefaultRoleConfig(store);
+
+    expect(store.listGlobalDocuments({ includeDisabled: true })).toEqual([
+      expect.objectContaining({ document_id: existingGlobal.document_id, slug: "safety" }),
+      expect.objectContaining({ slug: "playground" }),
+    ]);
+    expect(store.listRoles({ includeDisabled: true })).toEqual([
+      existingRole,
+      expect.objectContaining({ slug: "product-manager", name: "产品经理助手" }),
+    ]);
+    store.close?.();
   });
 
   it("rejects non-boolean runtime config stream values", () => {
@@ -388,6 +861,111 @@ describe("sqlite data store", () => {
     expect(() => store.updateBot("ops-bot", {
       wecom_bot_id: "wecom-bot-a",
     })).toThrow("wecom bot id already bound to bot: prd-bot");
+    store.close?.();
+  });
+
+  it("surfaces logical-key duplicate errors instead of raw sqlite constraint errors", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const store = createSqliteDataStore(dbPath);
+
+    withInjectedUniqueCollision(dbPath, "insert into global_documents", () => {
+      const raw = new Database(dbPath);
+      const now = new Date().toISOString();
+      try {
+        raw.prepare(
+          "insert into global_documents (document_id, title, slug, content, enabled, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run("global_doc_existing", "Existing Playground", "playground", "# Existing", 1, 5, now, now);
+      } finally {
+        raw.close();
+      }
+    });
+    expect(() => store.upsertGlobalDocument({
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+    })).toThrow("global document slug already exists: playground");
+    vi.restoreAllMocks();
+
+    withInjectedUniqueCollision(dbPath, "insert into roles", () => {
+      const raw = new Database(dbPath);
+      const now = new Date().toISOString();
+      try {
+        raw.prepare(
+          "insert into roles (role_id, name, slug, description, enabled, sort_order, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run("role_existing", "Existing PM", "product-manager", "Existing", 1, 5, now, now);
+      } finally {
+        raw.close();
+      }
+    });
+    expect(() => store.upsertRole({
+      name: "Product Manager",
+      slug: "product-manager",
+      description: "Role guidance",
+    })).toThrow("role slug already exists: product-manager");
+    vi.restoreAllMocks();
+
+    const researchRole = store.upsertRole({
+      name: "Researcher",
+      slug: "researcher",
+      description: "Research role.",
+    });
+    withInjectedUniqueCollision(dbPath, "insert into role_documents", () => {
+      const raw = new Database(dbPath);
+      const now = new Date().toISOString();
+      try {
+        raw.prepare(
+          "insert into role_documents (role_document_id, role_id, title, content, enabled, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
+        ).run("role_doc_existing", researchRole.role_id, "role.md", "# Existing", 1, now, now);
+      } finally {
+        raw.close();
+      }
+    });
+    expect(() => store.upsertRoleDocument({
+      role_id: researchRole.role_id,
+      title: "role.md",
+      content: "# Role",
+    })).toThrow(
+      `role document already exists for role ${researchRole.role_id} and title role.md`,
+    );
+    vi.restoreAllMocks();
+
+    withInjectedUniqueCollision(dbPath, "insert into role_questions", () => {
+      const raw = new Database(dbPath);
+      const now = new Date().toISOString();
+      try {
+        raw.prepare(
+          "insert into role_questions (question_id, role_id, key, title, description, question_type, options_json, required, enabled, sort_order, depends_on_json, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(
+          "question_existing",
+          researchRole.role_id,
+          "interaction_mode",
+          "Existing question",
+          "Existing",
+          "single_choice",
+          JSON.stringify([{ value: "direct", label: "Direct" }]),
+          1,
+          1,
+          10,
+          JSON.stringify([]),
+          now,
+          now,
+        );
+      } finally {
+        raw.close();
+      }
+    });
+    expect(() => store.upsertRoleQuestion({
+      role_id: researchRole.role_id,
+      key: "interaction_mode",
+      title: "Interaction mode",
+      description: "Question",
+      question_type: "single_choice",
+      options_json: [{ value: "direct", label: "Direct" }],
+    })).toThrow(
+      `role question already exists for role ${researchRole.role_id} and key interaction_mode`,
+    );
     store.close?.();
   });
 

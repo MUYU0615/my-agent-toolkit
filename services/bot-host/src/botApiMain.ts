@@ -12,3 +12,5 @@ export function startBotApiMain(): void {
 
   createNodeServer(port, app, "bot-host api");
 }
+
+startBotApiMain();

@@ -74,3 +74,5 @@ export function startWeComWorkerMain(): void {
     process.exitCode = 1;
   });
 }
+
+startWeComWorkerMain();

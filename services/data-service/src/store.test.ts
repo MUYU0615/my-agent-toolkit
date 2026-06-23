@@ -1111,4 +1111,456 @@ describe("data-service store", () => {
       owner_id: "prd-bot",
     })).toEqual([currentGuideline, processDoc]);
   });
+
+  it("stores updates deletes and orders global documents", () => {
+    const store = createDataStore();
+
+    const playground = store.upsertGlobalDocument({
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+      enabled: true,
+      sort_order: 20,
+    });
+    const safety = store.upsertGlobalDocument({
+      title: "Safety",
+      slug: "safety",
+      content: "# Safety",
+      enabled: false,
+      sort_order: 10,
+    });
+
+    expect(store.listGlobalDocuments({ includeDisabled: true }).map((doc) => doc.slug)).toEqual([
+      "safety",
+      "playground",
+    ]);
+    expect(store.listGlobalDocuments().map((doc) => doc.slug)).toEqual(["playground"]);
+
+    const updatedPlayground = store.upsertGlobalDocument({
+      document_id: playground.document_id,
+      title: "Playground Updated",
+      slug: "playground",
+      content: "# Playground v2",
+      enabled: true,
+      sort_order: 5,
+    });
+
+    expect(updatedPlayground.document_id).toBe(playground.document_id);
+    expect(updatedPlayground.created_at).toBe(playground.created_at);
+    expect(updatedPlayground.updated_at).not.toBe(playground.updated_at);
+    expect(store.listGlobalDocuments({ includeDisabled: true }).map((doc) => doc.slug)).toEqual([
+      "playground",
+      "safety",
+    ]);
+
+    store.deleteGlobalDocument(safety.document_id);
+    expect(store.listGlobalDocuments({ includeDisabled: true })).toEqual([
+      updatedPlayground,
+    ]);
+  });
+
+  it("rejects duplicate global document slugs when updating by explicit id", () => {
+    const store = createDataStore();
+    const playground = store.upsertGlobalDocument({
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+    });
+    store.upsertGlobalDocument({
+      title: "Safety",
+      slug: "safety",
+      content: "# Safety",
+    });
+
+    expect(() => store.upsertGlobalDocument({
+      document_id: playground.document_id,
+      title: "Playground",
+      slug: "safety",
+      content: "# Playground",
+    })).toThrow("global document slug already exists: safety");
+  });
+
+  it("rejects stale explicit ids for global document upserts", () => {
+    const store = createDataStore();
+
+    expect(() => store.upsertGlobalDocument({
+      document_id: "global_doc_missing",
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+    })).toThrow("global document not found: global_doc_missing");
+  });
+
+  it("stores roles with enabled filtering and sort order", () => {
+    const store = createDataStore();
+
+    const productManager = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+      enabled: true,
+      sort_order: 20,
+    });
+    const architect = store.upsertRole({
+      name: "架构师助手",
+      slug: "architect",
+      description: "架构师角色",
+      enabled: false,
+      sort_order: 10,
+    });
+
+    expect(store.listRoles({ includeDisabled: true }).map((role) => role.slug)).toEqual([
+      "architect",
+      "product-manager",
+    ]);
+    expect(store.listRoles().map((role) => role.slug)).toEqual(["product-manager"]);
+
+    const updatedRole = store.upsertRole({
+      role_id: productManager.role_id,
+      name: "高级产品经理助手",
+      slug: "product-manager",
+      description: "高级产品经理角色",
+      enabled: true,
+      sort_order: 5,
+    });
+
+    expect(updatedRole.role_id).toBe(productManager.role_id);
+    expect(updatedRole.created_at).toBe(productManager.created_at);
+    expect(updatedRole.updated_at).not.toBe(productManager.updated_at);
+    expect(store.listRoles({ includeDisabled: true }).map((role) => role.slug)).toEqual([
+      "product-manager",
+      "architect",
+    ]);
+
+    store.deleteRole(architect.role_id);
+    expect(store.listRoles({ includeDisabled: true })).toEqual([updatedRole]);
+  });
+
+  it("rejects duplicate role slugs when updating by explicit id", () => {
+    const store = createDataStore();
+    const productManager = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+    store.upsertRole({
+      name: "架构师助手",
+      slug: "architect",
+      description: "架构师角色",
+    });
+
+    expect(() => store.upsertRole({
+      role_id: productManager.role_id,
+      name: "产品经理助手",
+      slug: "architect",
+      description: "产品经理角色",
+    })).toThrow("role slug already exists: architect");
+  });
+
+  it("rejects stale explicit ids for role upserts", () => {
+    const store = createDataStore();
+
+    expect(() => store.upsertRole({
+      role_id: "role_missing",
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    })).toThrow("role not found: role_missing");
+  });
+
+  it("stores role documents and role questions with enabled filtering cleanup and sort order", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+      enabled: true,
+      sort_order: 10,
+    });
+
+    const roleDoc = store.upsertRoleDocument({
+      role_id: role.role_id,
+      title: "role.md",
+      content: "# Role",
+      enabled: true,
+    });
+    const disabledRoleDoc = store.upsertRoleDocument({
+      role_id: role.role_id,
+      title: "constraints.md",
+      content: "# Constraints",
+      enabled: false,
+    });
+
+    expect(store.listRoleDocuments(role.role_id).map((doc) => doc.title)).toEqual(["role.md"]);
+    expect(store.listRoleDocuments(role.role_id, { includeDisabled: true }).map((doc) => doc.title))
+      .toEqual(["role.md", "constraints.md"]);
+
+    const updatedRoleDoc = store.upsertRoleDocument({
+      role_document_id: roleDoc.role_document_id,
+      role_id: role.role_id,
+      title: "role.md",
+      content: "# Role v2",
+      enabled: true,
+    });
+
+    expect(updatedRoleDoc.role_document_id).toBe(roleDoc.role_document_id);
+    expect(updatedRoleDoc.created_at).toBe(roleDoc.created_at);
+    expect(updatedRoleDoc.updated_at).not.toBe(roleDoc.updated_at);
+
+    const laterQuestion = store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "delivery_style",
+      title: "你希望它如何输出结果？",
+      question_type: "single_choice",
+      options_json: [{ value: "structured", label: "结构化" }],
+      required: true,
+      enabled: true,
+      sort_order: 20,
+    });
+    const firstQuestion = store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "interaction_mode",
+      title: "你希望它用什么方式和你交互？",
+      description: "用于决定后续问题是否需要细化",
+      question_type: "single_choice",
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+      required: true,
+      enabled: true,
+      sort_order: 10,
+    });
+    const disabledQuestion = store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "tool_preference",
+      title: "是否偏好特定工具？",
+      description: "只有逐句引导模式下才继续追问",
+      question_type: "free_text",
+      depends_on_json: [{ key: "interaction_mode", equals: "step_by_step" }],
+      required: false,
+      enabled: false,
+      sort_order: 5,
+    });
+
+    expect(firstQuestion).toMatchObject({
+      description: "用于决定后续问题是否需要细化",
+      question_type: "single_choice",
+      depends_on_json: [],
+    });
+    expect(disabledQuestion).toMatchObject({
+      description: "只有逐句引导模式下才继续追问",
+      question_type: "free_text",
+      options_json: [],
+      depends_on_json: [{ key: "interaction_mode", equals: "step_by_step" }],
+    });
+
+    expect(store.listRoleQuestions(role.role_id).map((question) => question.key)).toEqual([
+      "interaction_mode",
+      "delivery_style",
+    ]);
+    expect(
+      store.listRoleQuestions(role.role_id, { includeDisabled: true }).map((question) => ({
+        key: question.key,
+        description: question.description,
+        question_type: question.question_type,
+        depends_on_json: question.depends_on_json,
+      })),
+    ).toEqual([
+      {
+        key: "tool_preference",
+        description: "只有逐句引导模式下才继续追问",
+        question_type: "free_text",
+        depends_on_json: [{ key: "interaction_mode", equals: "step_by_step" }],
+      },
+      {
+        key: "interaction_mode",
+        description: "用于决定后续问题是否需要细化",
+        question_type: "single_choice",
+        depends_on_json: [],
+      },
+      {
+        key: "delivery_style",
+        description: "",
+        question_type: "single_choice",
+        depends_on_json: [],
+      },
+    ]);
+
+    const updatedQuestion = store.upsertRoleQuestion({
+      question_id: laterQuestion.question_id,
+      role_id: role.role_id,
+      key: "delivery_style",
+      title: "你希望它如何呈现结果？",
+      description: "用于控制输出格式偏好",
+      question_type: "single_choice",
+      options_json: [{ value: "structured", label: "结构化" }],
+      depends_on_json: [{ key: "interaction_mode", equals: "step_by_step" }],
+      required: true,
+      enabled: true,
+      sort_order: 15,
+    });
+
+    expect(updatedQuestion.question_id).toBe(laterQuestion.question_id);
+    expect(updatedQuestion.created_at).toBe(laterQuestion.created_at);
+    expect(updatedQuestion.updated_at).not.toBe(laterQuestion.updated_at);
+    expect(updatedQuestion).toMatchObject({
+      description: "用于控制输出格式偏好",
+      question_type: "single_choice",
+      depends_on_json: [{ key: "interaction_mode", equals: "step_by_step" }],
+    });
+    expect(store.listRoleQuestions(role.role_id).map((question) => question.key)).toEqual([
+      "interaction_mode",
+      "delivery_style",
+    ]);
+
+    store.deleteRoleDocument(disabledRoleDoc.role_document_id);
+    expect(store.listRoleDocuments(role.role_id, { includeDisabled: true })).toEqual([
+      updatedRoleDoc,
+    ]);
+
+    store.deleteRoleQuestion(disabledQuestion.question_id);
+    expect(
+      store.listRoleQuestions(role.role_id, { includeDisabled: true }).map((question) =>
+        question.key
+      ),
+    ).toEqual(["interaction_mode", "delivery_style"]);
+
+    store.deleteRole(role.role_id);
+    expect(store.listRoleDocuments(role.role_id, { includeDisabled: true })).toEqual([]);
+    expect(store.listRoleQuestions(role.role_id, { includeDisabled: true })).toEqual([]);
+    expect(firstQuestion.question_id).toMatch(/^question_/);
+  });
+
+  it("rejects duplicate role document titles when updating by explicit id", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+    const roleDoc = store.upsertRoleDocument({
+      role_id: role.role_id,
+      title: "role.md",
+      content: "# Role",
+    });
+    store.upsertRoleDocument({
+      role_id: role.role_id,
+      title: "constraints.md",
+      content: "# Constraints",
+    });
+
+    expect(() => store.upsertRoleDocument({
+      role_document_id: roleDoc.role_document_id,
+      role_id: role.role_id,
+      title: "constraints.md",
+      content: "# Role",
+    })).toThrow(
+      `role document already exists for role ${role.role_id} and title constraints.md`,
+    );
+  });
+
+  it("rejects stale explicit ids for role document upserts", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+
+    expect(() => store.upsertRoleDocument({
+      role_document_id: "role_doc_missing",
+      role_id: role.role_id,
+      title: "role.md",
+      content: "# Role",
+    })).toThrow("role document not found: role_doc_missing");
+  });
+
+  it("rejects duplicate role question keys when updating by explicit id", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+    const interactionMode = store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "interaction_mode",
+      title: "你希望它用什么方式和你交互？",
+      question_type: "single_choice",
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+    });
+    store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "delivery_style",
+      title: "你希望它如何输出结果？",
+      question_type: "single_choice",
+      options_json: [{ value: "structured", label: "结构化" }],
+    });
+
+    expect(() => store.upsertRoleQuestion({
+      question_id: interactionMode.question_id,
+      role_id: role.role_id,
+      key: "delivery_style",
+      title: "你希望它用什么方式和你交互？",
+      question_type: "single_choice",
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+    })).toThrow(
+      `role question already exists for role ${role.role_id} and key delivery_style`,
+    );
+  });
+
+  it("rejects stale explicit ids for role question upserts", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+
+    expect(() => store.upsertRoleQuestion({
+      question_id: "question_missing",
+      role_id: role.role_id,
+      key: "interaction_mode",
+      title: "你希望它用什么方式和你交互？",
+      question_type: "single_choice",
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+    })).toThrow("role question not found: question_missing");
+  });
+
+  it("isolates role question arrays from caller and reader mutation", () => {
+    const store = createDataStore();
+    const role = store.upsertRole({
+      name: "产品经理助手",
+      slug: "product-manager",
+      description: "产品经理角色",
+    });
+    const inputOptions = [{ value: "step_by_step", label: "逐句引导" }];
+    const inputDependencies = [{ key: "delivery_style", equals: "structured" }];
+
+    const created = store.upsertRoleQuestion({
+      role_id: role.role_id,
+      key: "interaction_mode",
+      title: "你希望它用什么方式和你交互？",
+      question_type: "single_choice",
+      options_json: inputOptions,
+      depends_on_json: inputDependencies,
+    });
+
+    inputOptions[0].label = "已修改";
+    inputDependencies[0].equals = "changed";
+    created.options_json[0].label = "返回值已修改";
+    created.depends_on_json[0].equals = "returned";
+
+    const listed = store.listRoleQuestions(role.role_id, { includeDisabled: true });
+    expect(listed[0]).toMatchObject({
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+      depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+    });
+
+    listed[0].options_json[0].label = "列表返回值已修改";
+    listed[0].depends_on_json[0].equals = "listed";
+
+    expect(store.listRoleQuestions(role.role_id, { includeDisabled: true })[0]).toMatchObject({
+      options_json: [{ value: "step_by_step", label: "逐句引导" }],
+      depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+    });
+  });
 });

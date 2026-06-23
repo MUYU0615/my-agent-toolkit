@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { createDataServiceServer } from "./server.js";
-import { createSqliteDataStore } from "./sqliteStore.js";
+import { createSqliteDataStore, seedDefaultRoleConfig } from "./sqliteStore.js";
 import { createWeComSdkVerifier } from "./wecomVerifier.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8300", 10);
@@ -8,6 +8,9 @@ const wecomVerifier = createWeComSdkVerifier();
 const store = process.env.DATA_SERVICE_DB_PATH
   ? createSqliteDataStore(process.env.DATA_SERVICE_DB_PATH, { wecomVerifier })
   : undefined;
+if (store) {
+  seedDefaultRoleConfig(store);
+}
 const app = createDataServiceServer(store);
 
 const server = createServer(async (req, res) => {

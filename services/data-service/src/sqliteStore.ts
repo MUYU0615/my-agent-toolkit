@@ -41,8 +41,10 @@ import {
   type KnowledgeTier,
   type InitializationSessionRecord,
   type InitializationSessionKeyInput,
+  type GlobalDocumentRecord,
   type ListBusinessDocumentsInput,
   type ListCurrentMemoryDocumentsInput,
+  type ListEnabledRecordsOptions,
   type ListMemoriesInput,
   type MemoryRecord,
   type MemoryStats,
@@ -57,17 +59,28 @@ import {
   type RecordAssetInput,
   type RecordChunksInput,
   type ResolveConversationInput,
+  type RoleDocumentRecord,
+  type RoleQuestionDependency,
+  type RoleQuestionOption,
+  type RoleQuestionRecord,
+  type RoleQuestionType,
+  type RoleRecord,
   type RuntimeConfigRecord,
   type TransferAdminInput,
   type UpdateBusinessDocumentInput,
   type UpsertRuntimeConfigInput,
   type UpsertInitializationSessionInput,
+  type UpsertGlobalDocumentInput,
   type UpsertMemoryDocumentInput,
   type UpsertBotConfigDocumentInput,
+  type UpsertRoleDocumentInput,
+  type UpsertRoleInput,
+  type UpsertRoleQuestionInput,
   type CreateBotInput,
   type DataStoreOptions,
   type UpdateBotInput,
   type WeComRuntimeBotConfig,
+  seedDefaultRoleConfig as seedDefaultRoleConfigInMemory,
 } from "./store.js";
 
 export function createSqliteDataStore(
@@ -378,6 +391,65 @@ export function createSqliteDataStore(
       return applyPendingGeneratedDocuments(db, input);
     },
 
+    upsertGlobalDocument(input) {
+      return upsertGlobalDocument(db, input);
+    },
+
+    listGlobalDocuments(options = {}) {
+      return listGlobalDocuments(db, options);
+    },
+
+    deleteGlobalDocument(documentId) {
+      db.prepare("delete from global_documents where document_id = ?").run(
+        requireText(documentId, "document_id"),
+      );
+    },
+
+    upsertRole(input) {
+      return upsertRole(db, input);
+    },
+
+    listRoles(options = {}) {
+      return listRoles(db, options);
+    },
+
+    deleteRole(roleId) {
+      const normalizedRoleId = requireText(roleId, "role_id");
+      db.transaction(() => {
+        db.prepare("delete from role_documents where role_id = ?").run(normalizedRoleId);
+        db.prepare("delete from role_questions where role_id = ?").run(normalizedRoleId);
+        db.prepare("delete from roles where role_id = ?").run(normalizedRoleId);
+      })();
+    },
+
+    upsertRoleDocument(input) {
+      return upsertRoleDocument(db, input);
+    },
+
+    listRoleDocuments(roleId, options = {}) {
+      return listRoleDocuments(db, roleId, options);
+    },
+
+    deleteRoleDocument(roleDocumentId) {
+      db.prepare("delete from role_documents where role_document_id = ?").run(
+        requireText(roleDocumentId, "role_document_id"),
+      );
+    },
+
+    upsertRoleQuestion(input) {
+      return upsertRoleQuestion(db, input);
+    },
+
+    listRoleQuestions(roleId, options = {}) {
+      return listRoleQuestions(db, roleId, options);
+    },
+
+    deleteRoleQuestion(questionId) {
+      db.prepare("delete from role_questions where question_id = ?").run(
+        requireText(questionId, "question_id"),
+      );
+    },
+
     upsertBotConfigDocument(input) {
       return upsertBotConfigDocument(db, input);
     },
@@ -473,6 +545,20 @@ export function createSqliteDataStore(
       db.close();
     },
   };
+}
+
+export function seedDefaultRoleConfig(store: Pick<
+  DataStore,
+  | "upsertGlobalDocument"
+  | "listGlobalDocuments"
+  | "upsertRole"
+  | "listRoles"
+  | "upsertRoleDocument"
+  | "listRoleDocuments"
+  | "upsertRoleQuestion"
+  | "listRoleQuestions"
+>): void {
+  seedDefaultRoleConfigInMemory(store);
 }
 
 function botToChannelRecord(bot: BotRecord): BotChannelRecord {
@@ -610,6 +696,325 @@ function getRuntimeConfig(
     db.prepare("select * from runtime_configs where bot_id = ?").get(bot.bot_id),
   );
   return record ?? defaultRuntimeConfig(bot);
+}
+
+function upsertGlobalDocument(
+  db: Database.Database,
+  input: UpsertGlobalDocumentInput,
+): GlobalDocumentRecord {
+  const title = requireText(input.title, "title");
+  const slug = requireText(input.slug, "slug");
+  const content = requireText(input.content, "content");
+  const existing = input.document_id
+    ? getRequiredGlobalDocument(db, input.document_id)
+    : findGlobalDocumentBySlug(db, slug);
+  const duplicate = findGlobalDocumentBySlug(db, slug, existing?.document_id);
+  if (duplicate) {
+    throw new Error(`global document slug already exists: ${slug}`);
+  }
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: GlobalDocumentRecord = {
+    document_id: existing?.document_id ?? `global_doc_${crypto.randomUUID()}`,
+    title,
+    slug,
+    content,
+    enabled: normalizeEnabled(input.enabled),
+    sort_order: normalizeSortOrder(input.sort_order),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  try {
+    db.prepare(`
+      insert into global_documents (
+        document_id, title, slug, content, enabled, sort_order, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(document_id) do update set
+        title = excluded.title,
+        slug = excluded.slug,
+        content = excluded.content,
+        enabled = excluded.enabled,
+        sort_order = excluded.sort_order,
+        updated_at = excluded.updated_at
+    `).run(
+      record.document_id,
+      record.title,
+      record.slug,
+      record.content,
+      record.enabled ? 1 : 0,
+      record.sort_order,
+      record.created_at,
+      record.updated_at,
+    );
+  } catch (error) {
+    throwDuplicateLogicalKeyError(
+      error,
+      ["global_documents.slug"],
+      `global document slug already exists: ${slug}`,
+    );
+    throw error;
+  }
+  return record;
+}
+
+function listGlobalDocuments(
+  db: Database.Database,
+  options: ListEnabledRecordsOptions,
+): GlobalDocumentRecord[] {
+  const rows = db.prepare(`
+    select *
+    from global_documents
+    where (? = 1 or enabled = 1)
+    order by sort_order asc, created_at asc
+  `).all(options.includeDisabled ? 1 : 0);
+  return rows
+    .map(mapGlobalDocumentRecord)
+    .filter((record): record is GlobalDocumentRecord => Boolean(record));
+}
+
+function upsertRole(
+  db: Database.Database,
+  input: UpsertRoleInput,
+): RoleRecord {
+  const name = requireText(input.name, "name");
+  const slug = requireText(input.slug, "slug");
+  const description = requireText(input.description, "description");
+  const existing = input.role_id ? getRequiredRole(db, input.role_id) : findRoleBySlug(db, slug);
+  const duplicate = findRoleBySlug(db, slug, existing?.role_id);
+  if (duplicate) {
+    throw new Error(`role slug already exists: ${slug}`);
+  }
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: RoleRecord = {
+    role_id: existing?.role_id ?? `role_${crypto.randomUUID()}`,
+    name,
+    slug,
+    description,
+    enabled: normalizeEnabled(input.enabled),
+    sort_order: normalizeSortOrder(input.sort_order),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  try {
+    db.prepare(`
+      insert into roles (
+        role_id, name, slug, description, enabled, sort_order, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(role_id) do update set
+        name = excluded.name,
+        slug = excluded.slug,
+        description = excluded.description,
+        enabled = excluded.enabled,
+        sort_order = excluded.sort_order,
+        updated_at = excluded.updated_at
+    `).run(
+      record.role_id,
+      record.name,
+      record.slug,
+      record.description,
+      record.enabled ? 1 : 0,
+      record.sort_order,
+      record.created_at,
+      record.updated_at,
+    );
+  } catch (error) {
+    throwDuplicateLogicalKeyError(
+      error,
+      ["roles.slug"],
+      `role slug already exists: ${slug}`,
+    );
+    throw error;
+  }
+  return record;
+}
+
+function listRoles(
+  db: Database.Database,
+  options: ListEnabledRecordsOptions,
+): RoleRecord[] {
+  const rows = db.prepare(`
+    select *
+    from roles
+    where (? = 1 or enabled = 1)
+    order by sort_order asc, created_at asc
+  `).all(options.includeDisabled ? 1 : 0);
+  return rows
+    .map(mapRoleRecord)
+    .filter((record): record is RoleRecord => Boolean(record));
+}
+
+function upsertRoleDocument(
+  db: Database.Database,
+  input: UpsertRoleDocumentInput,
+): RoleDocumentRecord {
+  const role = getRequiredRole(db, input.role_id);
+  const title = requireText(input.title, "title");
+  const content = requireText(input.content, "content");
+  const existing = input.role_document_id
+    ? getRequiredRoleDocument(db, input.role_document_id)
+    : findRoleDocumentByRoleAndTitle(db, role.role_id, title);
+  const duplicate = findRoleDocumentByRoleAndTitle(
+    db,
+    role.role_id,
+    title,
+    existing?.role_document_id,
+  );
+  if (duplicate) {
+    throw new Error(
+      `role document already exists for role ${role.role_id} and title ${title}`,
+    );
+  }
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: RoleDocumentRecord = {
+    role_document_id: existing?.role_document_id ?? `role_doc_${crypto.randomUUID()}`,
+    role_id: role.role_id,
+    title,
+    content,
+    enabled: normalizeEnabled(input.enabled),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  try {
+    db.prepare(`
+      insert into role_documents (
+        role_document_id, role_id, title, content, enabled, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?)
+      on conflict(role_document_id) do update set
+        role_id = excluded.role_id,
+        title = excluded.title,
+        content = excluded.content,
+        enabled = excluded.enabled,
+        updated_at = excluded.updated_at
+    `).run(
+      record.role_document_id,
+      record.role_id,
+      record.title,
+      record.content,
+      record.enabled ? 1 : 0,
+      record.created_at,
+      record.updated_at,
+    );
+  } catch (error) {
+    throwDuplicateLogicalKeyError(
+      error,
+      ["role_documents.role_id, role_documents.title", "role_documents.role_id, title"],
+      `role document already exists for role ${role.role_id} and title ${title}`,
+    );
+    throw error;
+  }
+  return record;
+}
+
+function listRoleDocuments(
+  db: Database.Database,
+  roleId: string,
+  options: ListEnabledRecordsOptions,
+): RoleDocumentRecord[] {
+  const rows = db.prepare(`
+    select *
+    from role_documents
+    where role_id = ?
+      and (? = 1 or enabled = 1)
+    order by created_at asc
+  `).all(requireText(roleId, "role_id"), options.includeDisabled ? 1 : 0);
+  return rows
+    .map(mapRoleDocumentRecord)
+    .filter((record): record is RoleDocumentRecord => Boolean(record));
+}
+
+function upsertRoleQuestion(
+  db: Database.Database,
+  input: UpsertRoleQuestionInput,
+): RoleQuestionRecord {
+  const role = getRequiredRole(db, input.role_id);
+  const key = requireText(input.key, "key");
+  const title = requireText(input.title, "title");
+  const existing = input.question_id
+    ? getRequiredRoleQuestion(db, input.question_id)
+    : findRoleQuestionByRoleAndKey(db, role.role_id, key);
+  const duplicate = findRoleQuestionByRoleAndKey(
+    db,
+    role.role_id,
+    key,
+    existing?.question_id,
+  );
+  if (duplicate) {
+    throw new Error(`role question already exists for role ${role.role_id} and key ${key}`);
+  }
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: RoleQuestionRecord = {
+    question_id: existing?.question_id ?? `question_${crypto.randomUUID()}`,
+    role_id: role.role_id,
+    key,
+    title,
+    description: normalizeOptionalText(input.description),
+    question_type: requireRoleQuestionType(input.question_type),
+    options_json: normalizeRoleQuestionOptions(input.options_json),
+    required: normalizeRequired(input.required),
+    enabled: normalizeEnabled(input.enabled),
+    sort_order: normalizeSortOrder(input.sort_order),
+    depends_on_json: normalizeRoleQuestionDependencies(input.depends_on_json),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  try {
+    db.prepare(`
+      insert into role_questions (
+        question_id, role_id, key, title, description, question_type, options_json,
+        required, enabled, sort_order, depends_on_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(question_id) do update set
+        role_id = excluded.role_id,
+        key = excluded.key,
+        title = excluded.title,
+        description = excluded.description,
+        question_type = excluded.question_type,
+        options_json = excluded.options_json,
+        required = excluded.required,
+        enabled = excluded.enabled,
+        sort_order = excluded.sort_order,
+        depends_on_json = excluded.depends_on_json,
+        updated_at = excluded.updated_at
+    `).run(
+      record.question_id,
+      record.role_id,
+      record.key,
+      record.title,
+      record.description,
+      record.question_type,
+      JSON.stringify(record.options_json),
+      record.required ? 1 : 0,
+      record.enabled ? 1 : 0,
+      record.sort_order,
+      JSON.stringify(record.depends_on_json),
+      record.created_at,
+      record.updated_at,
+    );
+  } catch (error) {
+    throwDuplicateLogicalKeyError(
+      error,
+      ["role_questions.role_id, role_questions.key", "role_questions.role_id, key"],
+      `role question already exists for role ${role.role_id} and key ${key}`,
+    );
+    throw error;
+  }
+  return cloneRoleQuestionRecord(record);
+}
+
+function listRoleQuestions(
+  db: Database.Database,
+  roleId: string,
+  options: ListEnabledRecordsOptions,
+): RoleQuestionRecord[] {
+  const rows = db.prepare(`
+    select *
+    from role_questions
+    where role_id = ?
+      and (? = 1 or enabled = 1)
+    order by sort_order asc, created_at asc
+  `).all(requireText(roleId, "role_id"), options.includeDisabled ? 1 : 0);
+  return rows
+    .map(mapRoleQuestionRecord)
+    .filter((record): record is RoleQuestionRecord => Boolean(record));
 }
 
 function upsertRuntimeConfig(
@@ -1237,6 +1642,7 @@ function migrate(db: Database.Database): void {
       wecom_user_id text not null,
       conversation_id text not null,
       phase text not null,
+      selected_role_id text,
       soul_answers_json text not null,
       agents_answers_json text not null,
       generation_in_progress text,
@@ -1266,6 +1672,56 @@ function migrate(db: Database.Database): void {
       options_json text not null,
       created_at text not null,
       updated_at text not null
+    );
+
+    create table if not exists global_documents (
+      document_id text primary key,
+      title text not null,
+      slug text not null unique,
+      content text not null,
+      enabled integer not null,
+      sort_order integer not null,
+      created_at text not null,
+      updated_at text not null
+    );
+
+    create table if not exists roles (
+      role_id text primary key,
+      name text not null,
+      slug text not null unique,
+      description text not null,
+      enabled integer not null,
+      sort_order integer not null,
+      created_at text not null,
+      updated_at text not null
+    );
+
+    create table if not exists role_documents (
+      role_document_id text primary key,
+      role_id text not null,
+      title text not null,
+      content text not null,
+      enabled integer not null,
+      created_at text not null,
+      updated_at text not null,
+      unique (role_id, title)
+    );
+
+    create table if not exists role_questions (
+      question_id text primary key,
+      role_id text not null,
+      key text not null,
+      title text not null,
+      description text not null,
+      question_type text not null,
+      options_json text not null,
+      required integer not null,
+      enabled integer not null,
+      sort_order integer not null,
+      depends_on_json text not null,
+      created_at text not null,
+      updated_at text not null,
+      unique (role_id, key)
     );
 
     create table if not exists memory_document_versions (
@@ -1403,6 +1859,7 @@ function migrate(db: Database.Database): void {
   );
   addColumnIfMissing(db, "bots", "last_wecom_check_at", "text");
   addColumnIfMissing(db, "bots", "last_wecom_error", "text");
+  addColumnIfMissing(db, "initialization_sessions", "selected_role_id", "text");
   db.prepare(
     "create unique index if not exists idx_bots_wecom_bot_id_unique on bots (wecom_bot_id) where wecom_bot_id is not null",
   ).run();
@@ -1559,6 +2016,9 @@ function upsertInitializationSession(
     wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
     conversation_id: requireText(input.conversation_id, "conversation_id"),
     phase: requireInitializationPhase(input.phase),
+    ...(optionalText(input.selected_role_id)
+      ? { selected_role_id: optionalText(input.selected_role_id) }
+      : {}),
     soul_answers: normalizeAnswerArray(input.soul_answers, "soul_answers"),
     agents_answers: normalizeAnswerArray(input.agents_answers, "agents_answers"),
     ...(input.generation_in_progress !== undefined
@@ -1572,11 +2032,12 @@ function upsertInitializationSession(
     `
       insert into initialization_sessions (
         session_key, session_id, bot_id, wecom_user_id, conversation_id, phase,
-        soul_answers_json, agents_answers_json, generation_in_progress,
+        selected_role_id, soul_answers_json, agents_answers_json, generation_in_progress,
         status, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(session_key) do update set
         phase = excluded.phase,
+        selected_role_id = excluded.selected_role_id,
         soul_answers_json = excluded.soul_answers_json,
         agents_answers_json = excluded.agents_answers_json,
         generation_in_progress = excluded.generation_in_progress,
@@ -1590,6 +2051,7 @@ function upsertInitializationSession(
     record.wecom_user_id,
     record.conversation_id,
     record.phase,
+    record.selected_role_id ?? null,
     JSON.stringify(record.soul_answers),
     JSON.stringify(record.agents_answers),
     record.generation_in_progress ?? null,
@@ -1877,6 +2339,149 @@ function getRequiredBot(db: Database.Database, botId: string): BotRecord {
   return bot;
 }
 
+function getRequiredGlobalDocument(
+  db: Database.Database,
+  documentId: string,
+): GlobalDocumentRecord {
+  const record = mapGlobalDocumentRecord(
+    db.prepare("select * from global_documents where document_id = ?").get(
+      requireText(documentId, "document_id"),
+    ),
+  );
+  if (!record) {
+    throw new Error(`global document not found: ${documentId}`);
+  }
+  return record;
+}
+
+function getRequiredRole(
+  db: Database.Database,
+  roleId: string,
+): RoleRecord {
+  const record = mapRoleRecord(
+    db.prepare("select * from roles where role_id = ?").get(requireText(roleId, "role_id")),
+  );
+  if (!record) {
+    throw new Error(`role not found: ${roleId}`);
+  }
+  return record;
+}
+
+function getRequiredRoleDocument(
+  db: Database.Database,
+  roleDocumentId: string,
+): RoleDocumentRecord {
+  const record = mapRoleDocumentRecord(
+    db.prepare("select * from role_documents where role_document_id = ?").get(
+      requireText(roleDocumentId, "role_document_id"),
+    ),
+  );
+  if (!record) {
+    throw new Error(`role document not found: ${roleDocumentId}`);
+  }
+  return record;
+}
+
+function getRequiredRoleQuestion(
+  db: Database.Database,
+  questionId: string,
+): RoleQuestionRecord {
+  const record = mapRoleQuestionRecord(
+    db.prepare("select * from role_questions where question_id = ?").get(
+      requireText(questionId, "question_id"),
+    ),
+  );
+  if (!record) {
+    throw new Error(`role question not found: ${questionId}`);
+  }
+  return record;
+}
+
+function throwDuplicateLogicalKeyError(
+  error: unknown,
+  logicalKeyFragments: string[],
+  message: string,
+): void {
+  if (!(error instanceof Error)) {
+    return;
+  }
+  if (!error.message.startsWith("UNIQUE constraint failed:")) {
+    return;
+  }
+  if (!logicalKeyFragments.some((fragment) => error.message.includes(fragment))) {
+    return;
+  }
+  throw new Error(message);
+}
+
+function findGlobalDocumentBySlug(
+  db: Database.Database,
+  slug: string,
+  excludedDocumentId?: string,
+): GlobalDocumentRecord | undefined {
+  return mapGlobalDocumentRecord(
+    db.prepare(`
+      select *
+      from global_documents
+      where slug = ?
+        and document_id != ?
+      limit 1
+    `).get(slug, excludedDocumentId ?? ""),
+  );
+}
+
+function findRoleBySlug(
+  db: Database.Database,
+  slug: string,
+  excludedRoleId?: string,
+): RoleRecord | undefined {
+  return mapRoleRecord(
+    db.prepare(`
+      select *
+      from roles
+      where slug = ?
+        and role_id != ?
+      limit 1
+    `).get(slug, excludedRoleId ?? ""),
+  );
+}
+
+function findRoleDocumentByRoleAndTitle(
+  db: Database.Database,
+  roleId: string,
+  title: string,
+  excludedRoleDocumentId?: string,
+): RoleDocumentRecord | undefined {
+  return mapRoleDocumentRecord(
+    db.prepare(`
+      select *
+      from role_documents
+      where role_id = ?
+        and title = ?
+        and role_document_id != ?
+      limit 1
+    `).get(roleId, title, excludedRoleDocumentId ?? ""),
+  );
+}
+
+function findRoleQuestionByRoleAndKey(
+  db: Database.Database,
+  roleId: string,
+  key: string,
+  excludedQuestionId?: string,
+): RoleQuestionRecord | undefined {
+  return mapRoleQuestionRecord(
+    db.prepare(`
+      select *
+      from role_questions
+      where role_id = ?
+        and key = ?
+        and question_id != ?
+      limit 1
+    `).get(roleId, key, excludedQuestionId ?? ""),
+  );
+}
+
 function mapBotRecord(row: unknown): BotRecord | undefined {
   if (!row || typeof row !== "object") {
     return undefined;
@@ -1922,6 +2527,9 @@ function mapInitializationSessionRecord(
     wecom_user_id: record.wecom_user_id as string,
     conversation_id: record.conversation_id as string,
     phase: requireInitializationPhase(record.phase as string),
+    ...(typeof record.selected_role_id === "string" && record.selected_role_id.trim() !== ""
+      ? { selected_role_id: record.selected_role_id.trim() }
+      : {}),
     soul_answers: normalizeAnswerArray(
       JSON.parse(record.soul_answers_json as string) as string[],
       "soul_answers",
@@ -1954,6 +2562,82 @@ function mapRuntimeConfigRecord(row: unknown): RuntimeConfigRecord | undefined {
     stream: record.stream === 1,
     options: normalizeRuntimeConfigOptions(
       JSON.parse(record.options_json as string) as Record<string, unknown>,
+    ),
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapGlobalDocumentRecord(row: unknown): GlobalDocumentRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    document_id: record.document_id as string,
+    title: record.title as string,
+    slug: record.slug as string,
+    content: record.content as string,
+    enabled: Boolean(record.enabled),
+    sort_order: record.sort_order as number,
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapRoleRecord(row: unknown): RoleRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    role_id: record.role_id as string,
+    name: record.name as string,
+    slug: record.slug as string,
+    description: record.description as string,
+    enabled: Boolean(record.enabled),
+    sort_order: record.sort_order as number,
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapRoleDocumentRecord(row: unknown): RoleDocumentRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    role_document_id: record.role_document_id as string,
+    role_id: record.role_id as string,
+    title: record.title as string,
+    content: record.content as string,
+    enabled: Boolean(record.enabled),
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapRoleQuestionRecord(row: unknown): RoleQuestionRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    question_id: record.question_id as string,
+    role_id: record.role_id as string,
+    key: record.key as string,
+    title: record.title as string,
+    description: record.description as string,
+    question_type: requireRoleQuestionType(record.question_type as string),
+    options_json: normalizeRoleQuestionOptions(
+      JSON.parse((record.options_json as string) || "[]") as RoleQuestionOption[],
+    ),
+    required: Boolean(record.required),
+    enabled: Boolean(record.enabled),
+    sort_order: record.sort_order as number,
+    depends_on_json: normalizeRoleQuestionDependencies(
+      JSON.parse((record.depends_on_json as string) || "[]") as RoleQuestionDependency[],
     ),
     created_at: record.created_at as string,
     updated_at: record.updated_at as string,
@@ -2058,6 +2742,89 @@ function mapMemoryRecord(
     ...(typeof record.last_hit_at === "string" ? { last_hit_at: record.last_hit_at } : {}),
     hit_count: record.hit_count as number,
     status: record.status as MemoryRecord["status"],
+  };
+}
+
+function normalizeEnabled(value: boolean | undefined): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error("enabled must be a boolean");
+  }
+  return value;
+}
+
+function normalizeRequired(value: boolean | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error("required must be a boolean");
+  }
+  return value;
+}
+
+function normalizeOptionalText(value: string | undefined): string {
+  if (value === undefined) {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error("description must be a string");
+  }
+  return value.trim();
+}
+
+function normalizeSortOrder(value: number | undefined): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (!Number.isInteger(value)) {
+    throw new Error("sort_order must be an integer");
+  }
+  return value;
+}
+
+function requireRoleQuestionType(value: string): RoleQuestionType {
+  if (value !== "single_choice" && value !== "multi_choice" && value !== "free_text") {
+    throw new Error("question_type is invalid");
+  }
+  return value;
+}
+
+function normalizeRoleQuestionOptions(value: RoleQuestionOption[] | undefined): RoleQuestionOption[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("options_json must be an array");
+  }
+  return value.map((option) => ({
+    value: requireText(option?.value, "options_json.value"),
+    label: requireText(option?.label, "options_json.label"),
+  }));
+}
+
+function normalizeRoleQuestionDependencies(
+  value: RoleQuestionDependency[] | undefined,
+): RoleQuestionDependency[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("depends_on_json must be an array");
+  }
+  return value.map((dependency) => ({
+    key: requireText(dependency?.key, "depends_on_json.key"),
+    equals: requireText(dependency?.equals, "depends_on_json.equals"),
+  }));
+}
+
+function cloneRoleQuestionRecord(record: RoleQuestionRecord): RoleQuestionRecord {
+  return {
+    ...record,
+    options_json: normalizeRoleQuestionOptions(record.options_json),
+    depends_on_json: normalizeRoleQuestionDependencies(record.depends_on_json),
   };
 }
 

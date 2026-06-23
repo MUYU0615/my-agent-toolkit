@@ -827,6 +827,949 @@ describe("data-service server", () => {
     });
   });
 
+  it("creates updates lists and deletes global documents over HTTP", async () => {
+    const server = createDataServiceServer();
+
+    const createPlaygroundResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Playground",
+          slug: "playground",
+          content: "# Playground",
+          enabled: true,
+          sort_order: 20,
+        }),
+      }),
+    );
+    expect(createPlaygroundResponse.status).toBe(201);
+    const playground = await createPlaygroundResponse.json() as { document_id: string };
+    expect(playground).toMatchObject({
+      title: "Playground",
+      slug: "playground",
+      content: "# Playground",
+      enabled: true,
+      sort_order: 20,
+    });
+
+    const createSafetyResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Safety",
+          slug: "safety",
+          content: "# Safety",
+          enabled: false,
+          sort_order: 10,
+        }),
+      }),
+    );
+    expect(createSafetyResponse.status).toBe(201);
+
+    const defaultListResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents"),
+    );
+    expect(defaultListResponse.status).toBe(200);
+    await expect(defaultListResponse.json()).resolves.toMatchObject([
+      {
+        document_id: playground.document_id,
+        slug: "playground",
+      },
+    ]);
+
+    const includeDisabledResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents?include_disabled=true"),
+    );
+    expect(includeDisabledResponse.status).toBe(200);
+    await expect(includeDisabledResponse.json()).resolves.toMatchObject([
+      { slug: "safety", enabled: false, sort_order: 10 },
+      { slug: "playground", enabled: true, sort_order: 20 },
+    ]);
+
+    const updateResponse = await server.fetch(
+      new Request(`http://localhost/v1/global-documents/${playground.document_id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          title: "Playground Updated",
+          slug: "playground",
+          content: "# Playground v2",
+          enabled: true,
+          sort_order: 5,
+        }),
+      }),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      document_id: playground.document_id,
+      title: "Playground Updated",
+      content: "# Playground v2",
+      sort_order: 5,
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(`http://localhost/v1/global-documents/${playground.document_id}`, {
+        method: "DELETE",
+      }),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ deleted: true });
+
+    const finalListResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents?include_disabled=true"),
+    );
+    expect(finalListResponse.status).toBe(200);
+    await expect(finalListResponse.json()).resolves.toMatchObject([
+      {
+        slug: "safety",
+      },
+    ]);
+  });
+
+  it("rejects duplicate global document creates and missing global document ids", async () => {
+    const server = createDataServiceServer();
+
+    const firstCreateResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Playground",
+          slug: "playground",
+          content: "# Playground",
+          enabled: true,
+          sort_order: 20,
+        }),
+      }),
+    );
+    expect(firstCreateResponse.status).toBe(201);
+    const created = await firstCreateResponse.json() as { document_id: string };
+
+    const duplicateCreateResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "Playground Duplicate",
+          slug: "playground",
+          content: "# Overwrite attempt",
+          enabled: false,
+          sort_order: 99,
+        }),
+      }),
+    );
+    expect(duplicateCreateResponse.status).toBe(400);
+    await expect(duplicateCreateResponse.json()).resolves.toEqual({
+      error: "global document slug already exists: playground",
+    });
+
+    const updateMissingResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents/global_doc_missing", {
+        method: "PUT",
+        body: JSON.stringify({
+          title: "Missing",
+          slug: "missing",
+          content: "# Missing",
+          enabled: true,
+          sort_order: 0,
+        }),
+      }),
+    );
+    expect(updateMissingResponse.status).toBe(404);
+    await expect(updateMissingResponse.json()).resolves.toEqual({
+      error: "global document not found: global_doc_missing",
+    });
+
+    const deleteMissingResponse = await server.fetch(
+      new Request("http://localhost/v1/global-documents/global_doc_missing", {
+        method: "DELETE",
+      }),
+    );
+    expect(deleteMissingResponse.status).toBe(404);
+    await expect(deleteMissingResponse.json()).resolves.toEqual({
+      error: "global document not found: global_doc_missing",
+    });
+  });
+
+  it("creates updates lists and deletes roles over HTTP", async () => {
+    const server = createDataServiceServer();
+
+    const createQaRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "QA Assistant",
+          slug: "qa",
+          description: "Quality role",
+          enabled: false,
+          sort_order: 20,
+        }),
+      }),
+    );
+    expect(createQaRoleResponse.status).toBe(201);
+
+    const createPmRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    expect(createPmRoleResponse.status).toBe(201);
+    const productManager = await createPmRoleResponse.json() as { role_id: string };
+    expect(productManager).toMatchObject({
+      name: "Product Manager",
+      slug: "product-manager",
+      description: "PM role",
+      enabled: true,
+      sort_order: 10,
+    });
+
+    const defaultListResponse = await server.fetch(
+      new Request("http://localhost/v1/roles"),
+    );
+    expect(defaultListResponse.status).toBe(200);
+    await expect(defaultListResponse.json()).resolves.toMatchObject([
+      {
+        role_id: productManager.role_id,
+        slug: "product-manager",
+      },
+    ]);
+
+    const includeDisabledResponse = await server.fetch(
+      new Request("http://localhost/v1/roles?include_disabled=true"),
+    );
+    expect(includeDisabledResponse.status).toBe(200);
+    await expect(includeDisabledResponse.json()).resolves.toMatchObject([
+      { slug: "product-manager", enabled: true, sort_order: 10 },
+      { slug: "qa", enabled: false, sort_order: 20 },
+    ]);
+
+    const updateResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${productManager.role_id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: "Senior Product Manager",
+          slug: "product-manager",
+          description: "Updated PM role",
+          enabled: true,
+          sort_order: 5,
+        }),
+      }),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      role_id: productManager.role_id,
+      name: "Senior Product Manager",
+      description: "Updated PM role",
+      sort_order: 5,
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${productManager.role_id}`, {
+        method: "DELETE",
+      }),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ deleted: true });
+
+    const finalListResponse = await server.fetch(
+      new Request("http://localhost/v1/roles?include_disabled=true"),
+    );
+    expect(finalListResponse.status).toBe(200);
+    await expect(finalListResponse.json()).resolves.toMatchObject([
+      {
+        slug: "qa",
+      },
+    ]);
+  });
+
+  it("rejects duplicate role creates and missing role ids", async () => {
+    const server = createDataServiceServer();
+
+    const firstCreateResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    expect(firstCreateResponse.status).toBe(201);
+    const created = await firstCreateResponse.json() as { role_id: string };
+
+    const duplicateCreateResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Overwritten Product Manager",
+          slug: "product-manager",
+          description: "Overwrite attempt",
+          enabled: false,
+          sort_order: 99,
+        }),
+      }),
+    );
+    expect(duplicateCreateResponse.status).toBe(400);
+    await expect(duplicateCreateResponse.json()).resolves.toEqual({
+      error: "role slug already exists: product-manager",
+    });
+
+    const updateMissingResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing", {
+        method: "PUT",
+        body: JSON.stringify({
+          name: "Missing Role",
+          slug: "missing-role",
+          description: "Missing",
+          enabled: true,
+          sort_order: 0,
+        }),
+      }),
+    );
+    expect(updateMissingResponse.status).toBe(404);
+    await expect(updateMissingResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+
+    const deleteMissingResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing", {
+        method: "DELETE",
+      }),
+    );
+    expect(deleteMissingResponse.status).toBe(404);
+    await expect(deleteMissingResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+  });
+
+  it("gets a role by id over HTTP", async () => {
+    const server = createDataServiceServer();
+
+    const createResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "QA 测试助手",
+          slug: "qa",
+          description: "QA role",
+          enabled: true,
+          sort_order: 20,
+        }),
+      }),
+    );
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json() as { role_id: string };
+
+    const getResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${created.role_id}`),
+    );
+    expect(getResponse.status).toBe(200);
+    await expect(getResponse.json()).resolves.toMatchObject({
+      role_id: created.role_id,
+      slug: "qa",
+    });
+  });
+
+  it("creates updates lists and deletes role documents over HTTP", async () => {
+    const server = createDataServiceServer();
+    const createRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    const role = await createRoleResponse.json() as { role_id: string };
+
+    const createEnabledResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "role.md",
+          content: "# Role",
+          enabled: true,
+        }),
+      }),
+    );
+    expect(createEnabledResponse.status).toBe(201);
+    const enabledDocument = await createEnabledResponse.json() as { role_document_id: string };
+    expect(enabledDocument).toMatchObject({
+      role_id: role.role_id,
+      title: "role.md",
+      content: "# Role",
+      enabled: true,
+    });
+
+    const createDisabledResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "playbook.md",
+          content: "# Playbook",
+          enabled: false,
+        }),
+      }),
+    );
+    expect(createDisabledResponse.status).toBe(201);
+
+    const defaultListResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents`),
+    );
+    expect(defaultListResponse.status).toBe(200);
+    await expect(defaultListResponse.json()).resolves.toMatchObject([
+      {
+        role_document_id: enabledDocument.role_document_id,
+        title: "role.md",
+      },
+    ]);
+
+    const includeDisabledResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents?include_disabled=true`),
+    );
+    expect(includeDisabledResponse.status).toBe(200);
+    await expect(includeDisabledResponse.json()).resolves.toMatchObject([
+      { title: "role.md", enabled: true },
+      { title: "playbook.md", enabled: false },
+    ]);
+
+    const updateResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${role.role_id}/documents/${enabledDocument.role_document_id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: "role.md",
+            content: "# Role v2",
+            enabled: false,
+          }),
+        },
+      ),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      role_document_id: enabledDocument.role_document_id,
+      content: "# Role v2",
+      enabled: false,
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${role.role_id}/documents/${enabledDocument.role_document_id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ deleted: true });
+
+    const finalListResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents?include_disabled=true`),
+    );
+    expect(finalListResponse.status).toBe(200);
+    await expect(finalListResponse.json()).resolves.toMatchObject([
+      {
+        title: "playbook.md",
+      },
+    ]);
+  });
+
+  it("rejects duplicate role document creates and missing parent role ids", async () => {
+    const server = createDataServiceServer();
+    const createRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    const role = await createRoleResponse.json() as { role_id: string };
+
+    const firstCreateResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "role.md",
+          content: "# Role",
+          enabled: true,
+        }),
+      }),
+    );
+    expect(firstCreateResponse.status).toBe(201);
+    const created = await firstCreateResponse.json() as { role_document_id: string };
+
+    const duplicateCreateResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/documents`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "role.md",
+          content: "# Overwrite attempt",
+          enabled: false,
+        }),
+      }),
+    );
+    expect(duplicateCreateResponse.status).toBe(400);
+    await expect(duplicateCreateResponse.json()).resolves.toEqual({
+      error: `role document already exists for role ${role.role_id} and title role.md`,
+    });
+
+    const listMissingRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing/documents"),
+    );
+    expect(listMissingRoleResponse.status).toBe(404);
+    await expect(listMissingRoleResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+
+    const createMissingRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing/documents", {
+        method: "POST",
+        body: JSON.stringify({
+          title: "role.md",
+          content: "# Role",
+          enabled: true,
+        }),
+      }),
+    );
+    expect(createMissingRoleResponse.status).toBe(404);
+    await expect(createMissingRoleResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+  });
+
+  it("rejects updating or deleting a role document through another role URL", async () => {
+    const server = createDataServiceServer();
+    const [firstRoleResponse, secondRoleResponse] = await Promise.all([
+      server.fetch(
+        new Request("http://localhost/v1/roles", {
+          method: "POST",
+          body: JSON.stringify({
+            name: "Product Manager",
+            slug: "product-manager",
+            description: "PM role",
+            enabled: true,
+            sort_order: 10,
+          }),
+        }),
+      ),
+      server.fetch(
+        new Request("http://localhost/v1/roles", {
+          method: "POST",
+          body: JSON.stringify({
+            name: "Designer",
+            slug: "designer",
+            description: "Design role",
+            enabled: true,
+            sort_order: 20,
+          }),
+        }),
+      ),
+    ]);
+    const firstRole = await firstRoleResponse.json() as { role_id: string };
+    const secondRole = await secondRoleResponse.json() as { role_id: string };
+
+    const createDocumentResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${firstRole.role_id}/documents`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: "role.md",
+          content: "# Role",
+          enabled: true,
+        }),
+      }),
+    );
+    expect(createDocumentResponse.status).toBe(201);
+    const document = await createDocumentResponse.json() as { role_document_id: string };
+
+    const updateResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${secondRole.role_id}/documents/${document.role_document_id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            title: "role.md",
+            content: "# Hijacked",
+            enabled: false,
+          }),
+        },
+      ),
+    );
+    expect(updateResponse.status).toBe(404);
+    await expect(updateResponse.json()).resolves.toEqual({
+      error: `role document not found: ${document.role_document_id}`,
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${secondRole.role_id}/documents/${document.role_document_id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    );
+    expect(deleteResponse.status).toBe(404);
+    await expect(deleteResponse.json()).resolves.toEqual({
+      error: `role document not found: ${document.role_document_id}`,
+    });
+
+    const listResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${firstRole.role_id}/documents?include_disabled=true`),
+    );
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject([
+      {
+        role_document_id: document.role_document_id,
+        role_id: firstRole.role_id,
+        content: "# Role",
+        enabled: true,
+      },
+    ]);
+  });
+
+  it("creates updates lists and deletes role questions over HTTP", async () => {
+    const server = createDataServiceServer();
+    const createRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    const role = await createRoleResponse.json() as { role_id: string };
+
+    const createOptionalResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: "delivery_style",
+          title: "How should it deliver work?",
+          description: "Pick a delivery style",
+          question_type: "single_choice",
+          options_json: [{ value: "structured", label: "Structured" }],
+          required: true,
+          enabled: false,
+          sort_order: 20,
+          depends_on_json: [],
+        }),
+      }),
+    );
+    expect(createOptionalResponse.status).toBe(201);
+
+    const createEnabledResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: "team_mode",
+          title: "Should it collaborate with a team?",
+          description: "Choose collaboration mode",
+          question_type: "single_choice",
+          options_json: [{ value: "enabled", label: "Enabled" }],
+          required: true,
+          enabled: true,
+          sort_order: 10,
+          depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+        }),
+      }),
+    );
+    expect(createEnabledResponse.status).toBe(201);
+    const teamModeQuestion = await createEnabledResponse.json() as { question_id: string };
+    expect(teamModeQuestion).toMatchObject({
+      role_id: role.role_id,
+      key: "team_mode",
+      question_type: "single_choice",
+      enabled: true,
+      sort_order: 10,
+      depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+    });
+
+    const defaultListResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions`),
+    );
+    expect(defaultListResponse.status).toBe(200);
+    await expect(defaultListResponse.json()).resolves.toMatchObject([
+      {
+        question_id: teamModeQuestion.question_id,
+        key: "team_mode",
+      },
+    ]);
+
+    const includeDisabledResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions?include_disabled=true`),
+    );
+    expect(includeDisabledResponse.status).toBe(200);
+    await expect(includeDisabledResponse.json()).resolves.toMatchObject([
+      {
+        key: "team_mode",
+        enabled: true,
+        sort_order: 10,
+      },
+      {
+        key: "delivery_style",
+        enabled: false,
+        sort_order: 20,
+      },
+    ]);
+
+    const updateResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${role.role_id}/questions/${teamModeQuestion.question_id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            key: "team_mode",
+            title: "Should it pair with a team?",
+            description: "Updated collaboration mode",
+            question_type: "free_text",
+            options_json: [],
+            required: false,
+            enabled: true,
+            sort_order: 5,
+            depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+          }),
+        },
+      ),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      question_id: teamModeQuestion.question_id,
+      title: "Should it pair with a team?",
+      question_type: "free_text",
+      required: false,
+      sort_order: 5,
+      depends_on_json: [{ key: "delivery_style", equals: "structured" }],
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${role.role_id}/questions/${teamModeQuestion.question_id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ deleted: true });
+
+    const finalListResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions?include_disabled=true`),
+    );
+    expect(finalListResponse.status).toBe(200);
+    await expect(finalListResponse.json()).resolves.toMatchObject([
+      {
+        key: "delivery_style",
+      },
+    ]);
+  });
+
+  it("rejects duplicate role question creates and missing parent role ids", async () => {
+    const server = createDataServiceServer();
+    const createRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Product Manager",
+          slug: "product-manager",
+          description: "PM role",
+          enabled: true,
+          sort_order: 10,
+        }),
+      }),
+    );
+    const role = await createRoleResponse.json() as { role_id: string };
+
+    const firstCreateResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: "team_mode",
+          title: "Should it collaborate with a team?",
+          description: "Choose collaboration mode",
+          question_type: "single_choice",
+          options_json: [{ value: "enabled", label: "Enabled" }],
+          required: true,
+          enabled: true,
+          sort_order: 10,
+          depends_on_json: [],
+        }),
+      }),
+    );
+    expect(firstCreateResponse.status).toBe(201);
+    const created = await firstCreateResponse.json() as { question_id: string };
+
+    const duplicateCreateResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${role.role_id}/questions`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: "team_mode",
+          title: "Overwrite attempt",
+          description: "Overwrite attempt",
+          question_type: "free_text",
+          options_json: [],
+          required: false,
+          enabled: false,
+          sort_order: 99,
+          depends_on_json: [],
+        }),
+      }),
+    );
+    expect(duplicateCreateResponse.status).toBe(400);
+    await expect(duplicateCreateResponse.json()).resolves.toEqual({
+      error: `role question already exists for role ${role.role_id} and key team_mode`,
+    });
+
+    const listMissingRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing/questions"),
+    );
+    expect(listMissingRoleResponse.status).toBe(404);
+    await expect(listMissingRoleResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+
+    const createMissingRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles/role_missing/questions", {
+        method: "POST",
+        body: JSON.stringify({
+          key: "team_mode",
+          title: "Should it collaborate with a team?",
+          description: "Choose collaboration mode",
+          question_type: "single_choice",
+          options_json: [{ value: "enabled", label: "Enabled" }],
+          required: true,
+          enabled: true,
+          sort_order: 10,
+          depends_on_json: [],
+        }),
+      }),
+    );
+    expect(createMissingRoleResponse.status).toBe(404);
+    await expect(createMissingRoleResponse.json()).resolves.toEqual({
+      error: "role not found: role_missing",
+    });
+  });
+
+  it("rejects updating or deleting a role question through another role URL", async () => {
+    const server = createDataServiceServer();
+    const [firstRoleResponse, secondRoleResponse] = await Promise.all([
+      server.fetch(
+        new Request("http://localhost/v1/roles", {
+          method: "POST",
+          body: JSON.stringify({
+            name: "Product Manager",
+            slug: "product-manager",
+            description: "PM role",
+            enabled: true,
+            sort_order: 10,
+          }),
+        }),
+      ),
+      server.fetch(
+        new Request("http://localhost/v1/roles", {
+          method: "POST",
+          body: JSON.stringify({
+            name: "Designer",
+            slug: "designer",
+            description: "Design role",
+            enabled: true,
+            sort_order: 20,
+          }),
+        }),
+      ),
+    ]);
+    const firstRole = await firstRoleResponse.json() as { role_id: string };
+    const secondRole = await secondRoleResponse.json() as { role_id: string };
+
+    const createQuestionResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${firstRole.role_id}/questions`, {
+        method: "POST",
+        body: JSON.stringify({
+          key: "team_mode",
+          title: "Should it collaborate with a team?",
+          description: "Choose collaboration mode",
+          question_type: "single_choice",
+          options_json: [{ value: "enabled", label: "Enabled" }],
+          required: true,
+          enabled: true,
+          sort_order: 10,
+          depends_on_json: [],
+        }),
+      }),
+    );
+    expect(createQuestionResponse.status).toBe(201);
+    const question = await createQuestionResponse.json() as { question_id: string };
+
+    const updateResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${secondRole.role_id}/questions/${question.question_id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            key: "team_mode",
+            title: "Hijacked question",
+            description: "Wrong role",
+            question_type: "free_text",
+            options_json: [],
+            required: false,
+            enabled: false,
+            sort_order: 99,
+            depends_on_json: [],
+          }),
+        },
+      ),
+    );
+    expect(updateResponse.status).toBe(404);
+    await expect(updateResponse.json()).resolves.toEqual({
+      error: `role question not found: ${question.question_id}`,
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request(
+        `http://localhost/v1/roles/${secondRole.role_id}/questions/${question.question_id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    );
+    expect(deleteResponse.status).toBe(404);
+    await expect(deleteResponse.json()).resolves.toEqual({
+      error: `role question not found: ${question.question_id}`,
+    });
+
+    const listResponse = await server.fetch(
+      new Request(`http://localhost/v1/roles/${firstRole.role_id}/questions?include_disabled=true`),
+    );
+    expect(listResponse.status).toBe(200);
+    await expect(listResponse.json()).resolves.toMatchObject([
+      {
+        question_id: question.question_id,
+        role_id: firstRole.role_id,
+        title: "Should it collaborate with a team?",
+        enabled: true,
+      },
+    ]);
+  });
+
   it("exposes internal document memory metadata APIs", async () => {
     const server = createDataServiceServer();
 
@@ -1309,6 +2252,7 @@ describe("data-service server", () => {
     expect(versions).toHaveLength(2);
     expect(versions.map((version) => version.version)).toEqual([1, 2]);
   });
+
 
   it("lists current memory documents over HTTP", async () => {
     const server = createDataServiceServer();

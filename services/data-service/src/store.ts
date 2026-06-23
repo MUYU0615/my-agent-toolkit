@@ -7,7 +7,7 @@ import {
 export type BotStatus = "draft" | "initializing" | "ready";
 export type ConversationPurpose = "normal_chat" | "init" | "doc_generation";
 export type ConversationChannel = "wecom_direct" | "wecom_group";
-export type InitializationPhase = "soul" | "agents";
+export type InitializationPhase = "soul" | "role_select" | "agents";
 export type InitializationSessionStatus = "active" | "completed" | "cancelled";
 export type InitializationGenerationInProgress = "soul" | "agents";
 export type PendingGeneratedDocumentStatus = "pending" | "confirmed" | "cancelled";
@@ -116,6 +116,7 @@ export interface InitializationSessionRecord {
   wecom_user_id: string;
   conversation_id: string;
   phase: InitializationPhase;
+  selected_role_id?: string;
   soul_answers: string[];
   agents_answers: string[];
   generation_in_progress?: InitializationGenerationInProgress;
@@ -129,6 +130,7 @@ export interface UpsertInitializationSessionInput {
   wecom_user_id: string;
   conversation_id: string;
   phase: InitializationPhase;
+  selected_role_id?: string;
   soul_answers: string[];
   agents_answers: string[];
   generation_in_progress?: InitializationGenerationInProgress;
@@ -454,6 +456,110 @@ export interface MemoryStatsInput {
   owner_id?: string;
 }
 
+export interface ListEnabledRecordsOptions {
+  includeDisabled?: boolean;
+}
+
+export interface GlobalDocumentRecord {
+  document_id: string;
+  title: string;
+  slug: string;
+  content: string;
+  enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertGlobalDocumentInput {
+  document_id?: string;
+  title: string;
+  slug: string;
+  content: string;
+  enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface RoleRecord {
+  role_id: string;
+  name: string;
+  slug: string;
+  description: string;
+  enabled: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertRoleInput {
+  role_id?: string;
+  name: string;
+  slug: string;
+  description: string;
+  enabled?: boolean;
+  sort_order?: number;
+}
+
+export interface RoleDocumentRecord {
+  role_document_id: string;
+  role_id: string;
+  title: string;
+  content: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertRoleDocumentInput {
+  role_document_id?: string;
+  role_id: string;
+  title: string;
+  content: string;
+  enabled?: boolean;
+}
+
+export type RoleQuestionType = "single_choice" | "multi_choice" | "free_text";
+
+export interface RoleQuestionOption {
+  value: string;
+  label: string;
+}
+
+export interface RoleQuestionDependency {
+  key: string;
+  equals: string;
+}
+
+export interface RoleQuestionRecord {
+  question_id: string;
+  role_id: string;
+  key: string;
+  title: string;
+  description: string;
+  question_type: RoleQuestionType;
+  options_json: RoleQuestionOption[];
+  required: boolean;
+  enabled: boolean;
+  sort_order: number;
+  depends_on_json: RoleQuestionDependency[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpsertRoleQuestionInput {
+  question_id?: string;
+  role_id: string;
+  key: string;
+  title: string;
+  description?: string;
+  question_type: RoleQuestionType;
+  options_json?: RoleQuestionOption[];
+  required?: boolean;
+  enabled?: boolean;
+  sort_order?: number;
+  depends_on_json?: RoleQuestionDependency[];
+}
+
 export interface DataStore {
   createBot(input: CreateBotInput): BotRecord;
   listBots(): BotRecord[];
@@ -504,6 +610,18 @@ export interface DataStore {
   applyPendingGeneratedDocuments(
     input: ApplyPendingGeneratedDocumentsInput,
   ): AppliedPendingGeneratedDocumentResult[];
+  upsertGlobalDocument(input: UpsertGlobalDocumentInput): GlobalDocumentRecord;
+  listGlobalDocuments(options?: ListEnabledRecordsOptions): GlobalDocumentRecord[];
+  deleteGlobalDocument(documentId: string): void;
+  upsertRole(input: UpsertRoleInput): RoleRecord;
+  listRoles(options?: ListEnabledRecordsOptions): RoleRecord[];
+  deleteRole(roleId: string): void;
+  upsertRoleDocument(input: UpsertRoleDocumentInput): RoleDocumentRecord;
+  listRoleDocuments(roleId: string, options?: ListEnabledRecordsOptions): RoleDocumentRecord[];
+  deleteRoleDocument(roleDocumentId: string): void;
+  upsertRoleQuestion(input: UpsertRoleQuestionInput): RoleQuestionRecord;
+  listRoleQuestions(roleId: string, options?: ListEnabledRecordsOptions): RoleQuestionRecord[];
+  deleteRoleQuestion(questionId: string): void;
   upsertBotConfigDocument(input: UpsertBotConfigDocumentInput): BotConfigDocumentRecord;
   listBotConfigDocuments(botId: string): BotConfigDocumentRecord[];
   upsertMemoryDocument(input: UpsertMemoryDocumentInput): MemoryDocumentRecord;
@@ -543,6 +661,10 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   const initializationSessions = new Map<string, InitializationSessionRecord>();
   const pendingGeneratedDocuments = new Map<string, PendingGeneratedDocumentRecord>();
   const runtimeConfigs = new Map<string, RuntimeConfigRecord>();
+  const globalDocuments = new Map<string, GlobalDocumentRecord>();
+  const roles = new Map<string, RoleRecord>();
+  const roleDocuments = new Map<string, RoleDocumentRecord>();
+  const roleQuestions = new Map<string, RoleQuestionRecord>();
   const memoryDocuments = new Map<string, MemoryDocumentRecord[]>();
   const botConfigDocuments = new Map<string, BotConfigDocumentRecord>();
   const businessDocuments = new Map<string, BusinessDocumentRecord>();
@@ -932,6 +1054,9 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
         conversation_id: requireText(input.conversation_id, "conversation_id"),
         phase: requireInitializationPhase(input.phase),
+        ...(optionalText(input.selected_role_id)
+          ? { selected_role_id: optionalText(input.selected_role_id) }
+          : {}),
         soul_answers: normalizeAnswerArray(input.soul_answers, "soul_answers"),
         agents_answers: normalizeAnswerArray(input.agents_answers, "agents_answers"),
         ...(input.generation_in_progress !== undefined
@@ -1099,6 +1224,190 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       }
 
       return saved;
+    },
+
+    upsertGlobalDocument(input) {
+      const title = requireText(input.title, "title");
+      const slug = requireText(input.slug, "slug");
+      const content = requireText(input.content, "content");
+      const existing = input.document_id
+        ? getRequiredRecordById(
+          globalDocuments,
+          input.document_id,
+          "document_id",
+          "global document",
+        )
+        : findGlobalDocumentBySlug(globalDocuments, slug);
+      const duplicate = findGlobalDocumentBySlug(
+        globalDocuments,
+        slug,
+        existing?.document_id,
+      );
+      if (duplicate) {
+        throw new Error(`global document slug already exists: ${slug}`);
+      }
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: GlobalDocumentRecord = {
+        document_id: existing?.document_id ?? `global_doc_${crypto.randomUUID()}`,
+        title,
+        slug,
+        content,
+        enabled: normalizeEnabled(input.enabled),
+        sort_order: normalizeSortOrder(input.sort_order),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      globalDocuments.set(record.document_id, record);
+      return record;
+    },
+
+    listGlobalDocuments(options = {}) {
+      return [...globalDocuments.values()]
+        .filter((document) => includeEnabledRecord(document, options))
+        .sort(compareSortedRecords);
+    },
+
+    deleteGlobalDocument(documentId) {
+      globalDocuments.delete(documentId);
+    },
+
+    upsertRole(input) {
+      const name = requireText(input.name, "name");
+      const slug = requireText(input.slug, "slug");
+      const description = requireText(input.description, "description");
+      const existing = input.role_id
+        ? getRequiredRecordById(roles, input.role_id, "role_id", "role")
+        : findRoleBySlug(roles, slug);
+      const duplicate = findRoleBySlug(roles, slug, existing?.role_id);
+      if (duplicate) {
+        throw new Error(`role slug already exists: ${slug}`);
+      }
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: RoleRecord = {
+        role_id: existing?.role_id ?? `role_${crypto.randomUUID()}`,
+        name,
+        slug,
+        description,
+        enabled: normalizeEnabled(input.enabled),
+        sort_order: normalizeSortOrder(input.sort_order),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      roles.set(record.role_id, record);
+      return record;
+    },
+
+    listRoles(options = {}) {
+      return [...roles.values()]
+        .filter((role) => includeEnabledRecord(role, options))
+        .sort(compareSortedRecords);
+    },
+
+    deleteRole(roleId) {
+      roles.delete(roleId);
+      deleteRecordsByRoleId(roleDocuments, roleId);
+      deleteRecordsByRoleId(roleQuestions, roleId);
+    },
+
+    upsertRoleDocument(input) {
+      const role = getRequiredRole(roles, input.role_id);
+      const title = requireText(input.title, "title");
+      const content = requireText(input.content, "content");
+      const existing = input.role_document_id
+        ? getRequiredRecordById(
+          roleDocuments,
+          input.role_document_id,
+          "role_document_id",
+          "role document",
+        )
+        : findRoleDocumentByRoleAndTitle(roleDocuments, role.role_id, title);
+      const duplicate = findRoleDocumentByRoleAndTitle(
+        roleDocuments,
+        role.role_id,
+        title,
+        existing?.role_document_id,
+      );
+      if (duplicate) {
+        throw new Error(
+          `role document already exists for role ${role.role_id} and title ${title}`,
+        );
+      }
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: RoleDocumentRecord = {
+        role_document_id: existing?.role_document_id ?? `role_doc_${crypto.randomUUID()}`,
+        role_id: role.role_id,
+        title,
+        content,
+        enabled: normalizeEnabled(input.enabled),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      roleDocuments.set(record.role_document_id, record);
+      return record;
+    },
+
+    listRoleDocuments(roleId, options = {}) {
+      return [...roleDocuments.values()]
+        .filter((document) => document.role_id === requireText(roleId, "role_id"))
+        .filter((document) => includeEnabledRecord(document, options))
+        .sort((left, right) => left.created_at.localeCompare(right.created_at));
+    },
+
+    deleteRoleDocument(roleDocumentId) {
+      roleDocuments.delete(roleDocumentId);
+    },
+
+    upsertRoleQuestion(input) {
+      const role = getRequiredRole(roles, input.role_id);
+      const key = requireText(input.key, "key");
+      const title = requireText(input.title, "title");
+      const existing = input.question_id
+        ? getRequiredRecordById(
+          roleQuestions,
+          input.question_id,
+          "question_id",
+          "role question",
+        )
+        : findRoleQuestionByRoleAndKey(roleQuestions, role.role_id, key);
+      const duplicate = findRoleQuestionByRoleAndKey(
+        roleQuestions,
+        role.role_id,
+        key,
+        existing?.question_id,
+      );
+      if (duplicate) {
+        throw new Error(`role question already exists for role ${role.role_id} and key ${key}`);
+      }
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: RoleQuestionRecord = {
+        question_id: existing?.question_id ?? `question_${crypto.randomUUID()}`,
+        role_id: role.role_id,
+        key,
+        title,
+        description: normalizeOptionalText(input.description),
+        question_type: requireRoleQuestionType(input.question_type),
+        options_json: normalizeRoleQuestionOptions(input.options_json),
+        required: normalizeRequired(input.required),
+        enabled: normalizeEnabled(input.enabled),
+        sort_order: normalizeSortOrder(input.sort_order),
+        depends_on_json: normalizeRoleQuestionDependencies(input.depends_on_json),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      roleQuestions.set(record.question_id, record);
+      return cloneRoleQuestionRecord(record);
+    },
+
+    listRoleQuestions(roleId, options = {}) {
+      return [...roleQuestions.values()]
+        .filter((question) => question.role_id === requireText(roleId, "role_id"))
+        .filter((question) => includeEnabledRecord(question, options))
+        .sort(compareSortedRecords)
+        .map(cloneRoleQuestionRecord);
+    },
+
+    deleteRoleQuestion(questionId) {
+      roleQuestions.delete(questionId);
     },
 
     upsertBotConfigDocument(input) {
@@ -1333,6 +1642,132 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   };
 }
 
+export function seedDefaultRoleConfig(store: Pick<
+  DataStore,
+  | "upsertGlobalDocument"
+  | "listGlobalDocuments"
+  | "upsertRole"
+  | "listRoles"
+  | "upsertRoleDocument"
+  | "listRoleDocuments"
+  | "upsertRoleQuestion"
+  | "listRoleQuestions"
+>): void {
+  const defaultPlayground = {
+    title: "playground.md",
+    slug: "playground",
+    content: [
+      "# Playground",
+      "",
+      "- 所有回复使用中文，文档使用 Markdown 格式。",
+      "- 一次只问一个关键问题。",
+      "- 如果采用逐句引导，则每次都要给出候选项，并允许用户直接自由回答。",
+      "- 如果能够判断，应先给出推荐项，再让用户确认或修正。",
+      "- 输出应结构化、可执行，避免空泛表述。",
+    ].join("\n"),
+    enabled: true,
+    sort_order: 10,
+  } satisfies UpsertGlobalDocumentInput;
+  const defaultProductManager = {
+    name: "产品经理助手",
+    slug: "product-manager",
+    description: "产品经理角色",
+    enabled: true,
+    sort_order: 10,
+  } satisfies UpsertRoleInput;
+  const defaultProductManagerDocument = {
+    title: "role.md",
+    content: [
+      "# Role: Product Manager",
+      "",
+      "- 生成 PRD 前默认补齐背景、目标用户、核心问题。",
+      "- 生成 PRD 前默认补齐范围、非范围、限制条件、依赖条件和风险点。",
+      "- 涉及环信需求时默认检查 Console、IMM、计量计费、集群范围、开关灰度兼容性。",
+    ].join("\n"),
+    enabled: true,
+  } satisfies Omit<UpsertRoleDocumentInput, "role_id">;
+  const defaultProductManagerQuestions = [
+    {
+      key: "interaction_mode",
+      title: "你希望它用什么方式和你交互？",
+      description: "",
+      question_type: "single_choice" as const,
+      options_json: [
+        { value: "step_by_step", label: "逐句引导，一次只问一个问题" },
+        { value: "batch", label: "批量引导，一次列出多个待确认项" },
+        { value: "recommend_first", label: "先给推荐方案，再让用户确认" },
+        { value: "other", label: "其他，请直接说明" },
+      ],
+      required: true,
+      enabled: true,
+      sort_order: 10,
+      depends_on_json: [],
+    },
+    {
+      key: "memory_storage",
+      title: "是否需要长期沉淀规则和保存生成的文档？",
+      description: "",
+      question_type: "single_choice" as const,
+      options_json: [
+        { value: "yes", label: "需要，确认后的业务规则和生成的 PRD / 方案 / 纪要都要保存" },
+        { value: "no", label: "不需要，只保留当前会话输出" },
+        { value: "pending", label: "待定" },
+      ],
+      required: true,
+      enabled: true,
+      sort_order: 20,
+      depends_on_json: [],
+    },
+    {
+      key: "work_rules",
+      title: "有没有必须遵守的工作规则？",
+      description: "",
+      question_type: "single_choice" as const,
+      options_json: [
+        { value: "skip", label: "跳过，暂无额外规则" },
+        { value: "input", label: "直接输入必须遵守的工作规则" },
+      ],
+      required: true,
+      enabled: true,
+      sort_order: 30,
+      depends_on_json: [
+        { key: "interaction_mode", equals: "step_by_step" },
+      ],
+    },
+  ] satisfies Array<Omit<UpsertRoleQuestionInput, "role_id">>;
+
+  const existingGlobalDocuments = store.listGlobalDocuments({ includeDisabled: true });
+  if (!existingGlobalDocuments.some((document) => document.slug === defaultPlayground.slug)) {
+    store.upsertGlobalDocument(defaultPlayground);
+  }
+
+  const existingRoles = store.listRoles({ includeDisabled: true });
+  let productManager = existingRoles.find((role) => role.slug === defaultProductManager.slug);
+  if (!productManager) {
+    productManager = store.upsertRole(defaultProductManager);
+  }
+
+  const existingRoleDocuments = store.listRoleDocuments(productManager.role_id, { includeDisabled: true });
+  if (!existingRoleDocuments.some((document) => document.title === defaultProductManagerDocument.title)) {
+    store.upsertRoleDocument({
+      role_id: productManager.role_id,
+      ...defaultProductManagerDocument,
+    });
+  }
+
+  const existingRoleQuestions = store.listRoleQuestions(productManager.role_id, { includeDisabled: true });
+  const existingQuestionKeys = new Set(existingRoleQuestions.map((question) => question.key));
+  for (const question of defaultProductManagerQuestions) {
+    if (existingQuestionKeys.has(question.key)) {
+      continue;
+    }
+    store.upsertRoleQuestion({
+      role_id: productManager.role_id,
+      ...question,
+    });
+  }
+}
+
 function botToChannelRecord(bot: BotRecord): BotChannelRecord {
   const secretConfigured = bot.wecom_secret_configured;
   const hasWeComBotId = Boolean(bot.wecom_bot_id);
@@ -1372,6 +1807,17 @@ export function getRequiredBot(
   return bot;
 }
 
+function getRequiredRole(
+  roles: Map<string, RoleRecord>,
+  roleId: string,
+): RoleRecord {
+  const role = roles.get(requireText(roleId, "role_id"));
+  if (!role) {
+    throw new Error(`role not found: ${roleId}`);
+  }
+  return role;
+}
+
 function assertUniqueWeComBotId(
   bots: Map<string, BotRecord>,
   wecomBotId: string | undefined,
@@ -1390,6 +1836,181 @@ function assertUniqueWeComBotId(
 
 function normalizeTags(tags: string[] | undefined): string[] {
   return [...new Set((tags ?? []).map((tag) => requireText(tag, "tag")))];
+}
+
+function normalizeEnabled(value: boolean | undefined): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error("enabled must be a boolean");
+  }
+  return value;
+}
+
+function normalizeRequired(value: boolean | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error("required must be a boolean");
+  }
+  return value;
+}
+
+function normalizeOptionalText(value: string | undefined): string {
+  if (value === undefined) {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error("description must be a string");
+  }
+  return value.trim();
+}
+
+function normalizeSortOrder(value: number | undefined): number {
+  if (value === undefined) {
+    return 0;
+  }
+  if (!Number.isInteger(value)) {
+    throw new Error("sort_order must be an integer");
+  }
+  return value;
+}
+
+function compareSortedRecords<
+  T extends {
+    sort_order: number;
+    created_at: string;
+  },
+>(left: T, right: T): number {
+  return left.sort_order - right.sort_order ||
+    left.created_at.localeCompare(right.created_at);
+}
+
+function includeEnabledRecord<
+  T extends {
+    enabled: boolean;
+  },
+>(record: T, options: ListEnabledRecordsOptions): boolean {
+  return options.includeDisabled ? true : record.enabled;
+}
+
+function getRequiredRecordById<T>(
+  records: Map<string, T>,
+  recordId: string,
+  fieldName: string,
+  entityName: string,
+): T {
+  const normalizedRecordId = requireText(recordId, fieldName);
+  const record = records.get(normalizedRecordId);
+  if (!record) {
+    throw new Error(`${entityName} not found: ${normalizedRecordId}`);
+  }
+  return record;
+}
+
+function findGlobalDocumentBySlug(
+  documents: Map<string, GlobalDocumentRecord>,
+  slug: string,
+  excludedDocumentId?: string,
+): GlobalDocumentRecord | undefined {
+  return [...documents.values()].find((document) =>
+    document.slug === slug && document.document_id !== excludedDocumentId
+  );
+}
+
+function findRoleBySlug(
+  roles: Map<string, RoleRecord>,
+  slug: string,
+  excludedRoleId?: string,
+): RoleRecord | undefined {
+  return [...roles.values()].find((role) =>
+    role.slug === slug && role.role_id !== excludedRoleId
+  );
+}
+
+function findRoleDocumentByRoleAndTitle(
+  documents: Map<string, RoleDocumentRecord>,
+  roleId: string,
+  title: string,
+  excludedRoleDocumentId?: string,
+): RoleDocumentRecord | undefined {
+  return [...documents.values()].find((document) =>
+    document.role_id === roleId &&
+    document.title === title &&
+    document.role_document_id !== excludedRoleDocumentId
+  );
+}
+
+function findRoleQuestionByRoleAndKey(
+  questions: Map<string, RoleQuestionRecord>,
+  roleId: string,
+  key: string,
+  excludedQuestionId?: string,
+): RoleQuestionRecord | undefined {
+  return [...questions.values()].find((question) =>
+    question.role_id === roleId &&
+    question.key === key &&
+    question.question_id !== excludedQuestionId
+  );
+}
+
+function deleteRecordsByRoleId<
+  T extends {
+    role_id: string;
+  },
+>(records: Map<string, T>, roleId: string): void {
+  for (const [recordId, record] of records.entries()) {
+    if (record.role_id === roleId) {
+      records.delete(recordId);
+    }
+  }
+}
+
+function requireRoleQuestionType(value: string): RoleQuestionType {
+  if (value !== "single_choice" && value !== "multi_choice" && value !== "free_text") {
+    throw new Error("question_type is invalid");
+  }
+  return value;
+}
+
+function normalizeRoleQuestionOptions(value: RoleQuestionOption[] | undefined): RoleQuestionOption[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("options_json must be an array");
+  }
+  return value.map((option) => ({
+    value: requireText(option?.value, "options_json.value"),
+    label: requireText(option?.label, "options_json.label"),
+  }));
+}
+
+function normalizeRoleQuestionDependencies(
+  value: RoleQuestionDependency[] | undefined,
+): RoleQuestionDependency[] {
+  if (value === undefined) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error("depends_on_json must be an array");
+  }
+  return value.map((dependency) => ({
+    key: requireText(dependency?.key, "depends_on_json.key"),
+    equals: requireText(dependency?.equals, "depends_on_json.equals"),
+  }));
+}
+
+function cloneRoleQuestionRecord(
+  record: RoleQuestionRecord,
+): RoleQuestionRecord {
+  return {
+    ...record,
+    options_json: normalizeRoleQuestionOptions(record.options_json),
+    depends_on_json: normalizeRoleQuestionDependencies(record.depends_on_json),
+  };
 }
 
 function matchesBusinessDocumentQuery(
@@ -1584,7 +2205,7 @@ export function requireBotStatus(value: string): BotStatus {
 }
 
 export function requireInitializationPhase(value: string): InitializationPhase {
-  if (value !== "soul" && value !== "agents") {
+  if (value !== "soul" && value !== "role_select" && value !== "agents") {
     throw new Error("phase is invalid");
   }
   return value;

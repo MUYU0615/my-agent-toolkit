@@ -5,11 +5,24 @@ describe("bot initialization integration", () => {
   it("initializes a bot against real data-service and persists soul and agents before normal chat", async () => {
     const dataServiceModulePath = "../../data-service/src/server.js";
     const { createDataServiceServer } = await import(dataServiceModulePath) as {
-      createDataServiceServer: () => {
+      createDataServiceServer: (store?: {
+        listRoles(options?: { includeDisabled?: boolean }): unknown[];
+      }) => {
         fetch(request: Request): Promise<Response>;
       };
     };
-    const dataService = createDataServiceServer();
+    const storeModulePath = "../../data-service/src/store.js";
+    const { createDataStore, seedDefaultRoleConfig } = await import(storeModulePath) as {
+      createDataStore: () => {
+        listRoles(options?: { includeDisabled?: boolean }): unknown[];
+      };
+      seedDefaultRoleConfig: (store: {
+        listRoles(options?: { includeDisabled?: boolean }): unknown[];
+      }) => void;
+    };
+    const seededStore = createDataStore();
+    seedDefaultRoleConfig(seededStore);
+    const dataService = createDataServiceServer(seededStore);
     const llmCalls: Array<{ url: string; body: unknown }> = [];
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
@@ -109,20 +122,17 @@ describe("bot initialization integration", () => {
     await expect(claimed.json()).resolves.toMatchObject({
       claimed: true,
       status: "initializing",
-      output: expect.stringContaining("Soul 引导 1/3"),
+      output: expect.stringContaining("Soul 引导 1/2"),
     });
 
-    for (const text of [
-      "1",
-      "2",
-      "2",
-      "环信，即时通讯云服务商，提供 IM SDK 和 REST API",
-      "1",
-      "1",
-      "1",
-      "1",
-      "固定使用 bot-memory，MCP 只能写业务文档和长期记忆",
-      "PRD 需要确认是否涉及 console、计量计费、IMM 开关",
+    let lastInitializationPayload: { output?: string; initialized?: boolean; ready?: boolean; status?: string } | undefined;
+    for (const step of [
+      { text: "1", expectOutput: "Soul 引导 2/2" },
+      { text: "1", expectOutput: "角色选择 1/1" },
+      { text: "1", expectOutput: "你希望它用什么方式和你交互？" },
+      { text: "1", expectOutput: "是否需要长期沉淀规则和保存生成的文档？" },
+      { text: "1", expectOutput: "有没有必须遵守的工作规则？" },
+      { text: "2", expectOutput: "工作方式配置已确认，正在生成 agents.md。" },
     ]) {
       const response = await server.fetch(
         new Request("http://localhost/v1/messages/wecom", {
@@ -130,13 +140,39 @@ describe("bot initialization integration", () => {
           body: JSON.stringify({
             bot_id: "prd-bot",
             wecom_user_id: "admin-a",
-            text,
+            text: step.text,
             runtime: "mock",
           }),
         }),
       );
-      expect(response.status).toBe(200);
+      const payload = await response.json() as { output?: string; error?: string };
+      expect(response.status, JSON.stringify({ step, payload })).toBe(200);
+      expect(payload.output).toContain(step.expectOutput);
+      lastInitializationPayload = payload as typeof lastInitializationPayload;
     }
+
+    expect(lastInitializationPayload).toMatchObject({
+      output: expect.stringContaining("初始化完成，可以开始工作。"),
+      initialized: true,
+      ready: true,
+      status: "ready",
+    });
+
+    const finalInitialization = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "PRD 需要确认是否涉及 console、计量计费、IMM 开关",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(finalInitialization.status).toBe(200);
+    await expect(finalInitialization.json()).resolves.toMatchObject({
+      output: expect.stringContaining("语音转文字"),
+    });
 
     const bot = await dataService.fetch(new Request("http://localhost/v1/bots/prd-bot"));
     await expect(bot.json()).resolves.toMatchObject({

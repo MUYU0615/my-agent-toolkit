@@ -5,7 +5,8 @@ export interface InitializationSessionDto {
   bot_id: string;
   wecom_user_id: string;
   conversation_id: string;
-  phase: "soul" | "agents";
+  phase: "soul" | "role_select" | "agents";
+  selected_role_id?: string;
   soul_answers: string[];
   agents_answers: string[];
   generation_in_progress?: "soul" | "agents";

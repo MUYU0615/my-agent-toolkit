@@ -3,6 +3,8 @@ import {
   requireMemoryScope,
   type DataStore,
   type MemoryScope,
+  type RoleQuestionDependency,
+  type RoleQuestionOption,
   type UpdateBusinessDocumentInput,
 } from "./store.js";
 
@@ -236,6 +238,111 @@ export function createDataServiceServer(
         url.pathname === "/v1/memory-documents/current"
       ) {
         return handleListCurrentMemoryDocuments(url, store);
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/v1/global-documents"
+      ) {
+        return handleListGlobalDocuments(url, store);
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v1/global-documents"
+      ) {
+        return handleCreateGlobalDocument(request, store);
+      }
+
+      const globalDocumentMatch = url.pathname.match(
+        /^\/v1\/global-documents\/([^/]+)$/,
+      );
+      if (request.method === "PUT" && globalDocumentMatch) {
+        return handleUpdateGlobalDocument(
+          request,
+          store,
+          globalDocumentMatch[1],
+        );
+      }
+      if (request.method === "DELETE" && globalDocumentMatch) {
+        return handleDeleteGlobalDocument(store, globalDocumentMatch[1]);
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/roles") {
+        return handleListRoles(url, store);
+      }
+
+      if (request.method === "POST" && url.pathname === "/v1/roles") {
+        return handleCreateRole(request, store);
+      }
+
+      const roleMatch = url.pathname.match(/^\/v1\/roles\/([^/]+)$/);
+      if (request.method === "GET" && roleMatch) {
+        return handleGetRole(store, roleMatch[1]);
+      }
+      if (request.method === "PUT" && roleMatch) {
+        return handleUpdateRole(request, store, roleMatch[1]);
+      }
+      if (request.method === "DELETE" && roleMatch) {
+        return handleDeleteRole(store, roleMatch[1]);
+      }
+
+      const roleDocumentsMatch = url.pathname.match(
+        /^\/v1\/roles\/([^/]+)\/documents$/,
+      );
+      if (request.method === "GET" && roleDocumentsMatch) {
+        return handleListRoleDocuments(url, store, roleDocumentsMatch[1]);
+      }
+      if (request.method === "POST" && roleDocumentsMatch) {
+        return handleCreateRoleDocument(request, store, roleDocumentsMatch[1]);
+      }
+
+      const roleDocumentMatch = url.pathname.match(
+        /^\/v1\/roles\/([^/]+)\/documents\/([^/]+)$/,
+      );
+      if (request.method === "PUT" && roleDocumentMatch) {
+        return handleUpdateRoleDocument(
+          request,
+          store,
+          roleDocumentMatch[1],
+          roleDocumentMatch[2],
+        );
+      }
+      if (request.method === "DELETE" && roleDocumentMatch) {
+        return handleDeleteRoleDocument(
+          store,
+          roleDocumentMatch[1],
+          roleDocumentMatch[2],
+        );
+      }
+
+      const roleQuestionsMatch = url.pathname.match(
+        /^\/v1\/roles\/([^/]+)\/questions$/,
+      );
+      if (request.method === "GET" && roleQuestionsMatch) {
+        return handleListRoleQuestions(url, store, roleQuestionsMatch[1]);
+      }
+      if (request.method === "POST" && roleQuestionsMatch) {
+        return handleCreateRoleQuestion(request, store, roleQuestionsMatch[1]);
+      }
+
+      const roleQuestionMatch = url.pathname.match(
+        /^\/v1\/roles\/([^/]+)\/questions\/([^/]+)$/,
+      );
+      if (request.method === "PUT" && roleQuestionMatch) {
+        return handleUpdateRoleQuestion(
+          request,
+          store,
+          roleQuestionMatch[1],
+          roleQuestionMatch[2],
+        );
+      }
+      if (request.method === "DELETE" && roleQuestionMatch) {
+        return handleDeleteRoleQuestion(
+          store,
+          roleQuestionMatch[1],
+          roleQuestionMatch[2],
+        );
       }
 
       const memoryDocumentVersionsMatch = url.pathname.match(
@@ -756,6 +863,433 @@ async function handleUpsertBotConfigDocument(
   }
 }
 
+async function handleCreateGlobalDocument(
+  request: Request,
+  store: DataStore,
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      title?: string;
+      slug?: string;
+      content?: string;
+      enabled?: boolean;
+      sort_order?: number;
+    };
+    const existing = store.listGlobalDocuments({ includeDisabled: true }).find(
+      (document) => document.slug === body.slug,
+    );
+    if (existing) {
+      return jsonResponse({ error: `global document slug already exists: ${body.slug}` }, 400);
+    }
+    return jsonResponse(store.upsertGlobalDocument({
+      title: requireText(body.title, "title"),
+      slug: requireText(body.slug, "slug"),
+      content: requireText(body.content, "content"),
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+    }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListGlobalDocuments(url: URL, store: DataStore): Response {
+  try {
+    return jsonResponse(store.listGlobalDocuments({
+      includeDisabled: parseIncludeDisabled(url),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpdateGlobalDocument(
+  request: Request,
+  store: DataStore,
+  documentId: string,
+): Promise<Response> {
+  try {
+    const existing = store.listGlobalDocuments({ includeDisabled: true }).find(
+      (document) => document.document_id === documentId,
+    );
+    if (!existing) {
+      return jsonResponse({ error: `global document not found: ${documentId}` }, 404);
+    }
+    const body = await request.json() as {
+      title?: string;
+      slug?: string;
+      content?: string;
+      enabled?: boolean;
+      sort_order?: number;
+    };
+    return jsonResponse(store.upsertGlobalDocument({
+      document_id: documentId,
+      title: body.title ?? "",
+      slug: body.slug ?? "",
+      content: body.content ?? "",
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteGlobalDocument(
+  store: DataStore,
+  documentId: string,
+): Response {
+  try {
+    const existing = store.listGlobalDocuments({ includeDisabled: true }).find(
+      (document) => document.document_id === documentId,
+    );
+    if (!existing) {
+      return jsonResponse({ error: `global document not found: ${documentId}` }, 404);
+    }
+    store.deleteGlobalDocument(documentId);
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateRole(
+  request: Request,
+  store: DataStore,
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      name?: string;
+      slug?: string;
+      description?: string;
+      enabled?: boolean;
+      sort_order?: number;
+    };
+    const existing = store.listRoles({ includeDisabled: true }).find(
+      (role) => role.slug === body.slug,
+    );
+    if (existing) {
+      return jsonResponse({ error: `role slug already exists: ${body.slug}` }, 400);
+    }
+    return jsonResponse(store.upsertRole({
+      name: requireText(body.name, "name"),
+      slug: requireText(body.slug, "slug"),
+      description: requireText(body.description, "description"),
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+    }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListRoles(url: URL, store: DataStore): Response {
+  try {
+    return jsonResponse(store.listRoles({
+      includeDisabled: parseIncludeDisabled(url),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetRole(store: DataStore, roleId: string): Response {
+  try {
+    const role = store.listRoles({ includeDisabled: true }).find(
+      (item) => item.role_id === roleId,
+    );
+    if (!role) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    return jsonResponse(role);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpdateRole(
+  request: Request,
+  store: DataStore,
+  roleId: string,
+): Promise<Response> {
+  try {
+    const existing = store.listRoles({ includeDisabled: true }).find(
+      (role) => role.role_id === roleId,
+    );
+    if (!existing) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    const body = await request.json() as {
+      name?: string;
+      slug?: string;
+      description?: string;
+      enabled?: boolean;
+      sort_order?: number;
+    };
+    return jsonResponse(store.upsertRole({
+      role_id: roleId,
+      name: body.name ?? "",
+      slug: body.slug ?? "",
+      description: body.description ?? "",
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteRole(store: DataStore, roleId: string): Response {
+  try {
+    const existing = store.listRoles({ includeDisabled: true }).find(
+      (role) => role.role_id === roleId,
+    );
+    if (!existing) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    store.deleteRole(roleId);
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateRoleDocument(
+  request: Request,
+  store: DataStore,
+  roleId: string,
+): Promise<Response> {
+  try {
+    const role = store.listRoles({ includeDisabled: true }).find(
+      (record) => record.role_id === roleId,
+    );
+    if (!role) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    const body = await request.json() as {
+      title?: string;
+      content?: string;
+      enabled?: boolean;
+    };
+    const existing = store
+      .listRoleDocuments(roleId, { includeDisabled: true })
+      .find((document) => document.title === body.title);
+    if (existing) {
+      return jsonResponse(
+        { error: `role document already exists for role ${roleId} and title ${body.title}` },
+        400,
+      );
+    }
+    return jsonResponse(store.upsertRoleDocument({
+      role_id: roleId,
+      title: body.title ?? "",
+      content: body.content ?? "",
+      enabled: body.enabled,
+    }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListRoleDocuments(
+  url: URL,
+  store: DataStore,
+  roleId: string,
+): Response {
+  try {
+    const role = store.listRoles({ includeDisabled: true }).find(
+      (record) => record.role_id === roleId,
+    );
+    if (!role) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    return jsonResponse(store.listRoleDocuments(roleId, {
+      includeDisabled: parseIncludeDisabled(url),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpdateRoleDocument(
+  request: Request,
+  store: DataStore,
+  roleId: string,
+  roleDocumentId: string,
+): Promise<Response> {
+  try {
+    const existing = store
+      .listRoleDocuments(roleId, { includeDisabled: true })
+      .find((document) => document.role_document_id === roleDocumentId);
+    if (!existing) {
+      return jsonResponse({ error: `role document not found: ${roleDocumentId}` }, 404);
+    }
+    const body = await request.json() as {
+      title?: string;
+      content?: string;
+      enabled?: boolean;
+    };
+    return jsonResponse(store.upsertRoleDocument({
+      role_document_id: roleDocumentId,
+      role_id: roleId,
+      title: body.title ?? "",
+      content: body.content ?? "",
+      enabled: body.enabled,
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteRoleDocument(
+  store: DataStore,
+  roleId: string,
+  roleDocumentId: string,
+): Response {
+  try {
+    const existing = store
+      .listRoleDocuments(roleId, { includeDisabled: true })
+      .find((document) => document.role_document_id === roleDocumentId);
+    if (!existing) {
+      return jsonResponse({ error: `role document not found: ${roleDocumentId}` }, 404);
+    }
+    store.deleteRoleDocument(roleDocumentId);
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateRoleQuestion(
+  request: Request,
+  store: DataStore,
+  roleId: string,
+): Promise<Response> {
+  try {
+    const role = store.listRoles({ includeDisabled: true }).find(
+      (record) => record.role_id === roleId,
+    );
+    if (!role) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    const body = await request.json() as {
+      key?: string;
+      title?: string;
+      description?: string;
+      question_type?: string;
+      options_json?: Array<{ value?: string; label?: string }>;
+      required?: boolean;
+      enabled?: boolean;
+      sort_order?: number;
+      depends_on_json?: Array<{ key?: string; equals?: string }>;
+    };
+    const existing = store
+      .listRoleQuestions(roleId, { includeDisabled: true })
+      .find((question) => question.key === body.key);
+    if (existing) {
+      return jsonResponse(
+        { error: `role question already exists for role ${roleId} and key ${body.key}` },
+        400,
+      );
+    }
+    return jsonResponse(store.upsertRoleQuestion({
+      role_id: roleId,
+      key: requireText(body.key, "key"),
+      title: requireText(body.title, "title"),
+      description: body.description,
+      question_type: body.question_type as "single_choice" | "multi_choice" | "free_text",
+      options_json: parseRoleQuestionOptions(body.options_json),
+      required: body.required,
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+      depends_on_json: parseRoleQuestionDependencies(body.depends_on_json),
+    }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListRoleQuestions(
+  url: URL,
+  store: DataStore,
+  roleId: string,
+): Response {
+  try {
+    const role = store.listRoles({ includeDisabled: true }).find(
+      (record) => record.role_id === roleId,
+    );
+    if (!role) {
+      return jsonResponse({ error: `role not found: ${roleId}` }, 404);
+    }
+    return jsonResponse(store.listRoleQuestions(roleId, {
+      includeDisabled: parseIncludeDisabled(url),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpdateRoleQuestion(
+  request: Request,
+  store: DataStore,
+  roleId: string,
+  questionId: string,
+): Promise<Response> {
+  try {
+    const existing = store
+      .listRoleQuestions(roleId, { includeDisabled: true })
+      .find((question) => question.question_id === questionId);
+    if (!existing) {
+      return jsonResponse({ error: `role question not found: ${questionId}` }, 404);
+    }
+    const body = await request.json() as {
+      key?: string;
+      title?: string;
+      description?: string;
+      question_type?: string;
+      options_json?: Array<{ value?: string; label?: string }>;
+      required?: boolean;
+      enabled?: boolean;
+      sort_order?: number;
+      depends_on_json?: Array<{ key?: string; equals?: string }>;
+    };
+    return jsonResponse(store.upsertRoleQuestion({
+      question_id: questionId,
+      role_id: roleId,
+      key: requireText(body.key, "key"),
+      title: requireText(body.title, "title"),
+      description: body.description,
+      question_type: body.question_type as "single_choice" | "multi_choice" | "free_text",
+      options_json: parseRoleQuestionOptions(body.options_json),
+      required: body.required,
+      enabled: body.enabled,
+      sort_order: body.sort_order,
+      depends_on_json: parseRoleQuestionDependencies(body.depends_on_json),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteRoleQuestion(
+  store: DataStore,
+  roleId: string,
+  questionId: string,
+): Response {
+  try {
+    const existing = store
+      .listRoleQuestions(roleId, { includeDisabled: true })
+      .find((question) => question.question_id === questionId);
+    if (!existing) {
+      return jsonResponse({ error: `role question not found: ${questionId}` }, 404);
+    }
+    store.deleteRoleQuestion(questionId);
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
 function handleListBotConfigDocuments(
   store: DataStore,
   botId: string,
@@ -886,6 +1420,41 @@ async function handleVerifyAdminClaim(
 function optionalSearchParam(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name);
   return value && value.trim() !== "" ? value.trim() : undefined;
+}
+
+function parseIncludeDisabled(url: URL): boolean {
+  return url.searchParams.get("include_disabled") === "true";
+}
+
+function requireText(value: unknown, fieldName: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${fieldName} is required`);
+  }
+  return value.trim();
+}
+
+function parseRoleQuestionOptions(
+  value: Array<{ value?: string; label?: string }> | undefined,
+): RoleQuestionOption[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.map((option, index) => ({
+    value: requireText(option.value, `options_json[${index}].value`),
+    label: requireText(option.label, `options_json[${index}].label`),
+  }));
+}
+
+function parseRoleQuestionDependencies(
+  value: Array<{ key?: string; equals?: string }> | undefined,
+): RoleQuestionDependency[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.map((dependency, index) => ({
+    key: requireText(dependency.key, `depends_on_json[${index}].key`),
+    equals: requireText(dependency.equals, `depends_on_json[${index}].equals`),
+  }));
 }
 
 function optionalMemoryScope(value: string | null): MemoryScope | undefined {

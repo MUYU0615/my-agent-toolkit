@@ -63,15 +63,66 @@ interface RememberCommand {
 }
 
 interface WizardState {
-  phase: "soul" | "agents";
+  phase: "soul" | "role_select" | "agents";
   soulAnswers: string[];
   agentsAnswers: string[];
+  selectedRoleId?: string;
   generationInProgress?: "soul" | "agents";
 }
 
 interface LoadedWizardState {
   state: WizardState;
   conversationId: string;
+}
+
+interface RoleRecord {
+  role_id: string;
+  name: string;
+  slug: string;
+  description: string;
+  enabled: boolean;
+  sort_order: number;
+}
+
+interface RoleQuestionOption {
+  value: string;
+  label: string;
+}
+
+interface RoleQuestionDependency {
+  key: string;
+  equals: string;
+}
+
+interface RoleQuestionRecord {
+  question_id: string;
+  role_id: string;
+  key: string;
+  title: string;
+  description: string;
+  question_type: "single_choice" | "multi_choice" | "free_text";
+  options_json: RoleQuestionOption[];
+  required: boolean;
+  enabled: boolean;
+  sort_order: number;
+  depends_on_json: RoleQuestionDependency[];
+}
+
+interface GlobalDocumentRecord {
+  document_id: string;
+  title: string;
+  slug: string;
+  content: string;
+  enabled: boolean;
+  sort_order: number;
+}
+
+interface RoleDocumentRecord {
+  role_document_id: string;
+  role_id: string;
+  title: string;
+  content: string;
+  enabled: boolean;
 }
 
 const MISSING_GENERATED_DOCUMENTS_MESSAGE = "初始化文档生成失败：没有生成 soul 和 agents.md。请回复“确认”重新生成，或说明需要修改的配置。";
@@ -351,10 +402,15 @@ export async function beginWizardGenerationIfReady(
     await saveWizardState(config, input, conversationId, state);
     return { notice: "Soul 正在生成，请稍等。", shouldProcess: true };
   }
-  if (state.phase === "agents" && state.agentsAnswers.length === AGENTS_WIZARD_QUESTIONS.length - 1) {
-    state.generationInProgress = "agents";
-    await saveWizardState(config, input, conversationId, state);
-    return { notice: "工作方式正在生成，请稍等。", shouldProcess: true };
+  if (state.phase === "agents" && state.selectedRoleId) {
+    const roleQuestions = await listEnabledRoleQuestions(config, state.selectedRoleId);
+    const answerMap = decodeAgentsAnswerMap(state.agentsAnswers);
+    const currentQuestion = findNextRoleQuestion(roleQuestions, answerMap);
+    if (!currentQuestion) {
+      state.generationInProgress = "agents";
+      await saveWizardState(config, input, conversationId, state);
+      return { notice: "工作方式正在生成，请稍等。", shouldProcess: true };
+    }
   }
   return undefined;
 }
@@ -382,6 +438,7 @@ async function handleWizardMessage(
     phase: "soul" as const,
     soulAnswers: [],
     agentsAnswers: [],
+    selectedRoleId: undefined,
   };
   const fallbackConversationId = loaded && loaded.conversationId !== conversationId
     ? loaded.conversationId
@@ -423,7 +480,8 @@ async function handleWizardMessage(
         output: result.output,
       };
     }
-    state.phase = "agents";
+    const enabledRoles = await listEnabledRoles(config);
+    state.phase = "role_select";
     delete state.generationInProgress;
     await saveWizardState(config, input, conversationId, state);
     return {
@@ -432,31 +490,55 @@ async function handleWizardMessage(
       output: [
         "Soul 配置已确认，正在生成 soul。",
         result.output,
-        "开始配置工作方式。",
-        AGENTS_WIZARD_QUESTIONS[0],
+        buildRoleSelectionPrompt(enabledRoles),
       ].filter(Boolean).join("\n\n"),
     };
   }
 
-  if (
-    state.agentsAnswers.length === 0
-    && state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length
-    && isMultipleChoiceAnswer(normalized)
-  ) {
+  if (state.phase === "role_select") {
+    const roles = await listEnabledRoles(config);
+    const selectedRole = resolveSelectedRole(normalized, roles);
+    if (!selectedRole) {
+      return {
+        conversation_id: conversationId,
+        output: roles.length === 0
+          ? "当前没有可选角色。请先在 WebUI 或 data-service 中启用角色。"
+          : [
+            "未识别到有效角色，请重新选择。",
+            buildRoleSelectionPrompt(roles),
+          ].join("\n\n"),
+      };
+    }
+    state.selectedRoleId = selectedRole.role_id;
+    state.phase = "agents";
+    await saveWizardState(config, input, conversationId, state);
+    await clearFallbackAfterSave();
+    const roleQuestions = await listEnabledRoleQuestions(config, selectedRole.role_id);
+    const firstQuestion = findNextRoleQuestion(roleQuestions, new Map());
     return {
       conversation_id: conversationId,
-      output: "核心工作只能选择一个。请重新回复一个选项编号，或直接说明一个核心工作。",
+      output: firstQuestion
+        ? buildRoleQuestionPrompt(firstQuestion)
+        : "当前角色没有可用引导问题，将直接生成工作方式。",
     };
   }
 
-  if (state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length) {
-    state.agentsAnswers.push(normalized);
+  const roleQuestions = state.selectedRoleId
+    ? await listEnabledRoleQuestions(config, state.selectedRoleId)
+    : [];
+  const answerMap = decodeAgentsAnswerMap(state.agentsAnswers);
+  const currentQuestion = findNextRoleQuestion(roleQuestions, answerMap);
+
+  if (currentQuestion) {
+    answerMap.set(currentQuestion.key, normalizeRoleQuestionAnswer(currentQuestion, normalized));
+    state.agentsAnswers = encodeAgentsAnswerMap(answerMap);
     await saveWizardState(config, input, conversationId, state);
     await clearFallbackAfterSave();
-    if (state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length) {
+    const nextQuestion = findNextRoleQuestion(roleQuestions, answerMap);
+    if (nextQuestion) {
       return {
         conversation_id: conversationId,
-        output: AGENTS_WIZARD_QUESTIONS[state.agentsAnswers.length],
+        output: buildRoleQuestionPrompt(nextQuestion),
       };
     }
   } else if (fallbackConversationId) {
@@ -469,7 +551,9 @@ async function handleWizardMessage(
     input,
     conversationId,
     state.soulAnswers,
-    state.agentsAnswers,
+    state.selectedRoleId,
+    roleQuestions,
+    decodeAgentsAnswerMap(state.agentsAnswers),
   );
   if (result.output.startsWith("工作方式生成失败：") || result.output.startsWith("初始化文档生成失败：")) {
     delete state.generationInProgress;
@@ -527,6 +611,7 @@ async function saveWizardState(
     wecom_user_id: input.wecom_user_id,
     conversation_id: conversationId ?? input.conversation_id ?? "pending",
     phase: state.phase,
+    selected_role_id: state.selectedRoleId,
     soul_answers: state.soulAnswers,
     agents_answers: state.agentsAnswers,
     generation_in_progress: state.generationInProgress,
@@ -566,6 +651,7 @@ function wizardStateFromDto(session: InitializationSessionDto): WizardState {
     phase: session.phase,
     soulAnswers: [...session.soul_answers],
     agentsAnswers: [...session.agents_answers],
+    selectedRoleId: session.selected_role_id,
     generationInProgress: session.generation_in_progress,
   };
 }
@@ -717,18 +803,38 @@ async function generateAgentsFromWizardAnswers(
   input: WeComMessageInput,
   conversationId: string,
   soulAnswers: string[],
-  agentsAnswers: string[],
+  selectedRoleId: string | undefined,
+  roleQuestions: RoleQuestionRecord[],
+  agentsAnswers: Map<string, string>,
 ): Promise<{ run_id: string; output: string }> {
+  const [globalDocuments, roleDocuments] = await Promise.all([
+    listEnabledGlobalDocuments(config),
+    selectedRoleId ? listEnabledRoleDocuments(config, selectedRoleId) : Promise.resolve([]),
+  ]);
   const result = await processAllowedWeComMessage(
     {
       ...input,
-      text: buildAgentsGenerationPrompt(soulAnswers, agentsAnswers),
+      text: buildAgentsGenerationPrompt(
+        soulAnswers,
+        selectedRoleId,
+        roleQuestions,
+        agentsAnswers,
+        globalDocuments,
+        roleDocuments,
+      ),
     },
     config,
     conversationId,
   );
   if (result.output === MISSING_AGENTS_DOCUMENT_MESSAGE) {
-    const fallback = await initializeAgentsFromWizardAnswers(config, input, soulAnswers, agentsAnswers);
+    const fallback = await initializeAgentsFromWizardAnswers(
+      config,
+      input,
+      soulAnswers,
+      selectedRoleId,
+      roleQuestions,
+      agentsAnswers,
+    );
     return {
       run_id: result.run_id,
       output: fallback.visibleOutput,
@@ -849,6 +955,40 @@ async function getJson<T>(
   }
 
   return payload as T;
+}
+
+async function listEnabledRoles(config: BotHostConfig): Promise<RoleRecord[]> {
+  return getJson<RoleRecord[]>(
+    config,
+    `${config.dataServiceUrl}/v1/roles`,
+  );
+}
+
+async function listEnabledGlobalDocuments(config: BotHostConfig): Promise<GlobalDocumentRecord[]> {
+  return getJson<GlobalDocumentRecord[]>(
+    config,
+    `${config.dataServiceUrl}/v1/global-documents`,
+  );
+}
+
+async function listEnabledRoleDocuments(
+  config: BotHostConfig,
+  roleId: string,
+): Promise<RoleDocumentRecord[]> {
+  return getJson<RoleDocumentRecord[]>(
+    config,
+    `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleId)}/documents`,
+  );
+}
+
+async function listEnabledRoleQuestions(
+  config: BotHostConfig,
+  roleId: string,
+): Promise<RoleQuestionRecord[]> {
+  return getJson<RoleQuestionRecord[]>(
+    config,
+    `${config.dataServiceUrl}/v1/roles/${encodeURIComponent(roleId)}/questions`,
+  );
 }
 
 async function* readNdjsonEvents(
@@ -1298,9 +1438,8 @@ function buildWizardGenerationPrompt(answers: string[]): string {
 
 function summarizeSoulAnswers(answers: string[]): Record<SoulWizardFieldKey, string> {
   return {
-    identity: mapSingleChoice(answers[0], SOUL_IDENTITY_OPTIONS),
-    personality: mapSingleChoice(answers[1], SOUL_PERSONALITY_OPTIONS),
-    communication: mapSingleChoice(answers[2], SOUL_COMMUNICATION_OPTIONS),
+    identity: mapSingleChoice(answers[0], LEGACY_SOUL_IDENTITY_OPTIONS),
+    communication: mapSingleChoice(answers[1], SOUL_COMMUNICATION_OPTIONS),
   };
 }
 
@@ -1325,32 +1464,139 @@ function buildSoulGenerationPrompt(answers: string[]): string {
     "输出要求：",
     "1. 只输出简短确认语和一个 document block。",
     "2. document block 必须严格使用文件名：private/soul.md。",
-    "3. soul 只描述机器人是谁：身份、性格、沟通风格、价值观和人格边界。",
+    "3. soul 只描述机器人是谁：身份、沟通风格、价值观和人格边界。",
     "4. 不要写工作流程、工具规则、文档规则、职责清单、管理员流程或敏感信息。",
   ].join("\n");
 }
 
-function buildAgentsGenerationPrompt(soulAnswers: string[], agentsAnswers: string[]): string {
+function buildRoleSelectionPrompt(roles: RoleRecord[]): string {
+  if (roles.length === 0) {
+    return "Soul 已生成，但当前没有可选角色。请先在 data-service 配置启用角色。";
+  }
+
+  return [
+    "请选择角色。",
+    withWizardOptions("角色选择 1/1：你希望我承担哪个角色？", Object.fromEntries(
+      roles.map((role, index) => [`${index + 1}`, role.name]),
+    )),
+  ].join("\n\n");
+}
+
+function buildRoleQuestionPrompt(question: RoleQuestionRecord): string {
+  const options = Array.isArray(question.options_json) ? question.options_json : [];
+  if (question.question_type === "free_text" || options.length === 0) {
+    return [
+      question.title,
+      question.description ? `\n${question.description}` : "",
+      "\n请直接输入。",
+    ].join("");
+  }
+  return withWizardOptions(
+    question.title,
+    Object.fromEntries(options.map((option, index) => [`${index + 1}`, option.label])),
+  );
+}
+
+function resolveSelectedRole(answer: string, roles: RoleRecord[]): RoleRecord | undefined {
+  const byIndex = /^\d+$/.test(answer) ? roles[Number(answer) - 1] : undefined;
+  if (byIndex) {
+    return byIndex;
+  }
+  return roles.find((role) => role.name === answer || role.slug === answer || role.role_id === answer);
+}
+
+function findNextRoleQuestion(
+  questions: RoleQuestionRecord[],
+  answers: Map<string, string>,
+): RoleQuestionRecord | undefined {
+  return questions.find((question) =>
+    !answers.has(question.key) && question.depends_on_json.every((dependency) =>
+      answers.get(dependency.key) === dependency.equals
+    )
+  );
+}
+
+function normalizeRoleQuestionAnswer(question: RoleQuestionRecord, answer: string): string {
+  const options = Array.isArray(question.options_json) ? question.options_json : [];
+  if (question.question_type === "free_text" || options.length === 0) {
+    return answer;
+  }
+  const optionsByIndex = options.map((option, index) => [`${index + 1}`, option] as const);
+  const matchedByIndex = optionsByIndex.find(([index]) => index === answer);
+  if (matchedByIndex) {
+    return matchedByIndex[1].value;
+  }
+  const matchedByValue = options.find((option) => option.value === answer || option.label === answer);
+  return matchedByValue?.value ?? answer;
+}
+
+function encodeAgentsAnswerMap(answers: Map<string, string>): string[] {
+  return [...answers.entries()].map(([key, value]) => `${key}=${value}`);
+}
+
+function decodeAgentsAnswerMap(answers: string[]): Map<string, string> {
+  const entries = answers
+    .map((entry) => {
+      const index = entry.indexOf("=");
+      if (index <= 0) {
+        return undefined;
+      }
+      return [entry.slice(0, index), entry.slice(index + 1)] as const;
+    })
+    .filter((entry): entry is readonly [string, string] => Boolean(entry));
+  return new Map(entries);
+}
+
+function buildAgentsGenerationPrompt(
+  soulAnswers: string[],
+  selectedRoleId: string | undefined,
+  roleQuestions: RoleQuestionRecord[],
+  agentsAnswers: Map<string, string>,
+  globalDocuments: GlobalDocumentRecord[],
+  roleDocuments: RoleDocumentRecord[],
+): string {
   const soul = summarizeSoulAnswers(soulAnswers);
-  const agents = summarizeAgentsAnswers(agentsAnswers);
+  const roleSummary = summarizeRoleQuestionAnswers(roleQuestions, agentsAnswers);
+  const enabledGlobalDocuments = globalDocuments.filter((document) => document.enabled);
+  const enabledRoleDocuments = roleDocuments.filter((document) => document.enabled);
   return [
     "请根据以下 Agents 引导配置生成 agents.md 文档。",
+    "",
+    "公共背景文档：",
+    ...(enabledGlobalDocuments.length > 0
+      ? enabledGlobalDocuments.flatMap((document) => [
+        `--- ${document.title} ---`,
+        document.content,
+      ])
+      : ["- 无"]),
+    "",
+    "角色默认规则文档：",
+    ...(enabledRoleDocuments.length > 0
+      ? enabledRoleDocuments.flatMap((document) => [
+        `--- ${document.title} ---`,
+        document.content,
+      ])
+      : ["- 无"]),
     "",
     "Soul 摘要：",
     ...SOUL_WIZARD_FIELDS.map((field) => `${field.label}：${soul[field.key]}`),
     "",
+    `角色：${selectedRoleId ?? "未指定"}`,
     "工作方式配置：",
-    ...AGENTS_WIZARD_FIELDS.map((field) => `${field.label}：${agents[field.key]}`),
+    ...roleSummary,
     `业务背景：${DEFAULT_EASEMOB_BUSINESS_BACKGROUND}`,
     "",
     "硬性规则：",
     "1. agents.md 只描述机器人如何工作：核心工作、默认业务背景、交互规则、任务流程、文档生成规则、记忆策略、Skill/MCP 规则、禁止行为和管理员修改流程。",
     "2. 一个 bot 只能有一个核心工作，其他能力只能作为辅助，不要写成多主责列表。",
-    "3. 当核心工作涉及 PRD，且管理员配置了 Console、IMM、计量计费等必须确认项时，必须逐项确认。",
-    "4. 一次只能问一个管理员指定项。",
-    "5. 不得要求用户使用组合格式一次回复多个确认项，例如 1a 2a 3a。",
-    "6. Console、IMM、计量计费等项必须分别完成确认后，才能输出 PRD。",
-    "7. 不要重复 soul 里的身份、性格和角色气质；不要写入敏感信息。",
+    "3. 澄清需求时，一次只问一个问题，不得一次抛出多个问题。",
+    "4. 每次提问应优先给出 2 到 4 个候选选项；如果能够判断，应明确给出推荐项。",
+    "5. 在给出候选项时，必须允许用户直接自由回答，不能把用户限制成只能选编号。",
+    "6. 当核心工作涉及 PRD，且管理员配置了 Console、IMM、计量计费等必须确认项时，必须逐项确认。",
+    "7. 一次只能问一个管理员指定项。",
+    "8. 不得要求用户使用组合格式一次回复多个确认项，例如 1a 2a 3a。",
+    "9. Console、IMM、计量计费等项必须分别完成确认后，才能输出 PRD。",
+    "10. 不要重复 soul 里的身份、性格和角色气质；不要写入敏感信息。",
     "",
     "输出要求：",
     "1. 只输出简短确认语和一个 document block。",
@@ -1375,9 +1621,11 @@ async function initializeAgentsFromWizardAnswers(
   config: BotHostConfig,
   input: WeComMessageInput,
   soulAnswers: string[],
-  agentsAnswers: string[],
+  selectedRoleId: string | undefined,
+  roleQuestions: RoleQuestionRecord[],
+  agentsAnswers: Map<string, string>,
 ): Promise<ProcessedOutput> {
-  const configDocuments = [buildFallbackAgentsDocument(soulAnswers, agentsAnswers)];
+  const configDocuments = [buildFallbackAgentsDocument(soulAnswers, selectedRoleId, roleQuestions, agentsAnswers)];
   await persistConfigDocuments(config, input, configDocuments);
   return {
     visibleOutput: "初始化完成，可以开始工作。",
@@ -1395,9 +1643,6 @@ function buildFallbackSoulDocument(answers: string[]): ConfigDocument {
       "## 我是谁",
       `你是${summary.identity}。`,
       "",
-      "## 性格",
-      `你的性格是${summary.personality}。`,
-      "",
       "## 沟通风格",
       `你的沟通风格是${summary.communication}。`,
       "",
@@ -1408,10 +1653,18 @@ function buildFallbackSoulDocument(answers: string[]): ConfigDocument {
   };
 }
 
-function buildFallbackAgentsDocument(soulAnswers: string[], agentsAnswers: string[]): ConfigDocument {
+function buildFallbackAgentsDocument(
+  soulAnswers: string[],
+  selectedRoleId: string | undefined,
+  roleQuestions: RoleQuestionRecord[],
+  agentsAnswers: Map<string, string>,
+): ConfigDocument {
   const soul = summarizeSoulAnswers(soulAnswers);
-  const agents = summarizeAgentsAnswers(agentsAnswers);
-  const prdRule = isPrdCoreWork(agents.core_work)
+  const roleAnswerMap = Object.fromEntries(agentsAnswers.entries());
+  const interaction = resolveRoleQuestionLabel(roleQuestions, "interaction_mode", roleAnswerMap.interaction_mode);
+  const memoryStorage = resolveRoleQuestionLabel(roleQuestions, "memory_storage", roleAnswerMap.memory_storage);
+  const workRules = resolveRoleQuestionLabel(roleQuestions, "work_rules", roleAnswerMap.work_rules);
+  const prdRule = selectedRoleId === "role-product-manager" || selectedRoleId === "product-manager"
     ? [
       "- 生成 PRD 前必须逐项确认管理员指定项，例如 Console、IMM、计量计费。",
       "- 一次只能问一个管理员指定项，不得要求用户使用组合格式一次回复多个确认项，例如 1a 2a 3a。",
@@ -1423,28 +1676,27 @@ function buildFallbackAgentsDocument(soulAnswers: string[], agentsAnswers: strin
     content: [
       "# AGENTS",
       "",
-      "## 核心工作",
-      `核心工作：${agents.core_work}`,
+      "## 角色",
+      `角色：${selectedRoleId ?? "未指定"}`,
       `业务背景：${DEFAULT_EASEMOB_BUSINESS_BACKGROUND}`,
       `机器人身份参考：${soul.identity}`,
       "",
       "## 交互规则",
-      `交互方式：${agents.interaction}`,
+      `交互方式：${interaction}`,
       "- 信息不足时，一次只问当前最关键的问题。",
+      "- 澄清需求时，一次只问一个问题，不要一次抛出多个问题。",
+      "- 每次提问优先给出 2 到 4 个候选选项，方便用户直接选择。",
+      "- 能够判断时先给推荐项，再让用户确认或修正。",
+      "- 用户也可以直接自由回答，不得强制用户只能回复编号。",
       "- 输出结论前要显式处理约束、风险、范围和待确认事项。",
       ...prdRule,
       "",
       "## 文档与记忆",
-      `长期记忆：${agents.memory}`,
-      `文档存储：${agents.document_storage}`,
+      `长期沉淀与文档保存：${memoryStorage}`,
       "确认后的业务规则、长期偏好和关键文档可以写入记忆；临时沟通只保留在会话上下文中。",
       "",
-      "## Skill / MCP 使用规则",
-      `Skill / MCP 约束：${agents.skills_mcp}`,
-      "只有在任务需要且已授权时才调用外部工具；工具结果需要转化为可读结论再回复。",
-      "",
       "## 工作规则",
-      `管理员指定规则：${agents.work_rules}`,
+      `管理员指定规则：${workRules}`,
       "",
       "## 禁止行为",
       "- 不得请求、输出或写入企业微信 Secret、API Key、管理员认领码、认证文件路径等敏感信息。",
@@ -1455,6 +1707,28 @@ function buildFallbackAgentsDocument(soulAnswers: string[], agentsAnswers: strin
       "管理员可以通过控制台或重置引导流程修改 soul、AGENTS、skill、MCP 和初始化配置。",
     ].join("\n"),
   };
+}
+
+function summarizeRoleQuestionAnswers(
+  roleQuestions: RoleQuestionRecord[],
+  answers: Map<string, string>,
+): string[] {
+  return roleQuestions
+    .filter((question) => answers.has(question.key))
+    .map((question) => `${question.title}：${resolveRoleQuestionLabel(roleQuestions, question.key, answers.get(question.key))}`);
+}
+
+function resolveRoleQuestionLabel(
+  roleQuestions: RoleQuestionRecord[],
+  key: string,
+  value: string | undefined,
+): string {
+  if (!value) {
+    return "未指定";
+  }
+  const question = roleQuestions.find((item) => item.key === key);
+  const option = (Array.isArray(question?.options_json) ? question.options_json : []).find((item) => item.value === value);
+  return option?.label ?? value;
 }
 
 function isPrdCoreWork(coreWork: string): boolean {
@@ -1778,7 +2052,7 @@ type WizardFieldKey =
   | "skills_mcp"
   | "constraints";
 
-type SoulWizardFieldKey = "identity" | "personality" | "communication";
+type SoulWizardFieldKey = "identity" | "communication";
 type AgentsWizardFieldKey =
   | "core_work"
   | "interaction"
@@ -1789,7 +2063,6 @@ type AgentsWizardFieldKey =
 
 const SOUL_WIZARD_FIELDS: Array<{ key: SoulWizardFieldKey; label: string }> = [
   { key: "identity", label: "我是谁" },
-  { key: "personality", label: "性格" },
   { key: "communication", label: "沟通风格" },
 ];
 
@@ -1803,21 +2076,12 @@ const AGENTS_WIZARD_FIELDS: Array<{ key: AgentsWizardFieldKey; label: string }> 
 ];
 
 const SOUL_WIZARD_QUESTIONS = [
-  withWizardOptions("Soul 引导 1/3：你希望我扮演什么角色？", {
-    "1": "产品经理助手",
-    "2": "QA 测试助手",
-    "3": "技术文档助手",
-    "4": "项目管理助手",
-    "5": "其他，请直接说明",
-  }),
-  withWizardOptions("Soul 引导 2/3：你希望我的性格是什么样的？", {
-    "1": "冷静务实",
-    "2": "严谨审慎",
-    "3": "主动推进",
-    "4": "友好耐心",
-    "5": "其他，请直接说明",
-  }),
-  withWizardOptions("Soul 引导 3/3：你希望我的沟通风格是什么？", {
+  [
+    "Soul 引导 1/2：我是谁？",
+    "",
+    "请直接输入。",
+  ].join("\n"),
+  withWizardOptions("Soul 引导 2/2：你希望我的沟通风格是什么？", {
     "1": "简洁直接",
     "2": "严谨完整",
     "3": "先问清楚再回答",
@@ -1873,25 +2137,20 @@ function withWizardOptions(question: string, options: Record<string, string>): s
   ].join("\n");
 }
 
-const SOUL_IDENTITY_OPTIONS: Record<string, string> = {
-  "1": "产品经理助手",
-  "2": "QA 测试助手",
-  "3": "技术文档助手",
-  "4": "项目管理助手",
-};
-
-const SOUL_PERSONALITY_OPTIONS: Record<string, string> = {
-  "1": "冷静务实",
-  "2": "严谨审慎",
-  "3": "主动推进",
-  "4": "友好耐心",
-};
-
 const SOUL_COMMUNICATION_OPTIONS: Record<string, string> = {
   "1": "简洁直接",
   "2": "严谨完整",
   "3": "先问清楚再回答",
   "4": "给出选项辅助决策",
+};
+
+const LEGACY_SOUL_IDENTITY_OPTIONS: Record<string, string> = {
+  "1": "产品经理助手",
+  "2": "QA 测试助手",
+  "3": "研发助理",
+  "4": "技术文档助手",
+  "5": "项目管理助手",
+  "6": "市场分析助手",
 };
 
 const AGENTS_CORE_WORK_OPTIONS: Record<string, string> = {
