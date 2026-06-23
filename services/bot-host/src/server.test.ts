@@ -1190,6 +1190,60 @@ describe("bot-host server", () => {
     expect(initializationSessions.has("prd-bot:admin-a:pending")).toBe(false);
   });
 
+  it("does not clear pending wizard state when resolved promotion save fails", async () => {
+    const initializationSessions = new Map<string, MockInitializationSession>();
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const url = new URL(request.url);
+        const body = request.method === "PUT" ? await request.json().catch(() => undefined) : undefined;
+
+        if (url.pathname === "/internal/initialization-sessions" && request.method === "PUT") {
+          if ((body as { conversation_id?: string })?.conversation_id === "conv-init") {
+            return Response.json({ error: "write failed" }, { status: 500 });
+          }
+        }
+        const initializationSessionResponse = mockInitializationSessionResponse(request, body, initializationSessions);
+        if (initializationSessionResponse) {
+          return initializationSessionResponse;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "initializing",
+            is_admin: true,
+            conversation: { conversation_id: "conv-init", purpose: "init" },
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+    initializationSessions.set("prd-bot:admin-a:pending", {
+      session_id: "init-pending",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "pending",
+      phase: "soul",
+      soul_answers: ["产品经理助手"],
+      agents_answers: [],
+      status: "active",
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "冷静务实", runtime: "mock" }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(initializationSessions.has("prd-bot:admin-a:pending")).toBe(true);
+  });
+
   it("routes ready HTTP messages to active initialization wizard state", async () => {
     const calls: string[] = [];
     const initializationSessions = new Map<string, MockInitializationSession>();
@@ -1637,6 +1691,156 @@ describe("bot-host server", () => {
     });
     expect(calls.map((call) => call.url)).not.toContain("http://data-service/v1/bot-config-documents");
     expect(calls.map((call) => call.url)).not.toContain("http://data-service/v1/bots/prd-bot/ready");
+  });
+
+  it("retries failed soul generation without appending retry text", async () => {
+    const prompts: string[] = [];
+    const initializationSessions = new Map<string, MockInitializationSession>();
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT" ? await request.json().catch(() => undefined) : undefined;
+        const initializationSessionResponse = mockInitializationSessionResponse(request, body, initializationSessions);
+        if (initializationSessionResponse) {
+          return initializationSessionResponse;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "initializing",
+            is_admin: true,
+            conversation: { conversation_id: "conv-init", purpose: "init" },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          prompts.push((body as { prompt: string }).prompt);
+          return Response.json({
+            run_id: "run-retry",
+            output: [
+              "~document:private/soul.md",
+              "(生成的正式 soul 内容，不包含 [BOOTSTRAP] 标记)",
+              "~/document",
+            ].join("\n"),
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+    initializationSessions.set("prd-bot:admin-a:conv-init", {
+      session_id: "init-soul",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-init",
+      phase: "soul",
+      soul_answers: ["产品经理助手", "冷静务实", "简洁直接"],
+      agents_answers: [],
+      status: "active",
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "确认", runtime: "mock" }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(prompts[0]).toContain("沟通风格：简洁直接");
+    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
+      soul_answers: ["产品经理助手", "冷静务实", "简洁直接"],
+    });
+  });
+
+  it("retries failed agents generation without appending retry text", async () => {
+    const prompts: string[] = [];
+    const initializationSessions = new Map<string, MockInitializationSession>();
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT" ? await request.json().catch(() => undefined) : undefined;
+        const initializationSessionResponse = mockInitializationSessionResponse(request, body, initializationSessions);
+        if (initializationSessionResponse) {
+          return initializationSessionResponse;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "initializing",
+            is_admin: true,
+            conversation: { conversation_id: "conv-init", purpose: "init" },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          prompts.push((body as { prompt: string }).prompt);
+          return Response.json({
+            run_id: "run-agents-retry",
+            output: [
+              "~document:instructions/AGENTS.md",
+              "(生成的正式 agents 内容，不包含 [BOOTSTRAP] 标记)",
+              "~/document",
+            ].join("\n"),
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+    const agentsAnswers = [
+      "撰写/维护 PRD",
+      "逐句引导，一次只问一个问题",
+      "使用，确认后的业务规则和文档需要沉淀",
+      "需要，生成的 PRD/方案/纪要要保存",
+      "固定使用 bot-memory",
+      "PRD 前确认 Console、IMM、计量计费",
+    ];
+    initializationSessions.set("prd-bot:admin-a:conv-init", {
+      session_id: "init-agents",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-init",
+      phase: "agents",
+      soul_answers: ["产品经理助手", "冷静务实", "简洁直接"],
+      agents_answers: agentsAnswers,
+      status: "active",
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "确认", runtime: "mock" }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(prompts[0]).toContain("工作规则：PRD 前确认 Console、IMM、计量计费");
+    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
+      agents_answers: agentsAnswers,
+    });
   });
 
   it("falls back to deterministic initialization documents when document generation returns plain text", async () => {

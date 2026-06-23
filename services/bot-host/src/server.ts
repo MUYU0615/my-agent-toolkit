@@ -769,23 +769,35 @@ async function handleWizardMessage(
     soulAnswers: [],
     agentsAnswers: [],
   };
-  if (loaded && loaded.conversationId !== conversationId) {
+  const fallbackConversationId = loaded && loaded.conversationId !== conversationId
+    ? loaded.conversationId
+    : undefined;
+  const clearFallbackAfterSave = async () => {
+    if (!fallbackConversationId) {
+      return;
+    }
     await clearInitializationSession(config, {
       bot_id: input.bot_id,
       wecom_user_id: input.wecom_user_id,
-      conversation_id: loaded.conversationId,
+      conversation_id: fallbackConversationId,
     });
-  }
+  };
   const normalized = normalizeWizardAnswer(input.text);
 
   if (state.phase === "soul") {
-    state.soulAnswers.push(normalized);
-    await saveWizardState(config, input, conversationId, state);
     if (state.soulAnswers.length < SOUL_WIZARD_QUESTIONS.length) {
-      return {
-        conversation_id: conversationId,
-        output: SOUL_WIZARD_QUESTIONS[state.soulAnswers.length],
-      };
+      state.soulAnswers.push(normalized);
+      await saveWizardState(config, input, conversationId, state);
+      await clearFallbackAfterSave();
+      if (state.soulAnswers.length < SOUL_WIZARD_QUESTIONS.length) {
+        return {
+          conversation_id: conversationId,
+          output: SOUL_WIZARD_QUESTIONS[state.soulAnswers.length],
+        };
+      }
+    } else if (fallbackConversationId) {
+      await saveWizardState(config, input, conversationId, state);
+      await clearFallbackAfterSave();
     }
     const result = await generateSoulFromWizardAnswers(config, input, conversationId, state.soulAnswers);
     if (result.output.startsWith("初始化文档生成失败：") || result.output.startsWith("Soul 生成失败：")) {
@@ -812,20 +824,30 @@ async function handleWizardMessage(
     };
   }
 
-  if (state.agentsAnswers.length === 0 && isMultipleChoiceAnswer(normalized)) {
+  if (
+    state.agentsAnswers.length === 0
+    && state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length
+    && isMultipleChoiceAnswer(normalized)
+  ) {
     return {
       conversation_id: conversationId,
       output: "核心工作只能选择一个。请重新回复一个选项编号，或直接说明一个核心工作。",
     };
   }
 
-  state.agentsAnswers.push(normalized);
-  await saveWizardState(config, input, conversationId, state);
   if (state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length) {
-    return {
-      conversation_id: conversationId,
-      output: AGENTS_WIZARD_QUESTIONS[state.agentsAnswers.length],
-    };
+    state.agentsAnswers.push(normalized);
+    await saveWizardState(config, input, conversationId, state);
+    await clearFallbackAfterSave();
+    if (state.agentsAnswers.length < AGENTS_WIZARD_QUESTIONS.length) {
+      return {
+        conversation_id: conversationId,
+        output: AGENTS_WIZARD_QUESTIONS[state.agentsAnswers.length],
+      };
+    }
+  } else if (fallbackConversationId) {
+    await saveWizardState(config, input, conversationId, state);
+    await clearFallbackAfterSave();
   }
 
   const result = await generateAgentsFromWizardAnswers(
@@ -2194,6 +2216,9 @@ function parseWeComMessageInput(value: unknown): WeComMessageInput {
   return {
     bot_id: requireText(record.bot_id, "bot_id"),
     wecom_user_id: requireText(record.wecom_user_id, "wecom_user_id"),
+    ...(typeof record.conversation_id === "string"
+      ? { conversation_id: record.conversation_id }
+      : {}),
     text: requireText(record.text, "text"),
     runtime,
   };
