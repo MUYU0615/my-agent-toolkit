@@ -122,16 +122,19 @@ describe("bot initialization integration", () => {
     await expect(claimed.json()).resolves.toMatchObject({
       claimed: true,
       status: "initializing",
-      output: expect.stringContaining("Soul 引导 1/2"),
+      output: expect.stringContaining("我是谁？"),
     });
 
     let lastInitializationPayload: { output?: string; initialized?: boolean; ready?: boolean; status?: string } | undefined;
     for (const step of [
-      { text: "1", expectOutput: "Soul 引导 2/2" },
+      { text: "1", expectOutput: "你希望我的沟通风格是什么？" },
       { text: "1", expectOutput: "角色选择 1/1" },
       { text: "1", expectOutput: "你希望它用什么方式和你交互？" },
-      { text: "1", expectOutput: "是否需要长期沉淀规则和保存生成的文档？" },
-      { text: "1", expectOutput: "有没有必须遵守的工作规则？" },
+      { text: "1", expectOutput: "是否需要长期沉淀规则和文档？" },
+      { text: "1", expectOutput: "默认输出更偏向哪类内容？" },
+      { text: "1", expectOutput: "是否强调结构化结论？" },
+      { text: "1", expectOutput: "是否需要优先给推荐方案？" },
+      { text: "1", expectOutput: "是否有额外工作规则？" },
       { text: "2", expectOutput: "工作方式配置已确认，正在生成 agents.md。" },
     ]) {
       const response = await server.fetch(

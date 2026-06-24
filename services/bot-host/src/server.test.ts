@@ -1836,7 +1836,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       status: "initializing",
     });
-    expect(payload.output).toContain("Soul 引导 1/2：我是谁？");
+    expect(payload.output).toContain("我是谁？");
     expect(payload.output).toContain("请直接输入。");
     expect(calls[0]).toEqual({
       url: "http://data-service/v1/bots/prd-bot/admin/claim/verify",
@@ -1924,7 +1924,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       status: "initializing",
     });
-    expect(payload.output).toContain("Soul 引导 1/2：我是谁？");
+    expect(payload.output).toContain("我是谁？");
     expect(payload.output).toContain("请直接输入。");
     expect(calls).toHaveLength(2);
   });
@@ -2050,7 +2050,7 @@ describe("bot-host server", () => {
     }
 
     expect(outputs).toEqual([
-      "Soul 引导 2/2：你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
+      "你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
       "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n请选择角色。\n\n角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理\n2. 测试工程师\n3. 研发工程师\n4. 市场人员\n5. 运营人员\n\n回复编号或直接输入。",
       "你希望它用什么方式和你交互？\n1. 逐句引导，一次只问一个问题\n2. 批量引导，一次列出多个待确认项\n3. 先给推荐方案，再让用户确认\n4. 其他，请直接说明\n\n回复编号或直接输入。",
       "是否需要长期沉淀规则和文档？\n1. 需要\n2. 不需要\n3. 其他，可直接描述\n\n回复编号或直接输入。",
@@ -2235,7 +2235,7 @@ describe("bot-host server", () => {
     );
     const startPayload = await startResponse.json() as { output: string };
     expect(startResponse.status).toBe(200);
-    expect(startPayload.output).toContain("Soul 引导 1/2：我是谁？");
+    expect(startPayload.output).toContain("我是谁？");
 
     const firstAnswer = await server.fetch(
       new Request("http://localhost/v1/messages/wecom", {
@@ -2250,7 +2250,7 @@ describe("bot-host server", () => {
     );
     const firstPayload = await firstAnswer.json() as { output: string };
     expect(firstAnswer.status).toBe(200);
-    expect(firstPayload.output).toContain("Soul 引导 2/2：你希望我的沟通风格是什么？");
+    expect(firstPayload.output).toContain("你希望我的沟通风格是什么？");
 
     const secondAnswer = await server.fetch(
       new Request("http://localhost/v1/messages/wecom", {
@@ -2386,7 +2386,7 @@ describe("bot-host server", () => {
       body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "1", runtime: "mock" }),
     }));
     await expect(start.json()).resolves.toMatchObject({
-      output: expect.stringContaining("Soul 引导 2/2"),
+      output: expect.stringContaining("你希望我的沟通风格是什么？"),
     });
 
     const second = makeServer();
@@ -3602,7 +3602,7 @@ describe("bot-host server", () => {
     expect(payload).toMatchObject({
       conversation_id: "conv-init",
     });
-    expect(payload.output).toContain("Soul 引导 2/2：你希望我的沟通风格是什么？");
+    expect(payload.output).toContain("你希望我的沟通风格是什么？");
         expect(payload.output).toContain("回复编号或直接输入。");
     expect(calls.map((call) => call.url)).toEqual([
       "http://data-service/v1/message-context/resolve",
@@ -5785,7 +5785,7 @@ describe("bot-host server", () => {
       finish: true,
     });
     expect(sent[1].text).toContain("管理员认领成功，开始初始化。");
-    expect(sent[1].text).toContain("Soul 引导 1/2：");
+    expect(sent[1].text).toContain("我是谁？");
     const soulWaitingIndex = sent.findIndex((message) => message.text.includes("Soul 正在生成，请稍等。"));
     const soulDoneIndex = sent.findIndex((message) => message.text.includes("Soul 已生成。"));
     const initializedIndex = sent.findIndex((message) => message.text.includes("初始化完成，可以开始工作。"));
@@ -5863,7 +5863,7 @@ describe("bot-host server", () => {
       bot_id: "prd-bot",
       admin_wecom_user_id: "admin-a",
     });
-    expect(result?.output).toContain("Soul 引导 1/2：我是谁？");
+    expect(result?.output).toContain("我是谁？");
     expect(result?.output).toContain("请直接输入。");
     expect(result?.output).not.toContain(" / ");
     expect(sent).toEqual([
@@ -5934,20 +5934,20 @@ describe("bot-host server", () => {
       userId: "admin-a",
       text: "旧角色",
     });
-    expect(sent.at(-1)?.text).toContain("Soul 引导 2/2");
+    expect(sent.at(-1)?.text).toContain("你希望我的沟通风格是什么？");
 
     await worker.restartInitialization?.({
       botId: "prd-bot",
       adminWeComUserId: "admin-a",
     });
-    expect(sent.at(-1)?.text).toContain("Soul 引导 1/2");
+    expect(sent.at(-1)?.text).toContain("我是谁？");
 
     await messageHandler?.({
       conversationId: "admin-a",
       userId: "admin-a",
       text: "新角色",
     });
-    expect(sent.at(-1)?.text).toContain("Soul 引导 2/2");
+    expect(sent.at(-1)?.text).toContain("你希望我的沟通风格是什么？");
   });
 
   it("clears pending and known initialization sessions before restart", async () => {
@@ -6213,7 +6213,7 @@ describe("bot-host server", () => {
     expect(sent).toEqual([
       {
         conversationId: "admin-a",
-        text: "Soul 引导 2/2：你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
+        text: "你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
         finish: undefined,
       },
     ]);
