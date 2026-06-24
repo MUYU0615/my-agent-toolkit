@@ -3867,6 +3867,872 @@ describe("bot-host server", () => {
     expect(calls).toEqual(["http://data-service/v1/message-context/resolve"]);
   });
 
+  it("shows env metadata only for admins", async () => {
+    const calls: string[] = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        calls.push(request.url);
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/env") {
+          return Response.json({
+            items: [
+              {
+                bot_id: "prd-bot",
+                key: "OPENAI_API_KEY",
+                is_set: true,
+                updated_at: "2026-06-24T00:00:00.000Z",
+              },
+            ],
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/env",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json();
+    expect(payload).toMatchObject({
+      output: expect.stringContaining("OPENAI_API_KEY"),
+    });
+    expect(payload.output).toContain("已设置");
+    expect(calls).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://data-service/v1/bots/prd-bot/env",
+    ]);
+  });
+
+  it("allows admins to set env vars through the env command", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/env") {
+          return Response.json({
+            bot_id: "prd-bot",
+            key: "OPENAI_API_KEY",
+            is_set: true,
+            updated_at: "2026-06-24T00:00:00.000Z",
+          }, { status: 201 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/env set OPENAI_API_KEY ciphertext-secret",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      output: "已设置环境变量：OPENAI_API_KEY。",
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://data-service/v1/bots/prd-bot/env",
+    ]);
+    expect(calls[1].body).toEqual({
+      key: "OPENAI_API_KEY",
+      value_ciphertext: "ciphertext-secret",
+      updated_by_wecom_user_id: "admin-a",
+    });
+  });
+
+  it("allows admins to delete env vars through the env command", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        calls.push({ url: request.url, method: request.method });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY") {
+          return new Response(null, { status: 204 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/env delete OPENAI_API_KEY",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      output: "已删除环境变量：OPENAI_API_KEY。",
+    });
+    expect(calls).toEqual([
+      { url: "http://data-service/v1/message-context/resolve", method: "POST" },
+      { url: "http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY", method: "DELETE" },
+    ]);
+  });
+
+  it("rejects env inspection for non-admin users with a clear message", async () => {
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: {
+              conversation_id: "conv-user",
+            },
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/env",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      blocked: true,
+      reason: "capability_admin_required",
+      output: "只有管理员可以查看环境变量和管理 capability。",
+    });
+  });
+
+  it("allows admins to update skill and mcp policy", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/runtime-policy") {
+          const update = body as Record<string, unknown>;
+          return Response.json({
+            bot_id: "prd-bot",
+            skill_install_policy: update.skill_install_policy ?? "admin_only",
+            mcp_manage_policy: update.mcp_manage_policy ?? "admin_only",
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const skillResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/policy skill open",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(skillResponse.status).toBe(200);
+    await expect(skillResponse.json()).resolves.toMatchObject({
+      output: "已更新 skill 安装策略：open。",
+    });
+
+    const mcpResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/policy mcp admin_only",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(mcpResponse.status).toBe(200);
+    await expect(mcpResponse.json()).resolves.toMatchObject({
+      output: "已更新 MCP 管理策略：admin_only。",
+    });
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://data-service/v1/bots/prd-bot/runtime-policy",
+      "http://data-service/v1/message-context/resolve",
+      "http://data-service/v1/bots/prd-bot/runtime-policy",
+    ]);
+    expect(calls[1].body).toEqual({ skill_install_policy: "open" });
+    expect(calls[3].body).toEqual({ mcp_manage_policy: "admin_only" });
+  });
+
+  it("returns capability summaries for skill mcp and capability commands", async () => {
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: {
+              conversation_id: "conv-chat",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/skills") {
+          return Response.json([
+            {
+              bot_id: "prd-bot",
+              name: "repo-analyzer",
+              source_type: "github",
+              source_ref: "https://github.com/acme/repo-analyzer",
+              status: "installed",
+            },
+          ]);
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/mcps") {
+          return Response.json([
+            {
+              bot_id: "prd-bot",
+              name: "search-mcp",
+              mode: "config",
+              source_ref: "http://localhost:9300",
+              status: "installed",
+            },
+          ]);
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/runtime-policy") {
+          return Response.json({
+            bot_id: "prd-bot",
+            skill_install_policy: "admin_only",
+            mcp_manage_policy: "open",
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/capability-audit-logs") {
+          return Response.json([
+            {
+              bot_id: "prd-bot",
+              action_type: "skill_install",
+              target_name: "repo-analyzer",
+              result: "success",
+              created_at: "2026-06-24T00:00:00.000Z",
+            },
+          ]);
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const skillResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/skill",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(skillResponse.status).toBe(200);
+    await expect(skillResponse.json()).resolves.toMatchObject({
+      output: expect.stringContaining("repo-analyzer"),
+    });
+
+    const mcpResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/mcp",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(mcpResponse.status).toBe(200);
+    await expect(mcpResponse.json()).resolves.toMatchObject({
+      output: expect.stringContaining("search-mcp"),
+    });
+
+    const capabilityResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/capability",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(capabilityResponse.status).toBe(200);
+    const capabilityPayload = await capabilityResponse.json();
+    expect(capabilityPayload.output).toContain("skill 安装策略：admin_only");
+    expect(capabilityPayload.output).toContain("MCP 管理策略：open");
+    expect(capabilityPayload.output).toContain("repo-analyzer");
+    expect(capabilityPayload.output).toContain("search-mcp");
+    expect(capabilityPayload.output).toContain("skill_install");
+  });
+
+  it("accepts a natural-language skill install request from admins", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "请帮我安装 skill repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 skill 安装：repo-analyzer。",
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/skills/install",
+    ]);
+    expect(calls[1].body).toEqual({
+      name: "repo-analyzer",
+    });
+  });
+
+  it("supports slash skill install and delete commands for admins", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/delete") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const installResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/skill install repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(installResponse.status).toBe(200);
+    await expect(installResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 skill 安装：repo-analyzer。",
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/skill delete repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 skill 删除：repo-analyzer。",
+    });
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/skills/install",
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/skills/delete",
+    ]);
+    expect(calls[1].body).toEqual({ name: "repo-analyzer" });
+    expect(calls[3].body).toEqual({ name: "repo-analyzer" });
+  });
+
+  it("supports slash mcp install and delete commands for admins", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/mcps/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/mcps/delete") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const installResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/mcp install search-mcp",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(installResponse.status).toBe(200);
+    await expect(installResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 MCP 安装：search-mcp。",
+    });
+
+    const deleteResponse = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "/mcp delete search-mcp",
+          runtime: "mock",
+        }),
+      }),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 MCP 删除：search-mcp。",
+    });
+
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/mcps/install",
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/mcps/delete",
+    ]);
+    expect(calls[1].body).toEqual({ name: "search-mcp" });
+    expect(calls[3].body).toEqual({ name: "search-mcp" });
+  });
+
+  it("accepts a natural-language skill install request with a github url", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: true,
+            conversation: {
+              conversation_id: "conv-admin",
+            },
+          });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "admin-a",
+          text: "安装这个 skill：https://github.com/acme/repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 skill 安装：repo-analyzer。",
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://capability-runner/internal/bots/prd-bot/skills/install",
+    ]);
+    expect(calls[1].body).toEqual({
+      name: "repo-analyzer",
+      source_ref: "https://github.com/acme/repo-analyzer",
+      source_type: "github",
+    });
+  });
+
+  it("allows non-admin users to install skills when policy is open", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" ? await request.json().catch(() => undefined) : undefined;
+        calls.push({ url: request.url, body });
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: {
+              conversation_id: "conv-user",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/runtime-policy") {
+          return Response.json({
+            bot_id: "prd-bot",
+            skill_install_policy: "open",
+            mcp_manage_policy: "admin_only",
+          });
+        }
+
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "请帮我安装 skill repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      accepted: true,
+      output: "已受理 skill 安装：repo-analyzer。",
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://data-service/v1/message-context/resolve",
+      "http://data-service/v1/bots/prd-bot/runtime-policy",
+      "http://capability-runner/internal/bots/prd-bot/skills/install",
+    ]);
+  });
+
+  it("rejects non-admin skill installs when policy is admin_only", async () => {
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: {
+              conversation_id: "conv-user",
+            },
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/runtime-policy") {
+          return Response.json({
+            bot_id: "prd-bot",
+            skill_install_policy: "admin_only",
+            mcp_manage_policy: "admin_only",
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "请帮我安装 skill repo-analyzer",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      blocked: true,
+      reason: "capability_admin_required",
+      output: "只有管理员可以查看环境变量和管理 capability。",
+    });
+  });
+
+  it("rejects restricted capability management actions for non-admin users", async () => {
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: {
+              conversation_id: "conv-user",
+            },
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    } as Parameters<typeof createBotHostServer>[0]);
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/policy skill open",
+          runtime: "mock",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toEqual({
+      blocked: true,
+      reason: "capability_admin_required",
+      output: "只有管理员可以查看环境变量和管理 capability。",
+    });
+  });
+
   it("starts a wecom worker and replies to incoming text messages", async () => {
     const sent: Array<{ conversationId: string; text: string }> = [];
     let messageHandler:
