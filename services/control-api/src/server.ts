@@ -2,6 +2,7 @@ export interface ControlApiConfig {
   dataServiceUrl: string;
   logServiceUrl: string;
   botHostUrl?: string;
+  capabilityRunnerUrl?: string;
   fetch: typeof fetch;
 }
 
@@ -45,6 +46,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return handleBotConfigEditorPage(config, botConfigPageMatch[1]);
       }
 
+      const botCapabilitiesPageMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities$/);
+      if (request.method === "GET" && botCapabilitiesPageMatch) {
+        return handleBotCapabilitiesPage(config, botCapabilitiesPageMatch[1]);
+      }
+
       const botSoulSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/soul$/);
       if (request.method === "POST" && botSoulSaveMatch) {
         return handleBotConfigDocumentSave(request, config, botSoulSaveMatch[1], "soul");
@@ -53,6 +59,36 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
       const botAgentsSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/agents$/);
       if (request.method === "POST" && botAgentsSaveMatch) {
         return handleBotConfigDocumentSave(request, config, botAgentsSaveMatch[1], "agents.md");
+      }
+
+      const botCapabilityEnvSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/env\/save$/);
+      if (request.method === "POST" && botCapabilityEnvSaveMatch) {
+        return handleBotEnvSave(request, config, botCapabilityEnvSaveMatch[1]);
+      }
+
+      const botCapabilityEnvDeleteMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/env\/delete$/);
+      if (request.method === "POST" && botCapabilityEnvDeleteMatch) {
+        return handleBotEnvDelete(request, config, botCapabilityEnvDeleteMatch[1]);
+      }
+
+      const botCapabilitySkillInstallMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/install$/);
+      if (request.method === "POST" && botCapabilitySkillInstallMatch) {
+        return handleBotSkillInstall(request, config, botCapabilitySkillInstallMatch[1]);
+      }
+
+      const botCapabilitySkillDeleteMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/delete$/);
+      if (request.method === "POST" && botCapabilitySkillDeleteMatch) {
+        return handleBotSkillDelete(request, config, botCapabilitySkillDeleteMatch[1]);
+      }
+
+      const botCapabilityMcpInstallMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/mcps\/install$/);
+      if (request.method === "POST" && botCapabilityMcpInstallMatch) {
+        return handleBotMcpInstall(request, config, botCapabilityMcpInstallMatch[1]);
+      }
+
+      const botCapabilityMcpDeleteMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/mcps\/delete$/);
+      if (request.method === "POST" && botCapabilityMcpDeleteMatch) {
+        return handleBotMcpDelete(request, config, botCapabilityMcpDeleteMatch[1]);
       }
 
       if (request.method === "GET" && url.pathname === "/v1/global-documents") {
@@ -526,6 +562,50 @@ async function handleBotConfigEditorPage(
   return htmlResponse(renderBotConfigEditorPage(botId, bot, documents));
 }
 
+async function handleBotCapabilitiesPage(
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  const encodedBotId = encodeURIComponent(botId);
+  const [botResponse, envResponse, skillsResponse, mcpsResponse, policyResponse] = await Promise.all([
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}/env`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}/skills`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}/mcps`)),
+    config.fetch(new Request(`${config.dataServiceUrl}/v1/bots/${encodedBotId}/runtime-policy`)),
+  ]);
+  if (!botResponse.ok) {
+    return cloneJsonResponse(botResponse);
+  }
+  if (!envResponse.ok) {
+    return cloneJsonResponse(envResponse);
+  }
+  if (!skillsResponse.ok) {
+    return cloneJsonResponse(skillsResponse);
+  }
+  if (!mcpsResponse.ok) {
+    return cloneJsonResponse(mcpsResponse);
+  }
+  if (!policyResponse.ok) {
+    return cloneJsonResponse(policyResponse);
+  }
+
+  const bot = await botResponse.json() as Record<string, unknown>;
+  const envPayload = await envResponse.json() as { items?: Array<Record<string, unknown>> };
+  const skills = await skillsResponse.json() as Array<Record<string, unknown>>;
+  const mcps = await mcpsResponse.json() as Array<Record<string, unknown>>;
+  const policy = await policyResponse.json() as Record<string, unknown>;
+
+  return htmlResponse(renderBotCapabilitiesPage(
+    botId,
+    bot,
+    Array.isArray(envPayload.items) ? envPayload.items : [],
+    skills,
+    mcps,
+    policy,
+  ));
+}
+
 async function handleRoleDocumentSave(
   request: Request,
   config: ControlApiConfig,
@@ -629,6 +709,208 @@ async function handleBotConfigDocumentSave(
     },
   );
   return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/config`);
+}
+
+async function handleBotEnvSave(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  const response = await proxyJsonRequest(
+    new Request(`http://localhost/v1/bots/${encodeURIComponent(botId)}/env`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor_id: form.actor_id,
+        key: form.key,
+        value_ciphertext: form.value_ciphertext,
+        updated_by_wecom_user_id: form.actor_id,
+      }),
+    }),
+    `${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botId)}/env`,
+    config,
+    {
+      action: "bot.env.upsert",
+      targetType: "bot",
+      targetId: () => botId,
+      metadata: (body, payload) => ({
+        key: payload.key ?? body.key,
+        is_set: payload.is_set,
+      }),
+    },
+  );
+  if (!response.ok) {
+    return response;
+  }
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+async function handleBotEnvDelete(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  const key = form.key ?? "";
+  const response = await config.fetch(
+    new Request(`${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botId)}/env/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+    }),
+  );
+  if (!response.ok && response.status !== 204) {
+    return cloneJsonResponse(response);
+  }
+  await recordAuditEvent(config, {
+    actor_id: form.actor_id ?? "system",
+    action: "bot.env.delete",
+    target_type: "bot",
+    target_id: botId,
+    metadata: {
+      key,
+    },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+async function handleBotSkillInstall(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  const form = await readUrlEncodedForm(request);
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/skills/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: form.name,
+        source_ref: form.source_ref || undefined,
+        source_type: form.source_type || undefined,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    return cloneJsonResponse(response);
+  }
+  await recordAuditEvent(config, {
+    actor_id: form.actor_id ?? "system",
+    action: "bot.skill.install",
+    target_type: "bot",
+    target_id: botId,
+    metadata: {
+      name: form.name,
+      source_ref: form.source_ref,
+      source_type: form.source_type,
+    },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+async function handleBotSkillDelete(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  const form = await readUrlEncodedForm(request);
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/skills/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: form.name,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    return cloneJsonResponse(response);
+  }
+  await recordAuditEvent(config, {
+    actor_id: form.actor_id ?? "system",
+    action: "bot.skill.delete",
+    target_type: "bot",
+    target_id: botId,
+    metadata: {
+      name: form.name,
+    },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+async function handleBotMcpInstall(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  const form = await readUrlEncodedForm(request);
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/mcps/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: form.name,
+        mode: form.mode || undefined,
+        source_ref: form.source_ref || undefined,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    return cloneJsonResponse(response);
+  }
+  await recordAuditEvent(config, {
+    actor_id: form.actor_id ?? "system",
+    action: "bot.mcp.install",
+    target_type: "bot",
+    target_id: botId,
+    metadata: {
+      name: form.name,
+      mode: form.mode,
+      source_ref: form.source_ref,
+    },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+async function handleBotMcpDelete(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  const form = await readUrlEncodedForm(request);
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/mcps/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: form.name,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    return cloneJsonResponse(response);
+  }
+  await recordAuditEvent(config, {
+    actor_id: form.actor_id ?? "system",
+    action: "bot.mcp.delete",
+    target_type: "bot",
+    target_id: botId,
+    metadata: {
+      name: form.name,
+    },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
 }
 
 function summarizeConfigDocuments(documents: unknown[]): {
@@ -1124,6 +1406,50 @@ function renderBotConfigEditorPage(
     `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
     `<div class="actions"><span class="btn">保存 Agents</span></div>`,
     `<textarea>${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `</section>`,
+  ].join(""));
+}
+
+function renderBotCapabilitiesPage(
+  botId: string,
+  bot: Record<string, unknown>,
+  envItems: Array<Record<string, unknown>>,
+  skills: Array<Record<string, unknown>>,
+  mcps: Array<Record<string, unknown>>,
+  policy: Record<string, unknown>,
+): string {
+  return pageShell("Bot 能力管理", [
+    `<section class="card stack">`,
+    `<div class="actions"><a class="btn" href="/">返回 Channel 管理</a><a class="btn" href="/admin/bots/${escapeHtmlValue(botId)}/config">编辑配置</a></div>`,
+    `<h1>Bot 能力管理</h1>`,
+    `<h2>${escapeHtmlValue(bot.name ?? botId)}</h2>`,
+    `<div class="muted">${escapeHtmlValue(botId)}</div>`,
+    `<div class="muted">skill_install_policy：${escapeHtmlValue(policy.skill_install_policy ?? "-")}</div>`,
+    `<div class="muted">mcp_manage_policy：${escapeHtmlValue(policy.mcp_manage_policy ?? "-")}</div>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>环境变量</h2>`,
+    `<table><thead><tr><th>Key</th><th>状态</th><th>展示值</th><th>更新时间</th></tr></thead><tbody>`,
+    ...(envItems.length === 0
+      ? [`<tr><td colspan="4" class="muted">暂无环境变量</td></tr>`]
+      : envItems.map((item) => `<tr><td><code>${escapeHtmlValue(item.key)}</code></td><td>${escapeHtmlValue(item.is_set ? "已设置" : "未设置")}</td><td>****</td><td>${escapeHtmlValue(item.updated_at)}</td></tr>`)),
+    `</tbody></table>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>Skills</h2>`,
+    `<table><thead><tr><th>名称</th><th>来源</th><th>状态</th></tr></thead><tbody>`,
+    ...(skills.length === 0
+      ? [`<tr><td colspan="3" class="muted">暂无 Skills</td></tr>`]
+      : skills.map((skill) => `<tr><td>${escapeHtmlValue(skill.name)}</td><td>${escapeHtmlValue(skill.source_ref ?? skill.source_type ?? "-")}</td><td>${escapeHtmlValue(skill.status)}</td></tr>`)),
+    `</tbody></table>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>MCP</h2>`,
+    `<table><thead><tr><th>名称</th><th>来源</th><th>状态</th></tr></thead><tbody>`,
+    ...(mcps.length === 0
+      ? [`<tr><td colspan="3" class="muted">暂无 MCP</td></tr>`]
+      : mcps.map((mcp) => `<tr><td>${escapeHtmlValue(mcp.name)}</td><td>${escapeHtmlValue(mcp.source_ref ?? mcp.mode ?? "-")}</td><td>${escapeHtmlValue(mcp.status)}</td></tr>`)),
+    `</tbody></table>`,
     `</section>`,
   ].join(""));
 }

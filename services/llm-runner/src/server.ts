@@ -17,6 +17,7 @@ import {
   type RuntimeResult,
   type RuntimeStreamResult,
 } from "./runtimes.js";
+import { redactText } from "./redact.js";
 
 export interface LlmRunnerServer {
   fetch(request: Request): Promise<Response>;
@@ -62,7 +63,7 @@ async function handleChatStream(
   try {
     const chatRequest = parseChatRequest(await request.json());
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
-    const runtimeResult = runRuntimeStream(config, runtimeRequest);
+    const runtimeResult = await runRuntimeStreamResolved(config, runtimeRequest);
     const runId = `run_${crypto.randomUUID()}`;
     const encoder = new TextEncoder();
 
@@ -90,7 +91,7 @@ async function handleChatStream(
               const toolResult = toolRequest.status === "call"
                 ? await executeMcpToolCall(config, chatRequest, toolRequest.call)
                 : formatMcpToolResult(toolRequest.result);
-              const secondRuntimeResult = runRuntimeStream(config, {
+              const secondRuntimeResult = await runRuntimeStreamResolved(config, {
                 ...chatRequest,
                 prompt: toolResult,
               });
@@ -163,7 +164,7 @@ function enqueueChunk(
   }
   controller.enqueue(encoder.encode(ndjsonLine({
     type: "chunk",
-    content: value,
+    content: redactText(value),
   })));
 }
 
@@ -179,7 +180,7 @@ async function handleChat(
     const response: ChatResponse = {
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: finalResult.runner_session_id,
-      output: finalResult.output,
+      output: redactText(finalResult.output),
     };
 
     return jsonResponse(response);
@@ -296,7 +297,7 @@ async function runRuntime(
   }
 
   if (chatRequest.runtime === "kiro" && config.kiro) {
-    return runCliRuntime(config.kiro, chatRequest);
+    return runCliRuntime(await withBotEnv(config, chatRequest), chatRequest);
   }
 
   throw new UnavailableRuntimeError("runtime is not available yet");
@@ -315,10 +316,45 @@ function runRuntimeStream(
   }
 
   if (chatRequest.runtime === "kiro" && config.kiro) {
-    return runCliRuntimeStream(config.kiro, chatRequest);
+    throw new Error("stream runtime requires env-enriched path");
   }
 
   throw new UnavailableRuntimeError("runtime is not available yet");
+}
+
+async function runRuntimeStreamResolved(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+): Promise<RuntimeStreamResult> {
+  if (!config.enabled_runtimes.includes(chatRequest.runtime)) {
+    throw new UnavailableRuntimeError("runtime is not available yet");
+  }
+
+  if (chatRequest.runtime === "mock") {
+    return runMockRuntimeStream(chatRequest);
+  }
+
+  if (chatRequest.runtime === "kiro" && config.kiro) {
+    return runCliRuntimeStream(await withBotEnv(config, chatRequest), chatRequest);
+  }
+
+  throw new UnavailableRuntimeError("runtime is not available yet");
+}
+
+async function withBotEnv(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+) {
+  const botEnv = config.resolveBotEnvVars
+    ? await config.resolveBotEnvVars(chatRequest.bot_id)
+    : {};
+  return {
+    ...config.kiro!,
+    env: {
+      ...(config.kiro?.env ?? {}),
+      ...botEnv,
+    },
+  };
 }
 
 function ndjsonLine(payload: unknown): string {

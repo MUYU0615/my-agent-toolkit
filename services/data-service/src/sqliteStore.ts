@@ -7,6 +7,13 @@ import {
 import {
   ADMIN_CLAIM_TTL_MS,
   buildWeComConnectionTestResult,
+  cloneBotCapabilityAuditLogRecord,
+  cloneBotEnvVarRecord,
+  cloneBotMcpRecord,
+  cloneBotRuntimePolicyRecord,
+  cloneBotSkillRecord,
+  cloneInitializationSessionRecord,
+  defaultBotRuntimePolicy,
   configDocumentOrder,
   defaultRuntimeConfig,
   hashClaimCode,
@@ -31,7 +38,19 @@ import {
   type BotChannelDetail,
   type BotConfigDocumentRecord,
   type BotChannelRecord,
+  type BotCapabilityAuditActionType,
+  type BotCapabilityAuditLogRecord,
+  type BotCapabilityAuditResult,
+  type BotCapabilityInstallStatus,
+  type BotCapabilityPolicy,
   type BotRecord,
+  type BotEnvVarMetadataRecord,
+  type BotEnvVarRecord,
+  type BotMcpMode,
+  type BotMcpRecord,
+  type BotRuntimePolicyRecord,
+  type BotSkillRecord,
+  type BotSkillSourceType,
   type ClaimAdminInput,
   type ChunkRecord,
   type CreateBusinessDocumentInput,
@@ -68,6 +87,10 @@ import {
   type RuntimeConfigRecord,
   type TransferAdminInput,
   type UpdateBusinessDocumentInput,
+  type UpdateBotRuntimePolicyInput,
+  type UpsertBotEnvVarInput,
+  type UpsertBotMcpInput,
+  type UpsertBotSkillInput,
   type UpsertRuntimeConfigInput,
   type UpsertInitializationSessionInput,
   type UpsertGlobalDocumentInput,
@@ -80,6 +103,7 @@ import {
   type DataStoreOptions,
   type UpdateBotInput,
   type WeComRuntimeBotConfig,
+  type AppendBotCapabilityAuditLogInput,
   seedDefaultRoleConfig as seedDefaultRoleConfigInMemory,
 } from "./store.js";
 
@@ -226,6 +250,58 @@ export function createSqliteDataStore(
 
     upsertRuntimeConfig(botId, input) {
       return upsertRuntimeConfig(db, botId, input);
+    },
+
+    getOrCreateBotRuntimePolicy(botId) {
+      return getOrCreateBotRuntimePolicy(db, botId);
+    },
+
+    updateBotRuntimePolicy(botId, input) {
+      return updateBotRuntimePolicy(db, botId, input);
+    },
+
+    upsertBotEnvVar(botId, input) {
+      return upsertBotEnvVar(db, botId, input);
+    },
+
+    listBotEnvVars(botId) {
+      return listBotEnvVars(db, botId);
+    },
+
+    deleteBotEnvVar(botId, key) {
+      deleteBotEnvVar(db, botId, key);
+    },
+
+    upsertBotSkill(botId, input) {
+      return upsertBotSkill(db, botId, input);
+    },
+
+    listBotSkills(botId) {
+      return listBotSkills(db, botId);
+    },
+
+    deleteBotSkill(botId, name) {
+      deleteBotSkill(db, botId, name);
+    },
+
+    upsertBotMcp(botId, input) {
+      return upsertBotMcp(db, botId, input);
+    },
+
+    listBotMcps(botId) {
+      return listBotMcps(db, botId);
+    },
+
+    deleteBotMcp(botId, name) {
+      deleteBotMcp(db, botId, name);
+    },
+
+    appendBotCapabilityAuditLog(input) {
+      return appendBotCapabilityAuditLog(db, input);
+    },
+
+    listBotCapabilityAuditLogs(botId) {
+      return listBotCapabilityAuditLogs(db, botId);
     },
 
     getAdmin(botId) {
@@ -696,6 +772,342 @@ function getRuntimeConfig(
     db.prepare("select * from runtime_configs where bot_id = ?").get(bot.bot_id),
   );
   return record ?? defaultRuntimeConfig(bot);
+}
+
+function getOrCreateBotRuntimePolicy(
+  db: Database.Database,
+  botId: string,
+): BotRuntimePolicyRecord {
+  const bot = getRequiredBot(db, botId);
+  const existing = mapBotRuntimePolicyRecord(
+    db.prepare("select * from bot_runtime_policies where bot_id = ?").get(bot.bot_id),
+  );
+  if (existing) {
+    return cloneBotRuntimePolicyRecord(existing);
+  }
+  const created = defaultBotRuntimePolicy(bot);
+  db.prepare(`
+    insert into bot_runtime_policies (
+      bot_id, skill_install_policy, mcp_manage_policy, created_at, updated_at
+    ) values (?, ?, ?, ?, ?)
+  `).run(
+    created.bot_id,
+    created.skill_install_policy,
+    created.mcp_manage_policy,
+    created.created_at,
+    created.updated_at,
+  );
+  return cloneBotRuntimePolicyRecord(created);
+}
+
+function updateBotRuntimePolicy(
+  db: Database.Database,
+  botId: string,
+  input: UpdateBotRuntimePolicyInput,
+): BotRuntimePolicyRecord {
+  const bot = getRequiredBot(db, botId);
+  const existing = mapBotRuntimePolicyRecord(
+    db.prepare("select * from bot_runtime_policies where bot_id = ?").get(bot.bot_id),
+  ) ?? defaultBotRuntimePolicy(bot);
+  const record: BotRuntimePolicyRecord = {
+    ...existing,
+    skill_install_policy: input.skill_install_policy === undefined
+      ? existing.skill_install_policy
+      : requireBotCapabilityPolicy(input.skill_install_policy, "skill_install_policy"),
+    mcp_manage_policy: input.mcp_manage_policy === undefined
+      ? existing.mcp_manage_policy
+      : requireBotCapabilityPolicy(input.mcp_manage_policy, "mcp_manage_policy"),
+    updated_at: nextIsoTimestamp(existing.updated_at),
+  };
+  db.prepare(`
+    insert into bot_runtime_policies (
+      bot_id, skill_install_policy, mcp_manage_policy, created_at, updated_at
+    ) values (?, ?, ?, ?, ?)
+    on conflict(bot_id) do update set
+      skill_install_policy = excluded.skill_install_policy,
+      mcp_manage_policy = excluded.mcp_manage_policy,
+      updated_at = excluded.updated_at
+  `).run(
+    record.bot_id,
+    record.skill_install_policy,
+    record.mcp_manage_policy,
+    record.created_at,
+    record.updated_at,
+  );
+  return cloneBotRuntimePolicyRecord(record);
+}
+
+function upsertBotEnvVar(
+  db: Database.Database,
+  botId: string,
+  input: UpsertBotEnvVarInput,
+): BotEnvVarRecord {
+  const bot = getRequiredBot(db, botId);
+  const key = requireText(input.key, "key");
+  const existing = mapBotEnvVarRecord(
+    db.prepare("select * from bot_env_vars where bot_id = ? and key = ?").get(bot.bot_id, key),
+  );
+  const record: BotEnvVarRecord = {
+    bot_id: bot.bot_id,
+    key,
+    value_ciphertext: requireText(input.value_ciphertext, "value_ciphertext"),
+    is_set: true,
+    updated_at: existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString(),
+    updated_by_wecom_user_id: requireText(
+      input.updated_by_wecom_user_id,
+      "updated_by_wecom_user_id",
+    ),
+  };
+  db.prepare(`
+    insert into bot_env_vars (
+      bot_id, key, value_ciphertext, is_set, updated_at, updated_by_wecom_user_id
+    ) values (?, ?, ?, ?, ?, ?)
+    on conflict(bot_id, key) do update set
+      value_ciphertext = excluded.value_ciphertext,
+      is_set = excluded.is_set,
+      updated_at = excluded.updated_at,
+      updated_by_wecom_user_id = excluded.updated_by_wecom_user_id
+  `).run(
+    record.bot_id,
+    record.key,
+    record.value_ciphertext,
+    record.is_set ? 1 : 0,
+    record.updated_at,
+    record.updated_by_wecom_user_id,
+  );
+  return cloneBotEnvVarRecord(record);
+}
+
+function listBotEnvVars(
+  db: Database.Database,
+  botId: string,
+): BotEnvVarMetadataRecord[] {
+  const bot = getRequiredBot(db, botId);
+  return db.prepare(`
+    select bot_id, key, is_set, updated_at
+    from bot_env_vars
+    where bot_id = ?
+    order by updated_at desc
+  `).all(bot.bot_id).map((row) => mapBotEnvVarMetadataRecord(row))
+    .filter((record): record is BotEnvVarMetadataRecord => Boolean(record));
+}
+
+function deleteBotEnvVar(
+  db: Database.Database,
+  botId: string,
+  key: string,
+): void {
+  const bot = getRequiredBot(db, botId);
+  db.prepare("delete from bot_env_vars where bot_id = ? and key = ?").run(
+    bot.bot_id,
+    requireText(key, "key"),
+  );
+}
+
+function upsertBotSkill(
+  db: Database.Database,
+  botId: string,
+  input: UpsertBotSkillInput,
+): BotSkillRecord {
+  const bot = getRequiredBot(db, botId);
+  const name = requireText(input.name, "name");
+  const existing = mapBotSkillRecord(
+    db.prepare("select * from bot_skills where bot_id = ? and name = ?").get(bot.bot_id, name),
+  );
+  const record: BotSkillRecord = {
+    skill_id: existing?.skill_id ?? `skill_${crypto.randomUUID()}`,
+    bot_id: bot.bot_id,
+    name,
+    source_type: requireBotSkillSourceType(input.source_type),
+    source_ref: requireText(input.source_ref, "source_ref"),
+    status: requireBotCapabilityInstallStatus(input.status),
+    installed_at: nextTableIsoTimestamp(db, "bot_skills", "installed_at"),
+    installed_by_wecom_user_id: requireText(
+      input.installed_by_wecom_user_id,
+      "installed_by_wecom_user_id",
+    ),
+    last_error: optionalText(input.last_error),
+  };
+  db.prepare(`
+    insert into bot_skills (
+      skill_id, bot_id, name, source_type, source_ref, status,
+      installed_at, installed_by_wecom_user_id, last_error
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(bot_id, name) do update set
+      source_type = excluded.source_type,
+      source_ref = excluded.source_ref,
+      status = excluded.status,
+      installed_at = excluded.installed_at,
+      installed_by_wecom_user_id = excluded.installed_by_wecom_user_id,
+      last_error = excluded.last_error
+  `).run(
+    record.skill_id,
+    record.bot_id,
+    record.name,
+    record.source_type,
+    record.source_ref,
+    record.status,
+    record.installed_at,
+    record.installed_by_wecom_user_id,
+    record.last_error ?? null,
+  );
+  return cloneBotSkillRecord(record);
+}
+
+function listBotSkills(
+  db: Database.Database,
+  botId: string,
+): BotSkillRecord[] {
+  const bot = getRequiredBot(db, botId);
+  return db.prepare(`
+    select *
+    from bot_skills
+    where bot_id = ?
+    order by installed_at desc
+  `).all(bot.bot_id).map(mapBotSkillRecord)
+    .filter((record): record is BotSkillRecord => Boolean(record))
+    .map(cloneBotSkillRecord);
+}
+
+function deleteBotSkill(
+  db: Database.Database,
+  botId: string,
+  name: string,
+): void {
+  const bot = getRequiredBot(db, botId);
+  db.prepare("delete from bot_skills where bot_id = ? and name = ?").run(
+    bot.bot_id,
+    requireText(name, "name"),
+  );
+}
+
+function upsertBotMcp(
+  db: Database.Database,
+  botId: string,
+  input: UpsertBotMcpInput,
+): BotMcpRecord {
+  const bot = getRequiredBot(db, botId);
+  const name = requireText(input.name, "name");
+  const existing = mapBotMcpRecord(
+    db.prepare("select * from bot_mcps where bot_id = ? and name = ?").get(bot.bot_id, name),
+  );
+  const record: BotMcpRecord = {
+    mcp_id: existing?.mcp_id ?? `mcp_${crypto.randomUUID()}`,
+    bot_id: bot.bot_id,
+    name,
+    mode: requireBotMcpMode(input.mode),
+    source_ref: requireText(input.source_ref, "source_ref"),
+    status: requireBotCapabilityInstallStatus(input.status),
+    installed_at: nextTableIsoTimestamp(db, "bot_mcps", "installed_at"),
+    installed_by_wecom_user_id: requireText(
+      input.installed_by_wecom_user_id,
+      "installed_by_wecom_user_id",
+    ),
+    last_error: optionalText(input.last_error),
+  };
+  db.prepare(`
+    insert into bot_mcps (
+      mcp_id, bot_id, name, mode, source_ref, status,
+      installed_at, installed_by_wecom_user_id, last_error
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    on conflict(bot_id, name) do update set
+      mode = excluded.mode,
+      source_ref = excluded.source_ref,
+      status = excluded.status,
+      installed_at = excluded.installed_at,
+      installed_by_wecom_user_id = excluded.installed_by_wecom_user_id,
+      last_error = excluded.last_error
+  `).run(
+    record.mcp_id,
+    record.bot_id,
+    record.name,
+    record.mode,
+    record.source_ref,
+    record.status,
+    record.installed_at,
+    record.installed_by_wecom_user_id,
+    record.last_error ?? null,
+  );
+  return cloneBotMcpRecord(record);
+}
+
+function listBotMcps(
+  db: Database.Database,
+  botId: string,
+): BotMcpRecord[] {
+  const bot = getRequiredBot(db, botId);
+  return db.prepare(`
+    select *
+    from bot_mcps
+    where bot_id = ?
+    order by installed_at desc
+  `).all(bot.bot_id).map(mapBotMcpRecord)
+    .filter((record): record is BotMcpRecord => Boolean(record))
+    .map(cloneBotMcpRecord);
+}
+
+function deleteBotMcp(
+  db: Database.Database,
+  botId: string,
+  name: string,
+): void {
+  const bot = getRequiredBot(db, botId);
+  db.prepare("delete from bot_mcps where bot_id = ? and name = ?").run(
+    bot.bot_id,
+    requireText(name, "name"),
+  );
+}
+
+function appendBotCapabilityAuditLog(
+  db: Database.Database,
+  input: AppendBotCapabilityAuditLogInput,
+): BotCapabilityAuditLogRecord {
+  const bot = getRequiredBot(db, input.bot_id);
+  const record: BotCapabilityAuditLogRecord = {
+    log_id: `cap_audit_${crypto.randomUUID()}`,
+    bot_id: bot.bot_id,
+    wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+    display_name: optionalText(input.display_name),
+    action_type: requireBotCapabilityAuditActionType(input.action_type),
+    target_name: requireText(input.target_name, "target_name"),
+    source_ref: optionalText(input.source_ref),
+    result: requireBotCapabilityAuditResult(input.result),
+    error_message: optionalText(input.error_message),
+    created_at: nextTableIsoTimestamp(db, "bot_capability_audit_logs", "created_at"),
+  };
+  db.prepare(`
+    insert into bot_capability_audit_logs (
+      log_id, bot_id, wecom_user_id, display_name, action_type,
+      target_name, source_ref, result, error_message, created_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.log_id,
+    record.bot_id,
+    record.wecom_user_id,
+    record.display_name ?? null,
+    record.action_type,
+    record.target_name,
+    record.source_ref ?? null,
+    record.result,
+    record.error_message ?? null,
+    record.created_at,
+  );
+  return cloneBotCapabilityAuditLogRecord(record);
+}
+
+function listBotCapabilityAuditLogs(
+  db: Database.Database,
+  botId: string,
+): BotCapabilityAuditLogRecord[] {
+  const bot = getRequiredBot(db, botId);
+  return db.prepare(`
+    select *
+    from bot_capability_audit_logs
+    where bot_id = ?
+    order by created_at desc
+  `).all(bot.bot_id).map(mapBotCapabilityAuditLogRecord)
+    .filter((record): record is BotCapabilityAuditLogRecord => Boolean(record))
+    .map(cloneBotCapabilityAuditLogRecord);
 }
 
 function upsertGlobalDocument(
@@ -1674,6 +2086,63 @@ function migrate(db: Database.Database): void {
       updated_at text not null
     );
 
+    create table if not exists bot_runtime_policies (
+      bot_id text primary key,
+      skill_install_policy text not null,
+      mcp_manage_policy text not null,
+      created_at text not null,
+      updated_at text not null
+    );
+
+    create table if not exists bot_env_vars (
+      bot_id text not null,
+      key text not null,
+      value_ciphertext text not null,
+      is_set integer not null,
+      updated_at text not null,
+      updated_by_wecom_user_id text not null,
+      primary key (bot_id, key)
+    );
+
+    create table if not exists bot_skills (
+      skill_id text primary key,
+      bot_id text not null,
+      name text not null,
+      source_type text not null,
+      source_ref text not null,
+      status text not null,
+      installed_at text not null,
+      installed_by_wecom_user_id text not null,
+      last_error text,
+      unique (bot_id, name)
+    );
+
+    create table if not exists bot_mcps (
+      mcp_id text primary key,
+      bot_id text not null,
+      name text not null,
+      mode text not null,
+      source_ref text not null,
+      status text not null,
+      installed_at text not null,
+      installed_by_wecom_user_id text not null,
+      last_error text,
+      unique (bot_id, name)
+    );
+
+    create table if not exists bot_capability_audit_logs (
+      log_id text primary key,
+      bot_id text not null,
+      wecom_user_id text not null,
+      display_name text,
+      action_type text not null,
+      target_name text not null,
+      source_ref text,
+      result text not null,
+      error_message text,
+      created_at text not null
+    );
+
     create table if not exists global_documents (
       document_id text primary key,
       title text not null,
@@ -2065,18 +2534,19 @@ function upsertInitializationSession(
   if (!persisted) {
     throw new Error("initialization session was not persisted");
   }
-  return persisted;
+  return cloneInitializationSessionRecord(persisted);
 }
 
 function getActiveInitializationSession(
   db: Database.Database,
   input: InitializationSessionKeyInput,
 ): InitializationSessionRecord | undefined {
-  return mapInitializationSessionRecord(
+  const record = mapInitializationSessionRecord(
     db.prepare(
       "select * from initialization_sessions where session_key = ? and status = 'active'",
     ).get(initializationSessionKey(input)),
   );
+  return record ? cloneInitializationSessionRecord(record) : undefined;
 }
 
 function clearInitializationSession(
@@ -2568,6 +3038,109 @@ function mapRuntimeConfigRecord(row: unknown): RuntimeConfigRecord | undefined {
   };
 }
 
+function mapBotRuntimePolicyRecord(row: unknown): BotRuntimePolicyRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: record.bot_id as string,
+    skill_install_policy: requireBotCapabilityPolicy(
+      record.skill_install_policy as string,
+      "skill_install_policy",
+    ),
+    mcp_manage_policy: requireBotCapabilityPolicy(
+      record.mcp_manage_policy as string,
+      "mcp_manage_policy",
+    ),
+    created_at: record.created_at as string,
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapBotEnvVarRecord(row: unknown): BotEnvVarRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: record.bot_id as string,
+    key: record.key as string,
+    value_ciphertext: record.value_ciphertext as string,
+    is_set: Boolean(record.is_set),
+    updated_at: record.updated_at as string,
+    updated_by_wecom_user_id: record.updated_by_wecom_user_id as string,
+  };
+}
+
+function mapBotEnvVarMetadataRecord(row: unknown): BotEnvVarMetadataRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: record.bot_id as string,
+    key: record.key as string,
+    is_set: Boolean(record.is_set),
+    updated_at: record.updated_at as string,
+  };
+}
+
+function mapBotSkillRecord(row: unknown): BotSkillRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    skill_id: record.skill_id as string,
+    bot_id: record.bot_id as string,
+    name: record.name as string,
+    source_type: requireBotSkillSourceType(record.source_type as string),
+    source_ref: record.source_ref as string,
+    status: requireBotCapabilityInstallStatus(record.status as string),
+    installed_at: record.installed_at as string,
+    installed_by_wecom_user_id: record.installed_by_wecom_user_id as string,
+    ...(typeof record.last_error === "string" ? { last_error: record.last_error } : {}),
+  };
+}
+
+function mapBotMcpRecord(row: unknown): BotMcpRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    mcp_id: record.mcp_id as string,
+    bot_id: record.bot_id as string,
+    name: record.name as string,
+    mode: requireBotMcpMode(record.mode as string),
+    source_ref: record.source_ref as string,
+    status: requireBotCapabilityInstallStatus(record.status as string),
+    installed_at: record.installed_at as string,
+    installed_by_wecom_user_id: record.installed_by_wecom_user_id as string,
+    ...(typeof record.last_error === "string" ? { last_error: record.last_error } : {}),
+  };
+}
+
+function mapBotCapabilityAuditLogRecord(row: unknown): BotCapabilityAuditLogRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    log_id: record.log_id as string,
+    bot_id: record.bot_id as string,
+    wecom_user_id: record.wecom_user_id as string,
+    ...(typeof record.display_name === "string" ? { display_name: record.display_name } : {}),
+    action_type: requireBotCapabilityAuditActionType(record.action_type as string),
+    target_name: record.target_name as string,
+    ...(typeof record.source_ref === "string" ? { source_ref: record.source_ref } : {}),
+    result: requireBotCapabilityAuditResult(record.result as string),
+    ...(typeof record.error_message === "string" ? { error_message: record.error_message } : {}),
+    created_at: record.created_at as string,
+  };
+}
+
 function mapGlobalDocumentRecord(row: unknown): GlobalDocumentRecord | undefined {
   if (!row || typeof row !== "object") {
     return undefined;
@@ -2826,6 +3399,67 @@ function cloneRoleQuestionRecord(record: RoleQuestionRecord): RoleQuestionRecord
     options_json: normalizeRoleQuestionOptions(record.options_json),
     depends_on_json: normalizeRoleQuestionDependencies(record.depends_on_json),
   };
+}
+
+function requireBotCapabilityPolicy(value: string, field: string): BotCapabilityPolicy {
+  if (value !== "admin_only" && value !== "open") {
+    throw new Error(`${field} is invalid`);
+  }
+  return value;
+}
+
+function requireBotSkillSourceType(value: string): BotSkillSourceType {
+  if (value !== "builtin" && value !== "github" && value !== "url" && value !== "local") {
+    throw new Error("source_type is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityInstallStatus(value: string): BotCapabilityInstallStatus {
+  if (value !== "installing" && value !== "installed" && value !== "failed") {
+    throw new Error("status is invalid");
+  }
+  return value;
+}
+
+function requireBotMcpMode(value: string): BotMcpMode {
+  if (value !== "config" && value !== "package") {
+    throw new Error("mode is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityAuditActionType(value: string): BotCapabilityAuditActionType {
+  if (
+    value !== "env_set" &&
+    value !== "env_delete" &&
+    value !== "skill_install" &&
+    value !== "skill_delete" &&
+    value !== "mcp_install" &&
+    value !== "mcp_delete" &&
+    value !== "policy_update"
+  ) {
+    throw new Error("action_type is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityAuditResult(value: string): BotCapabilityAuditResult {
+  if (value !== "success" && value !== "failed") {
+    throw new Error("result is invalid");
+  }
+  return value;
+}
+
+function nextTableIsoTimestamp(
+  db: Database.Database,
+  table: "bot_skills" | "bot_mcps" | "bot_capability_audit_logs",
+  field: "installed_at" | "created_at",
+): string {
+  const row = db.prepare(`select max(${field}) as latest from ${table}`).get() as {
+    latest: string | null;
+  };
+  return row.latest ? nextIsoTimestamp(row.latest) : new Date().toISOString();
 }
 
 function normalizeTags(tags: string[] | undefined): string[] {

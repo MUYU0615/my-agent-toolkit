@@ -1,11 +1,28 @@
 import {
   applyAndConfirmPendingGeneratedDocuments,
+  getBotRuntimePolicy,
   cancelPendingGeneratedDocuments,
   clearInitializationSession,
   createPendingGeneratedDocument,
+  deleteBotEnvVar,
   getActiveInitializationSession,
   type InitializationSessionDto,
+  listBotCapabilityAuditLogs,
+  listBotEnvVars,
+  listBotMcps,
   listPendingGeneratedDocuments,
+  listBotSkills,
+  requestDeleteBotMcp,
+  requestDeleteBotSkill,
+  requestInstallBotMcp,
+  requestInstallBotSkill,
+  type BotCapabilityAuditLogDto,
+  type BotEnvVarMetadataDto,
+  type BotMcpDto,
+  type BotRuntimePolicyDto,
+  type BotSkillDto,
+  upsertBotEnvVar,
+  updateBotRuntimePolicy,
   upsertInitializationSession,
 } from "./botStateClient.js";
 import type { WeComClient } from "./wecomClient.js";
@@ -13,6 +30,7 @@ import type { WeComClient } from "./wecomClient.js";
 export interface BotHostConfig {
   dataServiceUrl: string;
   llmRunnerUrl: string;
+  capabilityRunnerUrl?: string;
   logServiceUrl?: string;
   fetch: typeof fetch;
 }
@@ -60,6 +78,17 @@ interface GeneratedMarkdownDocument {
 interface RememberCommand {
   scope: "bot" | "shared";
   content: string;
+}
+
+interface CapabilityPolicyCommand {
+  target: "skill" | "mcp";
+  policy: "open" | "admin_only";
+}
+
+interface InstallSkillIntent {
+  skillName: string;
+  sourceRef?: string;
+  sourceType?: string;
 }
 
 interface WizardState {
@@ -281,6 +310,11 @@ async function processWeComMessage(
         blocked: true,
         reason: context.reason,
       };
+    }
+
+    const capabilityCommand = parseCapabilityCommand(input.text);
+    if (capabilityCommand) {
+      return handleCapabilityCommand(input, config, context, capabilityCommand);
     }
 
     if (!context.conversation?.conversation_id) {
@@ -1342,6 +1376,347 @@ function parseRememberCommand(text: string): RememberCommand | undefined {
   }
 
   return undefined;
+}
+
+function parseCapabilityCommand(
+  text: string,
+):
+  | { kind: "env" }
+  | { kind: "env_set"; key: string; valueCiphertext: string }
+  | { kind: "env_delete"; key: string }
+  | { kind: "policy"; command: CapabilityPolicyCommand }
+  | { kind: "skills_summary" }
+  | { kind: "skill_install"; intent: InstallSkillIntent }
+  | { kind: "skill_delete"; name: string }
+  | { kind: "mcps_summary" }
+  | { kind: "mcp_install"; name: string }
+  | { kind: "mcp_delete"; name: string }
+  | { kind: "capability_summary" }
+  | { kind: "install_skill"; intent: InstallSkillIntent }
+  | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "/env") {
+    return { kind: "env" };
+  }
+  const envSetMatch = trimmed.match(/^\/env\s+set\s+([A-Za-z_][A-Za-z0-9_]*)\s+([\s\S]+)$/);
+  if (envSetMatch) {
+    return {
+      kind: "env_set",
+      key: envSetMatch[1],
+      valueCiphertext: envSetMatch[2].trim(),
+    };
+  }
+  const envDeleteMatch = trimmed.match(/^\/env\s+delete\s+([A-Za-z_][A-Za-z0-9_]*)$/);
+  if (envDeleteMatch) {
+    return {
+      kind: "env_delete",
+      key: envDeleteMatch[1],
+    };
+  }
+  if (trimmed === "/skill") {
+    return { kind: "skills_summary" };
+  }
+  const skillInstallMatch = trimmed.match(/^\/skill\s+install\s+([A-Za-z0-9._-]+)$/);
+  if (skillInstallMatch) {
+    return {
+      kind: "skill_install",
+      intent: {
+        skillName: skillInstallMatch[1],
+      },
+    };
+  }
+  const skillDeleteMatch = trimmed.match(/^\/skill\s+delete\s+([A-Za-z0-9._-]+)$/);
+  if (skillDeleteMatch) {
+    return {
+      kind: "skill_delete",
+      name: skillDeleteMatch[1],
+    };
+  }
+  if (trimmed === "/mcp") {
+    return { kind: "mcps_summary" };
+  }
+  const mcpInstallMatch = trimmed.match(/^\/mcp\s+install\s+([A-Za-z0-9._-]+)$/);
+  if (mcpInstallMatch) {
+    return {
+      kind: "mcp_install",
+      name: mcpInstallMatch[1],
+    };
+  }
+  const mcpDeleteMatch = trimmed.match(/^\/mcp\s+delete\s+([A-Za-z0-9._-]+)$/);
+  if (mcpDeleteMatch) {
+    return {
+      kind: "mcp_delete",
+      name: mcpDeleteMatch[1],
+    };
+  }
+  if (trimmed === "/capability") {
+    return { kind: "capability_summary" };
+  }
+
+  const policyMatch = trimmed.match(/^\/policy\s+(skill|mcp)\s+(open|admin_only)$/);
+  if (policyMatch) {
+    return {
+      kind: "policy",
+      command: {
+        target: policyMatch[1] as "skill" | "mcp",
+        policy: policyMatch[2] as "open" | "admin_only",
+      },
+    };
+  }
+
+  const urlInstallMatch = trimmed.match(
+    /安装(?:这个)?\s+skill[:：\s]+(https:\/\/github\.com\/[A-Za-z0-9._-]+\/([A-Za-z0-9._-]+))/i,
+  );
+  if (urlInstallMatch) {
+    return {
+      kind: "install_skill",
+      intent: {
+        skillName: urlInstallMatch[2],
+        sourceRef: urlInstallMatch[1],
+        sourceType: "github",
+      },
+    };
+  }
+
+  const naturalInstallMatch = trimmed.match(/安装\s+skill\s+([A-Za-z0-9._-]+)/i);
+  if (naturalInstallMatch) {
+    return {
+      kind: "install_skill",
+      intent: {
+        skillName: naturalInstallMatch[1],
+      },
+    };
+  }
+
+  return undefined;
+}
+
+async function handleCapabilityCommand(
+  input: WeComMessageInput,
+  config: BotHostConfig,
+  context: {
+    is_admin?: boolean;
+  },
+  command:
+    | { kind: "env" }
+    | { kind: "env_set"; key: string; valueCiphertext: string }
+    | { kind: "env_delete"; key: string }
+    | { kind: "policy"; command: CapabilityPolicyCommand }
+    | { kind: "skills_summary" }
+    | { kind: "skill_install"; intent: InstallSkillIntent }
+    | { kind: "skill_delete"; name: string }
+    | { kind: "mcps_summary" }
+    | { kind: "mcp_install"; name: string }
+    | { kind: "mcp_delete"; name: string }
+    | { kind: "capability_summary" }
+    | { kind: "install_skill"; intent: InstallSkillIntent },
+): Promise<Record<string, unknown>> {
+  if (
+    command.kind === "env"
+    || command.kind === "env_set"
+    || command.kind === "env_delete"
+    || command.kind === "policy"
+  ) {
+    if (!context.is_admin) {
+      return {
+        blocked: true,
+        reason: "capability_admin_required",
+        output: "只有管理员可以查看环境变量和管理 capability。",
+      };
+    }
+  }
+
+  if (command.kind === "env_set") {
+    const item = await upsertBotEnvVar(config, input.bot_id, {
+      key: command.key,
+      value_ciphertext: command.valueCiphertext,
+      updated_by_wecom_user_id: input.wecom_user_id,
+    });
+    return {
+      output: `已设置环境变量：${item.key}。`,
+    };
+  }
+
+  if (command.kind === "env_delete") {
+    await deleteBotEnvVar(config, input.bot_id, command.key);
+    return {
+      output: `已删除环境变量：${command.key}。`,
+    };
+  }
+
+  if (command.kind === "env") {
+    const items = await listBotEnvVars(config, input.bot_id);
+    return {
+      output: buildEnvSummary(items),
+    };
+  }
+
+  if (command.kind === "policy") {
+    const updated = await updateBotRuntimePolicy(
+      config,
+      input.bot_id,
+      command.command.target === "skill"
+        ? { skill_install_policy: command.command.policy }
+        : { mcp_manage_policy: command.command.policy },
+    );
+    return {
+      output: command.command.target === "skill"
+        ? `已更新 skill 安装策略：${updated.skill_install_policy}。`
+        : `已更新 MCP 管理策略：${updated.mcp_manage_policy}。`,
+    };
+  }
+
+  if (command.kind === "skills_summary") {
+    const skills = await listBotSkills(config, input.bot_id);
+    return {
+      output: buildSkillSummary(skills),
+    };
+  }
+
+  if (command.kind === "mcps_summary") {
+    const mcps = await listBotMcps(config, input.bot_id);
+    return {
+      output: buildMcpSummary(mcps),
+    };
+  }
+
+  if (command.kind === "capability_summary") {
+    const [policy, skills, mcps, logs] = await Promise.all([
+      getBotRuntimePolicy(config, input.bot_id),
+      listBotSkills(config, input.bot_id),
+      listBotMcps(config, input.bot_id),
+      listBotCapabilityAuditLogs(config, input.bot_id),
+    ]);
+    return {
+      output: buildCapabilitySummary(policy, skills, mcps, logs),
+    };
+  }
+
+  if (command.kind === "mcp_install" || command.kind === "mcp_delete") {
+    if (!context.is_admin) {
+      const policy = await getBotRuntimePolicy(config, input.bot_id);
+      if (policy.mcp_manage_policy === "admin_only") {
+        return {
+          blocked: true,
+          reason: "capability_admin_required",
+          output: "只有管理员可以查看环境变量和管理 capability。",
+        };
+      }
+    }
+
+    if (command.kind === "mcp_install") {
+      const accepted = await requestInstallBotMcp(config, input.bot_id, {
+        name: command.name,
+      });
+      return {
+        accepted: accepted.accepted,
+        output: `已受理 MCP 安装：${command.name}。`,
+      };
+    }
+
+    const accepted = await requestDeleteBotMcp(config, input.bot_id, {
+      name: command.name,
+    });
+    return {
+      accepted: accepted.accepted,
+      output: `已受理 MCP 删除：${command.name}。`,
+    };
+  }
+
+  if (command.kind === "skill_delete") {
+    if (!context.is_admin) {
+      const policy = await getBotRuntimePolicy(config, input.bot_id);
+      if (policy.skill_install_policy === "admin_only") {
+        return {
+          blocked: true,
+          reason: "capability_admin_required",
+          output: "只有管理员可以查看环境变量和管理 capability。",
+        };
+      }
+    }
+
+    const accepted = await requestDeleteBotSkill(config, input.bot_id, {
+      name: command.name,
+    });
+    return {
+      accepted: accepted.accepted,
+      output: `已受理 skill 删除：${command.name}。`,
+    };
+  }
+
+  if (!context.is_admin) {
+    const policy = await getBotRuntimePolicy(config, input.bot_id);
+    if (policy.skill_install_policy === "admin_only") {
+      return {
+        blocked: true,
+        reason: "capability_admin_required",
+        output: "只有管理员可以查看环境变量和管理 capability。",
+      };
+    }
+  }
+
+  const accepted = await requestInstallBotSkill(config, input.bot_id, {
+    name: command.kind === "skill_install" ? command.intent.skillName : command.intent.skillName,
+    source_ref: command.kind === "install_skill" ? command.intent.sourceRef : command.intent.sourceRef,
+    source_type: command.kind === "install_skill" ? command.intent.sourceType : command.intent.sourceType,
+  });
+  return {
+    accepted: accepted.accepted,
+    output: `已受理 skill 安装：${command.intent.skillName}。`,
+  };
+}
+
+function buildEnvSummary(items: BotEnvVarMetadataDto[]): string {
+  if (items.length === 0) {
+    return "当前没有已配置的环境变量。";
+  }
+  return [
+    "环境变量：",
+    ...items.map((item) => `- ${item.key}：${item.is_set ? "已设置" : "未设置"}（${item.updated_at}）`),
+  ].join("\n");
+}
+
+function buildSkillSummary(skills: BotSkillDto[]): string {
+  if (skills.length === 0) {
+    return "当前没有已安装的 skill。";
+  }
+  return [
+    "Skills：",
+    ...skills.map((skill) => `- ${skill.name}（${skill.source_type}，${skill.status}）`),
+  ].join("\n");
+}
+
+function buildMcpSummary(mcps: BotMcpDto[]): string {
+  if (mcps.length === 0) {
+    return "当前没有已配置的 MCP。";
+  }
+  return [
+    "MCPs：",
+    ...mcps.map((mcp) => `- ${mcp.name}（${mcp.mode}，${mcp.status}）`),
+  ].join("\n");
+}
+
+function buildCapabilitySummary(
+  policy: BotRuntimePolicyDto,
+  skills: BotSkillDto[],
+  mcps: BotMcpDto[],
+  logs: BotCapabilityAuditLogDto[],
+): string {
+  return [
+    `skill 安装策略：${policy.skill_install_policy}`,
+    `MCP 管理策略：${policy.mcp_manage_policy}`,
+    "",
+    buildSkillSummary(skills),
+    "",
+    buildMcpSummary(mcps),
+    "",
+    logs.length === 0
+      ? "最近没有 capability 审计记录。"
+      : [
+        "最近 capability 审计：",
+        ...logs.slice(0, 3).map((log) => `- ${log.action_type} ${log.target_name}：${log.result}`),
+      ].join("\n"),
+  ].join("\n");
 }
 
 async function handleRememberCommand(

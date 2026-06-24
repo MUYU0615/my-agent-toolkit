@@ -320,6 +320,49 @@ describe("data-service store", () => {
     })).toEqual(second);
   });
 
+  it("isolates initialization session answer arrays from caller and reader mutation", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const created = store.upsertInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+      phase: "soul",
+      soul_answers: ["第一题"],
+      agents_answers: ["写 PRD"],
+      status: "active",
+    });
+
+    created.soul_answers.push("外部修改");
+    created.agents_answers[0] = "被篡改";
+
+    const fetched = store.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    });
+
+    expect(fetched).toMatchObject({
+      soul_answers: ["第一题"],
+      agents_answers: ["写 PRD"],
+    });
+
+    fetched?.soul_answers.push("再次修改");
+    if (fetched) {
+      fetched.agents_answers[0] = "再次篡改";
+    }
+
+    expect(store.getActiveInitializationSession({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-a",
+    })).toMatchObject({
+      soul_answers: ["第一题"],
+      agents_answers: ["写 PRD"],
+    });
+  });
+
   it("rejects invalid initialization generation progress when provided", () => {
     const store = createDataStore();
     store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
@@ -1562,5 +1605,201 @@ describe("data-service store", () => {
       options_json: [{ value: "step_by_step", label: "逐句引导" }],
       depends_on_json: [{ key: "delivery_style", equals: "structured" }],
     });
+  });
+
+  it("gets default bot runtime policy and updates it", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const created = store.getOrCreateBotRuntimePolicy("prd-bot");
+    const updated = store.updateBotRuntimePolicy("prd-bot", {
+      skill_install_policy: "open",
+    });
+
+    expect(created).toMatchObject({
+      bot_id: "prd-bot",
+      skill_install_policy: "admin_only",
+      mcp_manage_policy: "admin_only",
+    });
+    expect(updated).toMatchObject({
+      bot_id: "prd-bot",
+      skill_install_policy: "open",
+      mcp_manage_policy: "admin_only",
+    });
+    expect(updated.created_at).toBe(created.created_at);
+    expect(updated.updated_at).not.toBe(created.updated_at);
+  });
+
+  it("upserts lists and deletes bot env vars without exposing ciphertext", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const saved = store.upsertBotEnvVar("prd-bot", {
+      key: "OPENAI_API_KEY",
+      value_ciphertext: "ciphertext-v1",
+      updated_by_wecom_user_id: "admin-a",
+    });
+
+    expect(saved).toMatchObject({
+      bot_id: "prd-bot",
+      key: "OPENAI_API_KEY",
+      value_ciphertext: "ciphertext-v1",
+      is_set: true,
+      updated_by_wecom_user_id: "admin-a",
+    });
+
+    const listed = store.listBotEnvVars("prd-bot");
+    expect(listed).toEqual([
+      {
+        bot_id: "prd-bot",
+        key: "OPENAI_API_KEY",
+        is_set: true,
+        updated_at: saved.updated_at,
+      },
+    ]);
+    expect(JSON.stringify(listed)).not.toContain("ciphertext-v1");
+
+    const updated = store.upsertBotEnvVar("prd-bot", {
+      key: "OPENAI_API_KEY",
+      value_ciphertext: "ciphertext-v2",
+      updated_by_wecom_user_id: "admin-b",
+    });
+    expect(updated.updated_at).not.toBe(saved.updated_at);
+    expect(store.listBotEnvVars("prd-bot")).toEqual([
+      {
+        bot_id: "prd-bot",
+        key: "OPENAI_API_KEY",
+        is_set: true,
+        updated_at: updated.updated_at,
+      },
+    ]);
+
+    store.deleteBotEnvVar("prd-bot", "OPENAI_API_KEY");
+    expect(store.listBotEnvVars("prd-bot")).toEqual([]);
+  });
+
+  it("upserts lists and deletes bot skills", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const first = store.upsertBotSkill("prd-bot", {
+      name: "repo-analyzer",
+      source_type: "github",
+      source_ref: "https://github.com/acme/repo-analyzer",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+    const second = store.upsertBotSkill("prd-bot", {
+      name: "prompt-linter",
+      source_type: "builtin",
+      source_ref: "builtin:prompt-linter",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+
+    expect(store.listBotSkills("prd-bot").map((skill) => skill.name)).toEqual([
+      "prompt-linter",
+      "repo-analyzer",
+    ]);
+
+    const updated = store.upsertBotSkill("prd-bot", {
+      name: "repo-analyzer",
+      source_type: "url",
+      source_ref: "https://example.com/repo-analyzer.tgz",
+      status: "failed",
+      installed_by_wecom_user_id: "admin-b",
+      last_error: "network timeout",
+    });
+    expect(updated.skill_id).toBe(first.skill_id);
+    expect(updated.installed_at).not.toBe(first.installed_at);
+    expect(store.listBotSkills("prd-bot")[0]).toMatchObject({
+      name: "repo-analyzer",
+      source_type: "url",
+      status: "failed",
+      last_error: "network timeout",
+    });
+
+    store.deleteBotSkill("prd-bot", "prompt-linter");
+    expect(store.listBotSkills("prd-bot").map((skill) => skill.name)).toEqual([
+      "repo-analyzer",
+    ]);
+    expect(second.skill_id).toMatch(/^skill_/);
+  });
+
+  it("upserts lists and deletes bot mcps", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const first = store.upsertBotMcp("prd-bot", {
+      name: "search-mcp",
+      mode: "config",
+      source_ref: "http://localhost:9300",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+    const second = store.upsertBotMcp("prd-bot", {
+      name: "filesystem-mcp",
+      mode: "package",
+      source_ref: "@acme/filesystem-mcp",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+
+    expect(store.listBotMcps("prd-bot").map((mcp) => mcp.name)).toEqual([
+      "filesystem-mcp",
+      "search-mcp",
+    ]);
+
+    const updated = store.upsertBotMcp("prd-bot", {
+      name: "search-mcp",
+      mode: "package",
+      source_ref: "@acme/search-mcp",
+      status: "failed",
+      installed_by_wecom_user_id: "admin-b",
+      last_error: "install failed",
+    });
+    expect(updated.mcp_id).toBe(first.mcp_id);
+    expect(updated.installed_at).not.toBe(first.installed_at);
+    expect(store.listBotMcps("prd-bot")[0]).toMatchObject({
+      name: "search-mcp",
+      mode: "package",
+      status: "failed",
+      last_error: "install failed",
+    });
+
+    store.deleteBotMcp("prd-bot", "filesystem-mcp");
+    expect(store.listBotMcps("prd-bot").map((mcp) => mcp.name)).toEqual([
+      "search-mcp",
+    ]);
+    expect(second.mcp_id).toMatch(/^mcp_/);
+  });
+
+  it("appends and lists bot capability audit logs newest first", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const first = store.appendBotCapabilityAuditLog({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      display_name: "Alice",
+      action_type: "env_set",
+      target_name: "OPENAI_API_KEY",
+      result: "success",
+    });
+    const second = store.appendBotCapabilityAuditLog({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-b",
+      action_type: "skill_install",
+      target_name: "repo-analyzer",
+      source_ref: "https://github.com/acme/repo-analyzer",
+      result: "failed",
+      error_message: "network timeout",
+    });
+
+    expect(first.log_id).toMatch(/^cap_audit_/);
+    expect(store.listBotCapabilityAuditLogs("prd-bot")).toEqual([
+      second,
+      first,
+    ]);
   });
 });

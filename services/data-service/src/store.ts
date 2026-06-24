@@ -172,6 +172,124 @@ export interface UpsertRuntimeConfigInput {
   options?: Record<string, unknown>;
 }
 
+export type BotCapabilityPolicy = "admin_only" | "open";
+
+export interface BotRuntimePolicyRecord {
+  bot_id: string;
+  skill_install_policy: BotCapabilityPolicy;
+  mcp_manage_policy: BotCapabilityPolicy;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UpdateBotRuntimePolicyInput {
+  skill_install_policy?: BotCapabilityPolicy;
+  mcp_manage_policy?: BotCapabilityPolicy;
+}
+
+export interface BotEnvVarRecord {
+  bot_id: string;
+  key: string;
+  value_ciphertext: string;
+  is_set: boolean;
+  updated_at: string;
+  updated_by_wecom_user_id: string;
+}
+
+export interface UpsertBotEnvVarInput {
+  key: string;
+  value_ciphertext: string;
+  updated_by_wecom_user_id: string;
+}
+
+export interface BotEnvVarMetadataRecord {
+  bot_id: string;
+  key: string;
+  is_set: boolean;
+  updated_at: string;
+}
+
+export type BotSkillSourceType = "builtin" | "github" | "url" | "local";
+export type BotCapabilityInstallStatus = "installing" | "installed" | "failed";
+
+export interface BotSkillRecord {
+  skill_id: string;
+  bot_id: string;
+  name: string;
+  source_type: BotSkillSourceType;
+  source_ref: string;
+  status: BotCapabilityInstallStatus;
+  installed_at: string;
+  installed_by_wecom_user_id: string;
+  last_error?: string;
+}
+
+export interface UpsertBotSkillInput {
+  name: string;
+  source_type: BotSkillSourceType;
+  source_ref: string;
+  status: BotCapabilityInstallStatus;
+  installed_by_wecom_user_id: string;
+  last_error?: string;
+}
+
+export type BotMcpMode = "config" | "package";
+
+export interface BotMcpRecord {
+  mcp_id: string;
+  bot_id: string;
+  name: string;
+  mode: BotMcpMode;
+  source_ref: string;
+  status: BotCapabilityInstallStatus;
+  installed_at: string;
+  installed_by_wecom_user_id: string;
+  last_error?: string;
+}
+
+export interface UpsertBotMcpInput {
+  name: string;
+  mode: BotMcpMode;
+  source_ref: string;
+  status: BotCapabilityInstallStatus;
+  installed_by_wecom_user_id: string;
+  last_error?: string;
+}
+
+export type BotCapabilityAuditActionType =
+  | "env_set"
+  | "env_delete"
+  | "skill_install"
+  | "skill_delete"
+  | "mcp_install"
+  | "mcp_delete"
+  | "policy_update";
+export type BotCapabilityAuditResult = "success" | "failed";
+
+export interface BotCapabilityAuditLogRecord {
+  log_id: string;
+  bot_id: string;
+  wecom_user_id: string;
+  display_name?: string;
+  action_type: BotCapabilityAuditActionType;
+  target_name: string;
+  source_ref?: string;
+  result: BotCapabilityAuditResult;
+  error_message?: string;
+  created_at: string;
+}
+
+export interface AppendBotCapabilityAuditLogInput {
+  bot_id: string;
+  wecom_user_id: string;
+  display_name?: string;
+  action_type: BotCapabilityAuditActionType;
+  target_name: string;
+  source_ref?: string;
+  result: BotCapabilityAuditResult;
+  error_message?: string;
+}
+
 export interface CreatePendingGeneratedDocumentInput {
   bot_id: string;
   wecom_user_id: string;
@@ -582,6 +700,22 @@ export interface DataStore {
     botId: string,
     input: UpsertRuntimeConfigInput,
   ): RuntimeConfigRecord;
+  getOrCreateBotRuntimePolicy(botId: string): BotRuntimePolicyRecord;
+  updateBotRuntimePolicy(
+    botId: string,
+    input: UpdateBotRuntimePolicyInput,
+  ): BotRuntimePolicyRecord;
+  upsertBotEnvVar(botId: string, input: UpsertBotEnvVarInput): BotEnvVarRecord;
+  listBotEnvVars(botId: string): BotEnvVarMetadataRecord[];
+  deleteBotEnvVar(botId: string, key: string): void;
+  upsertBotSkill(botId: string, input: UpsertBotSkillInput): BotSkillRecord;
+  listBotSkills(botId: string): BotSkillRecord[];
+  deleteBotSkill(botId: string, name: string): void;
+  upsertBotMcp(botId: string, input: UpsertBotMcpInput): BotMcpRecord;
+  listBotMcps(botId: string): BotMcpRecord[];
+  deleteBotMcp(botId: string, name: string): void;
+  appendBotCapabilityAuditLog(input: AppendBotCapabilityAuditLogInput): BotCapabilityAuditLogRecord;
+  listBotCapabilityAuditLogs(botId: string): BotCapabilityAuditLogRecord[];
   getAdmin(botId: string): AdminRecord | undefined;
   createAdminClaim(botId: string): AdminClaimRecord;
   claimAdmin(input: ClaimAdminInput): AdminRecord;
@@ -661,6 +795,11 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   const initializationSessions = new Map<string, InitializationSessionRecord>();
   const pendingGeneratedDocuments = new Map<string, PendingGeneratedDocumentRecord>();
   const runtimeConfigs = new Map<string, RuntimeConfigRecord>();
+  const botRuntimePolicies = new Map<string, BotRuntimePolicyRecord>();
+  const botEnvVars = new Map<string, BotEnvVarRecord>();
+  const botSkills = new Map<string, BotSkillRecord>();
+  const botMcps = new Map<string, BotMcpRecord>();
+  const botCapabilityAuditLogs = new Map<string, BotCapabilityAuditLogRecord>();
   const globalDocuments = new Map<string, GlobalDocumentRecord>();
   const roles = new Map<string, RoleRecord>();
   const roleDocuments = new Map<string, RoleDocumentRecord>();
@@ -866,6 +1005,177 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       return cloneRuntimeConfigRecord(record);
     },
 
+    getOrCreateBotRuntimePolicy(botId) {
+      const bot = getRequiredBot(bots, botId);
+      const existing = botRuntimePolicies.get(bot.bot_id);
+      if (existing) {
+        return cloneBotRuntimePolicyRecord(existing);
+      }
+      const created = defaultBotRuntimePolicy(bot);
+      botRuntimePolicies.set(bot.bot_id, created);
+      return cloneBotRuntimePolicyRecord(created);
+    },
+
+    updateBotRuntimePolicy(botId, input) {
+      const bot = getRequiredBot(bots, botId);
+      const existing = botRuntimePolicies.get(bot.bot_id) ?? defaultBotRuntimePolicy(bot);
+      const updated: BotRuntimePolicyRecord = {
+        ...existing,
+        skill_install_policy: input.skill_install_policy === undefined
+          ? existing.skill_install_policy
+          : requireBotCapabilityPolicy(input.skill_install_policy, "skill_install_policy"),
+        mcp_manage_policy: input.mcp_manage_policy === undefined
+          ? existing.mcp_manage_policy
+          : requireBotCapabilityPolicy(input.mcp_manage_policy, "mcp_manage_policy"),
+        updated_at: nextIsoTimestamp(existing.updated_at),
+      };
+      botRuntimePolicies.set(bot.bot_id, updated);
+      return cloneBotRuntimePolicyRecord(updated);
+    },
+
+    upsertBotEnvVar(botId, input) {
+      const bot = getRequiredBot(bots, botId);
+      const key = botCapabilityScopedKey(bot.bot_id, requireText(input.key, "key"));
+      const existing = botEnvVars.get(key);
+      const updatedAt = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: BotEnvVarRecord = {
+        bot_id: bot.bot_id,
+        key: requireText(input.key, "key"),
+        value_ciphertext: requireText(input.value_ciphertext, "value_ciphertext"),
+        is_set: true,
+        updated_at: updatedAt,
+        updated_by_wecom_user_id: requireText(
+          input.updated_by_wecom_user_id,
+          "updated_by_wecom_user_id",
+        ),
+      };
+      botEnvVars.set(key, record);
+      return cloneBotEnvVarRecord(record);
+    },
+
+    listBotEnvVars(botId) {
+      const bot = getRequiredBot(bots, botId);
+      return [...botEnvVars.values()]
+        .filter((record) => record.bot_id === bot.bot_id)
+        .sort(compareUpdatedRecordsDesc)
+        .map((record) => ({
+          bot_id: record.bot_id,
+          key: record.key,
+          is_set: record.is_set,
+          updated_at: record.updated_at,
+        }));
+    },
+
+    deleteBotEnvVar(botId, key) {
+      const bot = getRequiredBot(bots, botId);
+      botEnvVars.delete(botCapabilityScopedKey(bot.bot_id, requireText(key, "key")));
+    },
+
+    upsertBotSkill(botId, input) {
+      const bot = getRequiredBot(bots, botId);
+      const name = requireText(input.name, "name");
+      const mapKey = botCapabilityScopedKey(bot.bot_id, name);
+      const existing = botSkills.get(mapKey);
+      const installedAt = existing
+        ? nextIsoTimestamp(existing.installed_at)
+        : nextCollectionIsoTimestamp(botSkills, "installed_at");
+      const record: BotSkillRecord = {
+        skill_id: existing?.skill_id ?? `skill_${crypto.randomUUID()}`,
+        bot_id: bot.bot_id,
+        name,
+        source_type: requireBotSkillSourceType(input.source_type),
+        source_ref: requireText(input.source_ref, "source_ref"),
+        status: requireBotCapabilityInstallStatus(input.status),
+        installed_at: installedAt,
+        installed_by_wecom_user_id: requireText(
+          input.installed_by_wecom_user_id,
+          "installed_by_wecom_user_id",
+        ),
+        last_error: optionalText(input.last_error),
+      };
+      botSkills.set(mapKey, record);
+      return cloneBotSkillRecord(record);
+    },
+
+    listBotSkills(botId) {
+      const bot = getRequiredBot(bots, botId);
+      return [...botSkills.values()]
+        .filter((record) => record.bot_id === bot.bot_id)
+        .sort(compareInstalledRecordsDesc)
+        .map(cloneBotSkillRecord);
+    },
+
+    deleteBotSkill(botId, name) {
+      const bot = getRequiredBot(bots, botId);
+      botSkills.delete(botCapabilityScopedKey(bot.bot_id, requireText(name, "name")));
+    },
+
+    upsertBotMcp(botId, input) {
+      const bot = getRequiredBot(bots, botId);
+      const name = requireText(input.name, "name");
+      const mapKey = botCapabilityScopedKey(bot.bot_id, name);
+      const existing = botMcps.get(mapKey);
+      const installedAt = existing
+        ? nextIsoTimestamp(existing.installed_at)
+        : nextCollectionIsoTimestamp(botMcps, "installed_at");
+      const record: BotMcpRecord = {
+        mcp_id: existing?.mcp_id ?? `mcp_${crypto.randomUUID()}`,
+        bot_id: bot.bot_id,
+        name,
+        mode: requireBotMcpMode(input.mode),
+        source_ref: requireText(input.source_ref, "source_ref"),
+        status: requireBotCapabilityInstallStatus(input.status),
+        installed_at: installedAt,
+        installed_by_wecom_user_id: requireText(
+          input.installed_by_wecom_user_id,
+          "installed_by_wecom_user_id",
+        ),
+        last_error: optionalText(input.last_error),
+      };
+      botMcps.set(mapKey, record);
+      return cloneBotMcpRecord(record);
+    },
+
+    listBotMcps(botId) {
+      const bot = getRequiredBot(bots, botId);
+      return [...botMcps.values()]
+        .filter((record) => record.bot_id === bot.bot_id)
+        .sort(compareInstalledRecordsDesc)
+        .map(cloneBotMcpRecord);
+    },
+
+    deleteBotMcp(botId, name) {
+      const bot = getRequiredBot(bots, botId);
+      botMcps.delete(botCapabilityScopedKey(bot.bot_id, requireText(name, "name")));
+    },
+
+    appendBotCapabilityAuditLog(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const createdAt = nextCollectionIsoTimestamp(botCapabilityAuditLogs, "created_at");
+      const record: BotCapabilityAuditLogRecord = {
+        log_id: `cap_audit_${crypto.randomUUID()}`,
+        bot_id: bot.bot_id,
+        wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+        display_name: optionalText(input.display_name),
+        action_type: requireBotCapabilityAuditActionType(input.action_type),
+        target_name: requireText(input.target_name, "target_name"),
+        source_ref: optionalText(input.source_ref),
+        result: requireBotCapabilityAuditResult(input.result),
+        error_message: optionalText(input.error_message),
+        created_at: createdAt,
+      };
+      botCapabilityAuditLogs.set(record.log_id, record);
+      return cloneBotCapabilityAuditLogRecord(record);
+    },
+
+    listBotCapabilityAuditLogs(botId) {
+      const bot = getRequiredBot(bots, botId);
+      return [...botCapabilityAuditLogs.values()]
+        .filter((record) => record.bot_id === bot.bot_id)
+        .sort(compareCreatedRecordsDesc)
+        .map(cloneBotCapabilityAuditLogRecord);
+    },
+
     getAdmin(botId) {
       return admins.get(botId);
     },
@@ -1067,17 +1377,18 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         updated_at: now,
       };
       initializationSessions.set(key, record);
-      return record;
+      return cloneInitializationSessionRecord(record);
     },
 
     getActiveInitializationSession(input) {
       const record = initializationSessions.get(initializationSessionKey(input));
-      return record?.status === "active" ? record : undefined;
+      return record?.status === "active" ? cloneInitializationSessionRecord(record) : undefined;
     },
 
     clearInitializationSession(input) {
       const key = initializationSessionKey(input);
       const record = initializationSessions.get(key);
+      // Only remove an in-progress session; completed/cancelled history stays in the store.
       if (record?.status === "active") {
         initializationSessions.delete(key);
       }
@@ -1888,6 +2199,44 @@ function compareSortedRecords<
     left.created_at.localeCompare(right.created_at);
 }
 
+function compareUpdatedRecordsDesc<
+  T extends {
+    updated_at: string;
+  },
+>(left: T, right: T): number {
+  return right.updated_at.localeCompare(left.updated_at);
+}
+
+function compareInstalledRecordsDesc<
+  T extends {
+    installed_at: string;
+  },
+>(left: T, right: T): number {
+  return right.installed_at.localeCompare(left.installed_at);
+}
+
+function compareCreatedRecordsDesc<
+  T extends {
+    created_at: string;
+  },
+>(left: T, right: T): number {
+  return right.created_at.localeCompare(left.created_at);
+}
+
+function nextCollectionIsoTimestamp<
+  T extends Record<K, string>,
+  K extends string,
+>(records: Map<string, T>, field: K): string {
+  let latest: string | undefined;
+  for (const record of records.values()) {
+    const value = record[field];
+    if (!latest || value > latest) {
+      latest = value;
+    }
+  }
+  return latest ? nextIsoTimestamp(latest) : new Date().toISOString();
+}
+
 function includeEnabledRecord<
   T extends {
     enabled: boolean;
@@ -2011,6 +2360,102 @@ function cloneRoleQuestionRecord(
     options_json: normalizeRoleQuestionOptions(record.options_json),
     depends_on_json: normalizeRoleQuestionDependencies(record.depends_on_json),
   };
+}
+
+function botCapabilityScopedKey(botId: string, key: string): string {
+  return JSON.stringify([botId, key]);
+}
+
+function requireBotCapabilityPolicy(value: string, field: string): BotCapabilityPolicy {
+  if (value !== "admin_only" && value !== "open") {
+    throw new Error(`${field} is invalid`);
+  }
+  return value;
+}
+
+function requireBotSkillSourceType(value: string): BotSkillSourceType {
+  if (value !== "builtin" && value !== "github" && value !== "url" && value !== "local") {
+    throw new Error("source_type is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityInstallStatus(value: string): BotCapabilityInstallStatus {
+  if (value !== "installing" && value !== "installed" && value !== "failed") {
+    throw new Error("status is invalid");
+  }
+  return value;
+}
+
+function requireBotMcpMode(value: string): BotMcpMode {
+  if (value !== "config" && value !== "package") {
+    throw new Error("mode is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityAuditActionType(value: string): BotCapabilityAuditActionType {
+  if (
+    value !== "env_set" &&
+    value !== "env_delete" &&
+    value !== "skill_install" &&
+    value !== "skill_delete" &&
+    value !== "mcp_install" &&
+    value !== "mcp_delete" &&
+    value !== "policy_update"
+  ) {
+    throw new Error("action_type is invalid");
+  }
+  return value;
+}
+
+function requireBotCapabilityAuditResult(value: string): BotCapabilityAuditResult {
+  if (value !== "success" && value !== "failed") {
+    throw new Error("result is invalid");
+  }
+  return value;
+}
+
+export function defaultBotRuntimePolicy(
+  bot: Pick<BotRecord, "bot_id" | "created_at" | "updated_at">,
+): BotRuntimePolicyRecord {
+  return {
+    bot_id: bot.bot_id,
+    skill_install_policy: "admin_only",
+    mcp_manage_policy: "admin_only",
+    created_at: bot.created_at,
+    updated_at: bot.updated_at,
+  };
+}
+
+export function cloneBotRuntimePolicyRecord(
+  record: BotRuntimePolicyRecord,
+): BotRuntimePolicyRecord {
+  return { ...record };
+}
+
+export function cloneBotEnvVarRecord(
+  record: BotEnvVarRecord,
+): BotEnvVarRecord {
+  return { ...record };
+}
+
+export function cloneBotSkillRecord(
+  record: BotSkillRecord,
+): BotSkillRecord {
+  return { ...record };
+}
+
+export function cloneBotMcpRecord(
+  record: BotMcpRecord,
+): BotMcpRecord {
+  return { ...record };
+}
+
+export function cloneBotCapabilityAuditLogRecord(
+  record: BotCapabilityAuditLogRecord,
+): BotCapabilityAuditLogRecord {
+  return { ...record };
 }
 
 function matchesBusinessDocumentQuery(
@@ -2267,6 +2712,16 @@ export function defaultRuntimeConfig(bot: BotRecord): RuntimeConfigRecord {
     options: {},
     created_at: bot.created_at,
     updated_at: bot.updated_at,
+  };
+}
+
+export function cloneInitializationSessionRecord(
+  record: InitializationSessionRecord,
+): InitializationSessionRecord {
+  return {
+    ...record,
+    soul_answers: [...record.soul_answers],
+    agents_answers: [...record.agents_answers],
   };
 }
 

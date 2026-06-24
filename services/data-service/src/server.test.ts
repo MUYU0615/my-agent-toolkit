@@ -311,6 +311,218 @@ describe("data-service server", () => {
     });
   });
 
+  it("gets and updates bot runtime policy over HTTP", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+        }),
+      }),
+    );
+
+    const defaultResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/runtime-policy"),
+    );
+    expect(defaultResponse.status).toBe(200);
+    await expect(defaultResponse.json()).resolves.toMatchObject({
+      bot_id: "prd-bot",
+      skill_install_policy: "admin_only",
+      mcp_manage_policy: "admin_only",
+    });
+
+    const updateResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/runtime-policy", {
+        method: "POST",
+        body: JSON.stringify({
+          skill_install_policy: "open",
+        }),
+      }),
+    );
+    expect(updateResponse.status).toBe(200);
+    await expect(updateResponse.json()).resolves.toMatchObject({
+      bot_id: "prd-bot",
+      skill_install_policy: "open",
+      mcp_manage_policy: "admin_only",
+    });
+  });
+
+  it("manages bot env vars over HTTP without exposing ciphertext", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+        }),
+      }),
+    );
+
+    const createResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/env", {
+        method: "POST",
+        body: JSON.stringify({
+          key: "OPENAI_API_KEY",
+          value_ciphertext: "ciphertext-secret",
+          updated_by_wecom_user_id: "admin-a",
+        }),
+      }),
+    );
+    expect(createResponse.status).toBe(201);
+    const created = await createResponse.json();
+    expect(created).toEqual({
+      bot_id: "prd-bot",
+      key: "OPENAI_API_KEY",
+      is_set: true,
+      updated_at: expect.any(String),
+    });
+    expect(JSON.stringify(created)).not.toContain("ciphertext-secret");
+
+    const listResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/env"),
+    );
+    expect(listResponse.status).toBe(200);
+    const listed = await listResponse.json();
+    expect(listed).toEqual({ items: [created] });
+    expect(JSON.stringify(listed)).not.toContain("ciphertext-secret");
+
+    const deleteResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/env/OPENAI_API_KEY", {
+        method: "DELETE",
+      }),
+    );
+    expect(deleteResponse.status).toBe(200);
+    await expect(deleteResponse.json()).resolves.toEqual({ deleted: true });
+
+    const emptyListResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/env"),
+    );
+    await expect(emptyListResponse.json()).resolves.toEqual({ items: [] });
+  });
+
+  it("lists bot skills mcps and capability audit logs over HTTP", async () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    store.upsertBotSkill("prd-bot", {
+      name: "repo-analyzer",
+      source_type: "github",
+      source_ref: "https://github.com/acme/repo-analyzer",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+    store.upsertBotMcp("prd-bot", {
+      name: "search-mcp",
+      mode: "config",
+      source_ref: "http://localhost:9300",
+      status: "installed",
+      installed_by_wecom_user_id: "admin-a",
+    });
+    store.appendBotCapabilityAuditLog({
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      action_type: "skill_install",
+      target_name: "repo-analyzer",
+      source_ref: "https://github.com/acme/repo-analyzer",
+      result: "success",
+    });
+    const server = createDataServiceServer(store);
+
+    const skillsResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/skills"),
+    );
+    expect(skillsResponse.status).toBe(200);
+    await expect(skillsResponse.json()).resolves.toMatchObject([
+      {
+        bot_id: "prd-bot",
+        name: "repo-analyzer",
+        source_type: "github",
+      },
+    ]);
+
+    const mcpsResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/mcps"),
+    );
+    expect(mcpsResponse.status).toBe(200);
+    await expect(mcpsResponse.json()).resolves.toMatchObject([
+      {
+        bot_id: "prd-bot",
+        name: "search-mcp",
+        mode: "config",
+      },
+    ]);
+
+    const auditResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/capability-audit-logs"),
+    );
+    expect(auditResponse.status).toBe(200);
+    await expect(auditResponse.json()).resolves.toMatchObject([
+      {
+        bot_id: "prd-bot",
+        action_type: "skill_install",
+        target_name: "repo-analyzer",
+      },
+    ]);
+  });
+
+  it("returns 400 for malformed bot id encoding on capability routes", async () => {
+    const server = createDataServiceServer();
+
+    const runtimePolicyResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/runtime-policy"),
+    );
+    expect(runtimePolicyResponse.status).toBe(400);
+    await expect(runtimePolicyResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+
+    const envListResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/env"),
+    );
+    expect(envListResponse.status).toBe(400);
+    await expect(envListResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+
+    const envDeleteResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/env/OPENAI_API_KEY", {
+        method: "DELETE",
+      }),
+    );
+    expect(envDeleteResponse.status).toBe(400);
+    await expect(envDeleteResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+
+    const skillsResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/skills"),
+    );
+    expect(skillsResponse.status).toBe(400);
+    await expect(skillsResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+
+    const mcpsResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/mcps"),
+    );
+    expect(mcpsResponse.status).toBe(400);
+    await expect(mcpsResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+
+    const auditResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/bot%ZZ/capability-audit-logs"),
+    );
+    expect(auditResponse.status).toBe(400);
+    await expect(auditResponse.json()).resolves.toEqual({
+      error: "bot_id path segment is malformed",
+    });
+  });
+
   it("lists internal wecom runtime bot configs with secrets", async () => {
     const server = createDataServiceServer();
     await server.fetch(

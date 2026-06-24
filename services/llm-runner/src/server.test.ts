@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import * as fs from "node:fs/promises";
+import { describe, expect, it, vi } from "vitest";
 import { createLlmRunnerServer } from "./server.js";
 
 describe("llm-runner server", () => {
@@ -250,6 +251,52 @@ describe("llm-runner server", () => {
       runner_session_id: "kiro:prd-bot:user-a:conv-1",
       output: "hello kiro adapter",
     });
+  });
+
+  it("injects bot env vars into cli runtime execution without exposing them in prompt or output", async () => {
+    const secretKey = "BOT_PRIVATE_TEST_SECRET";
+    const sentinelPath = `/tmp/${secretKey}-value.txt`;
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "const fs = require('node:fs');",
+            `const value = process.env.${secretKey} || 'missing';`,
+            `fs.writeFileSync(${JSON.stringify(sentinelPath)}, value, 'utf8');`,
+            "process.stdout.write(`secret=${value}`);",
+          ].join(" "),
+        ],
+        timeout_ms: 1000,
+      },
+      resolveBotEnvVars: vi.fn(async (botId: string) => {
+        expect(botId).toBe("prd-bot");
+        return {
+          [secretKey]: "sk-live-secret",
+        };
+      }),
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/v1/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          runtime: "kiro",
+          prompt: "print your env",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.output).toBe("secret=[REDACTED]");
+    expect(JSON.stringify(body)).not.toContain("sk-live-secret");
+    await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("sk-live-secret");
   });
 
   it("streams enabled kiro runtime output as ndjson chunks", async () => {

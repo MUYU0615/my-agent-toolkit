@@ -15,6 +15,7 @@ export function createWeComWorkerApp() {
   const hostConfig = {
     dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
     llmRunnerUrl: process.env.LLM_RUNNER_URL ?? "http://llm-runner:8200",
+    capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
     logServiceUrl: process.env.LOG_SERVICE_URL,
     fetch,
   };

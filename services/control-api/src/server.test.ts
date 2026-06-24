@@ -177,6 +177,7 @@ describe("control-api server", () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
+      capabilityRunnerUrl: "http://capability-runner",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -298,6 +299,230 @@ describe("control-api server", () => {
       "http://data-service/internal/memory-stats?scope=bot&owner_id=prd-bot",
       "http://data-service/v1/bots/prd-bot/mcp-capabilities/config",
     ]);
+  });
+
+  it("renders bot capability management sections with masked env metadata", async () => {
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot") {
+          return Response.json({
+            bot_id: "prd-bot",
+            name: "PRD Bot",
+            runtime: "kiro",
+            status: "ready",
+          });
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/env") {
+          return Response.json({
+            items: [
+              {
+                bot_id: "prd-bot",
+                key: "OPENAI_API_KEY",
+                is_set: true,
+                updated_at: "2026-06-24T00:00:00.000Z",
+              },
+            ],
+          });
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/skills") {
+          return Response.json([
+            {
+              bot_id: "prd-bot",
+              name: "repo-analyzer",
+              source_type: "github",
+              source_ref: "https://github.com/acme/repo-analyzer",
+              status: "installed",
+            },
+          ]);
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/mcps") {
+          return Response.json([
+            {
+              bot_id: "prd-bot",
+              name: "search-mcp",
+              mode: "config",
+              source_ref: "http://localhost:9300",
+              status: "installed",
+            },
+          ]);
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/runtime-policy") {
+          return Response.json({
+            bot_id: "prd-bot",
+            skill_install_policy: "admin_only",
+            mcp_manage_policy: "open",
+          });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(
+      new Request("http://localhost/admin/bots/prd-bot/capabilities"),
+    );
+
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("环境变量");
+    expect(html).toContain("Skills");
+    expect(html).toContain("MCP");
+    expect(html).toContain("OPENAI_API_KEY");
+    expect(html).toContain("已设置");
+    expect(html).toContain("****");
+    expect(html).toContain("repo-analyzer");
+    expect(html).toContain("search-mcp");
+    expect(html).toContain("skill_install_policy");
+    expect(html).toContain("mcp_manage_policy");
+    expect(html).not.toContain("sk-live-secret");
+  });
+
+  it("proxies bot capability save and delete actions then redirects back", async () => {
+    const calls: Array<{ url: string; method: string; body: unknown }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT"
+          ? await request.json().catch(() => undefined)
+          : undefined;
+        calls.push({ url: request.url, method: request.method, body });
+
+        if (request.url === "http://data-service/v1/bots/prd-bot/env" && request.method === "POST") {
+          return Response.json({
+            bot_id: "prd-bot",
+            key: "OPENAI_API_KEY",
+            is_set: true,
+            updated_at: "2026-06-24T00:00:00.000Z",
+          }, { status: 201 });
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY" && request.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install" && request.method === "POST") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/delete" && request.method === "POST") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/mcps/install" && request.method === "POST") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/mcps/delete" && request.method === "POST") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+        if (request.url === "http://log-service/v1/audit-events" && request.method === "POST") {
+          return Response.json({ ok: true });
+        }
+        return Response.json({ error: "unexpected", url: request.url, method: request.method }, { status: 500 });
+      },
+    } as Parameters<typeof createControlApiServer>[0]);
+
+    const responses = await Promise.all([
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/env/save", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          key: "OPENAI_API_KEY",
+          value_ciphertext: "ciphertext-secret",
+        }),
+      })),
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/env/delete", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          key: "OPENAI_API_KEY",
+        }),
+      })),
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/skills/install", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          name: "repo-analyzer",
+          source_ref: "https://github.com/acme/repo-analyzer",
+          source_type: "github",
+        }),
+      })),
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/skills/delete", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          name: "repo-analyzer",
+        }),
+      })),
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/mcps/install", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          name: "search-mcp",
+          mode: "config",
+          source_ref: "http://localhost:9300",
+        }),
+      })),
+      server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/mcps/delete", {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "admin-a",
+          name: "search-mcp",
+        }),
+      })),
+    ]);
+
+    for (const response of responses) {
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("/admin/bots/prd-bot/capabilities");
+    }
+
+    const callUrls = calls.map((call) => `${call.method} ${call.url}`);
+    expect(callUrls).toEqual(expect.arrayContaining([
+      "POST http://data-service/v1/bots/prd-bot/env",
+      "DELETE http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY",
+      "POST http://capability-runner/internal/bots/prd-bot/skills/install",
+      "POST http://capability-runner/internal/bots/prd-bot/skills/delete",
+      "POST http://capability-runner/internal/bots/prd-bot/mcps/install",
+      "POST http://capability-runner/internal/bots/prd-bot/mcps/delete",
+    ]));
+    expect(callUrls.filter((url) => url === "POST http://log-service/v1/audit-events")).toHaveLength(6);
+  });
+
+  it("surfaces env save failures instead of redirecting", async () => {
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        if (request.url === "http://data-service/v1/bots/prd-bot/env" && request.method === "POST") {
+          return Response.json({ error: "invalid env value" }, { status: 400 });
+        }
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/env/save", {
+      method: "POST",
+      body: new URLSearchParams({
+        actor_id: "admin-a",
+        key: "OPENAI_API_KEY",
+        value_ciphertext: "",
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      error: "invalid env value",
+    });
   });
 
   it("updates bot MCP capability config through data-service and records audit events", async () => {

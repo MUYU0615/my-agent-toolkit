@@ -6,6 +6,7 @@ const app = createControlApiServer({
   dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
   logServiceUrl: process.env.LOG_SERVICE_URL ?? "http://log-service:8500",
   botHostUrl: process.env.BOT_HOST_URL ?? "http://bot-api:8400",
+  capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
   fetch,
 });
 

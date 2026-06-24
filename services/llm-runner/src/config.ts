@@ -6,7 +6,10 @@ export interface RunnerConfig {
   kiro?: CliRuntimeConfig;
   mcp?: McpRunnerConfig;
   fetch?: typeof fetch;
+  resolveBotEnvVars?: BotEnvResolver;
 }
+
+export type BotEnvResolver = (botId: string) => Promise<Record<string, string>>;
 
 export interface McpRunnerConfig {
   service_url: string;

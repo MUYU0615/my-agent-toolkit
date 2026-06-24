@@ -39,9 +39,15 @@
   - 统一封装 LLM runtime
   - 当前支持 `mock`、`kiro`
   - 屏蔽上层对具体 CLI/provider 的感知
+  - 只消费已安装能力，并在执行时临时注入 bot 私有 env
+- `capability-runner`
+  - 管理 bot 私有 workspace
+  - 负责 skill / MCP 的安装、删除、失败回滚与清理
+  - 不参与 prompt 生成，也不承担模型推理
 - `data-service`
   - 核心状态中心
   - 保存 bot、admin、channel、初始化 session、runtime 配置、soul、agents、普通文档、pending 文档、memory 文档与统计等
+  - 同时保存 bot 私有 env metadata、runtime policy、skills、mcps 和 capability audit logs
 - `log-service`
   - 审计和日志事件服务
 
@@ -60,6 +66,7 @@
 - `data-service`
 - `log-service`
 - `llm-runner`
+- `capability-runner`
 
 真实企业微信长连接通过 `wecom` profile 单独启动：
 
@@ -115,6 +122,13 @@
 - 文档与 pending 输出处理
 - 相关状态写回 `data-service`
 
+bot 私有能力链路则拆成另一条：
+
+- `bot-host` 识别 `/env`、`/skill`、`/mcp`、`/policy`、`/capability`
+- `data-service` 保存结构化能力状态
+- `capability-runner` 负责 bot 私有 workspace 安装和删除
+- `llm-runner` 只在运行时消费这些能力
+
 入口层与共享处理已经拆开：
 
 - `bot-api` 和 `wecom-worker` 共享 `messageHandler.ts`
@@ -134,6 +148,10 @@
 - 普通业务文档
 - memory 文档与统计
 - pending generated documents
+- bot 私有 env metadata
+- bot 私有 runtime policy
+- bot 私有 skills / mcps
+- capability 审计日志
 
 这意味着：
 
@@ -157,13 +175,15 @@
 1. `data-service`
 2. `log-service`
 3. `llm-runner`
-4. `bot-api`
-5. `control-api`
-6. `wecom-worker`，仅在真实企业微信场景下启动
+4. `capability-runner`
+5. `bot-api`
+6. `control-api`
+7. `wecom-worker`，仅在真实企业微信场景下启动
 
 原因：
 
 - `bot-api` 和 `wecom-worker` 都依赖 `data-service`
+- `bot-api` 和 `wecom-worker` 的能力管理请求依赖 `capability-runner`
 - `bot-api` 依赖 `llm-runner`
 - `control-api` 依赖 `bot-api`、`data-service`、`log-service`
 - `wecom-worker` 是真实消息消费端，最后启动更稳
@@ -185,6 +205,24 @@ docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-
 更具体的本地容器部署说明见：
 
 - [deploy/compose/README.md](deploy/compose/README.md)
+
+## Bot 私有能力
+
+当前平台支持每个 bot 独立维护自己的：
+
+- 环境变量
+- Skills
+- MCP
+- runtime policy
+
+这些能力不属于某个特定 LLM，而属于 bot 本身。
+
+关键约束：
+
+- bot 私有 env 不进入 prompt，不进入 memory，不进入 `soul` / `agents`。
+- env 只在运行时由 `llm-runner` 临时注入到实际执行进程。
+- WebUI 中 env 只展示 key、是否已设置、更新时间，真实值始终掩码为 `****`。
+- skill / MCP 的安装和删除只影响当前 bot 的独立 workspace，不影响其他 bot。
 
 ## 技能列表
 

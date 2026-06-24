@@ -8,6 +8,7 @@ services:
       DATA_SERVICE_URL: "http://data-service:8300"
       LOG_SERVICE_URL: "http://log-service:8500"
       BOT_HOST_URL: "${BOT_HOST_URL:-http://bot-api:8400}"
+      CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
     ports:
       - "8600:8600"
     depends_on:
@@ -39,6 +40,7 @@ services:
       PORT: "8400"
       DATA_SERVICE_URL: "http://data-service:8300"
       LLM_RUNNER_URL: "http://llm-runner:8200"
+      CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
       LOG_SERVICE_URL: "http://log-service:8500"
     ports:
       - "8400:8400"
@@ -46,6 +48,8 @@ services:
       data-service:
         condition: service_healthy
       llm-runner:
+        condition: service_healthy
+      capability-runner:
         condition: service_healthy
       log-service:
         condition: service_healthy
@@ -75,6 +79,7 @@ services:
       WECOM_RUNTIME_SYNC_INTERVAL_MS: "5000"
       DATA_SERVICE_URL: "http://data-service:8300"
       LLM_RUNNER_URL: "http://llm-runner:8200"
+      CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
       LOG_SERVICE_URL: "http://log-service:8500"
     ports:
       - "8401:8401"
@@ -82,6 +87,8 @@ services:
       data-service:
         condition: service_healthy
       llm-runner:
+        condition: service_healthy
+      capability-runner:
         condition: service_healthy
       log-service:
         condition: service_healthy
@@ -168,6 +175,30 @@ services:
           "node",
           "-e",
           "fetch('http://127.0.0.1:8200/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  capability-runner:
+    build:
+      context: ../..
+      dockerfile: services/capability-runner/Dockerfile
+    environment:
+      PORT: "8700"
+      WORKSPACE_ROOT: "/workspace/runtime/bots"
+    ports:
+      - "8700:8700"
+    volumes:
+      - ../../runtime:/workspace/runtime
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8700/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 10s
       timeout: 3s

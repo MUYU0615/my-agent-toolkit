@@ -198,6 +198,75 @@ export function createDataServiceServer(
         return handleListBotConfigDocuments(store, botConfigDocumentsMatch[1]);
       }
 
+      const botRuntimePolicyMatch = url.pathname.match(
+        /^\/v1\/bots\/([^/]+)\/runtime-policy$/,
+      );
+      if (request.method === "GET" && botRuntimePolicyMatch) {
+        return withDecodedBotId(botRuntimePolicyMatch[1], (botId) =>
+          handleGetBotRuntimePolicy(store, botId),
+        );
+      }
+      if (request.method === "POST" && botRuntimePolicyMatch) {
+        return withDecodedBotId(botRuntimePolicyMatch[1], (botId) =>
+          handleUpdateBotRuntimePolicy(
+            request,
+            store,
+            botId,
+          ),
+        );
+      }
+
+      const botEnvMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/env$/);
+      if (request.method === "GET" && botEnvMatch) {
+        return withDecodedBotId(botEnvMatch[1], (botId) =>
+          handleListBotEnvVars(store, botId),
+        );
+      }
+      if (request.method === "POST" && botEnvMatch) {
+        return withDecodedBotId(botEnvMatch[1], (botId) =>
+          handleUpsertBotEnvVar(request, store, botId),
+        );
+      }
+
+      const botEnvDeleteMatch = url.pathname.match(
+        /^\/v1\/bots\/([^/]+)\/env\/([^/]+)$/,
+      );
+      if (request.method === "DELETE" && botEnvDeleteMatch) {
+        return withDecodedBotId(botEnvDeleteMatch[1], (botId) =>
+          handleDeleteBotEnvVar(
+            store,
+            botId,
+            botEnvDeleteMatch[2],
+          ),
+        );
+      }
+
+      const botSkillsMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/skills$/);
+      if (request.method === "GET" && botSkillsMatch) {
+        return withDecodedBotId(botSkillsMatch[1], (botId) =>
+          handleListBotSkills(store, botId),
+        );
+      }
+
+      const botMcpsMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/mcps$/);
+      if (request.method === "GET" && botMcpsMatch) {
+        return withDecodedBotId(botMcpsMatch[1], (botId) =>
+          handleListBotMcps(store, botId),
+        );
+      }
+
+      const botCapabilityAuditLogsMatch = url.pathname.match(
+        /^\/v1\/bots\/([^/]+)\/capability-audit-logs$/,
+      );
+      if (request.method === "GET" && botCapabilityAuditLogsMatch) {
+        return withDecodedBotId(botCapabilityAuditLogsMatch[1], (botId) =>
+          handleListBotCapabilityAuditLogs(
+            store,
+            botId,
+          ),
+        );
+      }
+
       const wecomTestMatch = url.pathname.match(
         /^\/v1\/bots\/([^/]+)\/wecom\/test$/,
       );
@@ -784,6 +853,114 @@ async function handleUpdateBotMcpCapabilityConfig(
     return jsonResponse(
       store.updateBotMcpCapabilityConfig(botId, await request.json()),
     );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetBotRuntimePolicy(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    return jsonResponse(store.getOrCreateBotRuntimePolicy(botId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpdateBotRuntimePolicy(
+  request: Request,
+  store: DataStore,
+  botId: string,
+): Promise<Response> {
+  try {
+    return jsonResponse(store.updateBotRuntimePolicy(botId, await request.json()));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListBotEnvVars(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    return jsonResponse({ items: store.listBotEnvVars(botId) });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleUpsertBotEnvVar(
+  request: Request,
+  store: DataStore,
+  botId: string,
+): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      key?: string;
+      value_ciphertext?: string;
+      updated_by_wecom_user_id?: string;
+    };
+    store.upsertBotEnvVar(botId, {
+      key: requireText(body.key, "key"),
+      value_ciphertext: requireText(body.value_ciphertext, "value_ciphertext"),
+      updated_by_wecom_user_id: requireText(
+        body.updated_by_wecom_user_id,
+        "updated_by_wecom_user_id",
+      ),
+    });
+    const record = store
+      .listBotEnvVars(botId)
+      .find((item) => item.key === body.key);
+    return jsonResponse(record ?? null, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteBotEnvVar(
+  store: DataStore,
+  botId: string,
+  key: string,
+): Response {
+  try {
+    store.deleteBotEnvVar(botId, decodeURIComponent(key));
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListBotSkills(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    return jsonResponse(store.listBotSkills(botId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListBotMcps(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    return jsonResponse(store.listBotMcps(botId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListBotCapabilityAuditLogs(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    return jsonResponse(store.listBotCapabilityAuditLogs(botId));
   } catch (error) {
     return errorResponse(error);
   }
