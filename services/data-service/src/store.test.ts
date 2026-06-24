@@ -1281,6 +1281,23 @@ describe("data-service store", () => {
     );
   });
 
+  it("seeds best-practice question sets for each standard role", () => {
+    const store = createDataStore();
+    seedDefaultRoleConfig(store);
+
+    const rolesBySlug = new Map(store.listRoles().map((role) => [role.slug, role]));
+
+    const qaQuestions = store.listRoleQuestions(rolesBySlug.get("qa-engineer")!.role_id);
+    expect(qaQuestions.map((question) => question.title)).toContain("默认输出更偏向哪类内容？");
+    expect(
+      qaQuestions.flatMap((question) => question.options_json.map((option) => option.label)),
+    ).toContain("测试用例");
+
+    const engineeringDocument = store.listRoleDocuments(rolesBySlug.get("engineer")!.role_id)[0];
+    expect(engineeringDocument.content).toContain("兼容性");
+    expect(engineeringDocument.content).toContain("回滚");
+  });
+
   it("stores roles with enabled filtering and sort order", () => {
     const store = createDataStore();
 

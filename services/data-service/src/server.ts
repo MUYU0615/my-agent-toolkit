@@ -20,10 +20,7 @@ export function createDataServiceServer(
       const url = new URL(request.url);
 
       if (request.method === "GET" && url.pathname === "/health") {
-        return jsonResponse({
-          service: "data-service",
-          status: "ok",
-        });
+        return jsonResponse(healthResponse("data-service"));
       }
 
       if (request.method === "POST" && url.pathname === "/v1/bots") {
@@ -51,6 +48,14 @@ export function createDataServiceServer(
         url.pathname === "/internal/wecom-runtime/bots"
       ) {
         return handleListWeComRuntimeBots(store);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/reset-standard-role-config") {
+        store.resetToStandardRoleConfig();
+        return Response.json({
+          ok: true,
+          roles: store.listRoles().map((role) => role.name),
+        });
       }
 
       if (request.method === "POST" && url.pathname === "/internal/documents") {
@@ -476,6 +481,20 @@ export function createDataServiceServer(
 
       return jsonResponse({ error: "not found" }, 404);
     },
+  };
+}
+
+function healthResponse(service: string): {
+  service: string;
+  status: "ok";
+  git_sha: string;
+  build_time: string;
+} {
+  return {
+    service,
+    status: "ok",
+    git_sha: process.env.APP_BUILD_SHA ?? "unknown",
+    build_time: process.env.APP_BUILD_TIME ?? "unknown",
   };
 }
 
@@ -1151,7 +1170,7 @@ async function handleCreateRole(
     return jsonResponse(store.upsertRole({
       name: requireText(body.name, "name"),
       slug: requireText(body.slug, "slug"),
-      description: requireText(body.description, "description"),
+      description: body.description ?? "",
       enabled: body.enabled,
       sort_order: body.sort_order,
     }), 201);

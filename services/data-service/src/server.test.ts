@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { createDataServiceServer } from "./server.js";
-import { createDataStore } from "./store.js";
+import { createDataStore, seedDefaultRoleConfig } from "./store.js";
 
 describe("data-service server", () => {
   it("responds to health checks", async () => {
+    const previousSha = process.env.APP_BUILD_SHA;
+    const previousBuildTime = process.env.APP_BUILD_TIME;
+    process.env.APP_BUILD_SHA = "sha-data";
+    process.env.APP_BUILD_TIME = "2026-06-24T12:00:01.000Z";
     const server = createDataServiceServer();
     const response = await server.fetch(new Request("http://localhost/health"));
 
@@ -11,7 +15,11 @@ describe("data-service server", () => {
     await expect(response.json()).resolves.toEqual({
       service: "data-service",
       status: "ok",
+      git_sha: "sha-data",
+      build_time: "2026-06-24T12:00:01.000Z",
     });
+    process.env.APP_BUILD_SHA = previousSha;
+    process.env.APP_BUILD_TIME = previousBuildTime;
   });
 
   it("creates bots and resolves conversations over HTTP", async () => {
@@ -229,6 +237,30 @@ describe("data-service server", () => {
     );
     expect(getResponse.status).toBe(200);
     await expect(getResponse.json()).resolves.toEqual(updated);
+  });
+
+  it("resets to the standard role configuration", async () => {
+    const store = createDataStore();
+    seedDefaultRoleConfig(store);
+    store.createBot({ bot_id: "old-bot", name: "Old Bot", runtime: "kiro" });
+
+    const server = createDataServiceServer(store);
+    const response = await server.fetch(
+      new Request("http://localhost/internal/reset-standard-role-config", {
+        method: "POST",
+      }),
+    );
+    const payload = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(payload.roles).toEqual([
+      "产品经理",
+      "测试工程师",
+      "研发工程师",
+      "市场人员",
+      "运营人员",
+    ]);
+    expect(store.listBots()).toEqual([]);
   });
 
   it("decodes bot id for runtime config routes", async () => {
@@ -1239,14 +1271,37 @@ describe("data-service server", () => {
       sort_order: 10,
     });
 
+    const createMinimalRoleResponse = await server.fetch(
+      new Request("http://localhost/v1/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: "Minimal Role",
+          slug: "minimal-role",
+          enabled: true,
+          sort_order: 15,
+        }),
+      }),
+    );
+    expect(createMinimalRoleResponse.status).toBe(201);
+    await expect(createMinimalRoleResponse.json()).resolves.toMatchObject({
+      name: "Minimal Role",
+      slug: "minimal-role",
+      description: "",
+      enabled: true,
+      sort_order: 15,
+    });
+
     const defaultListResponse = await server.fetch(
       new Request("http://localhost/v1/roles"),
     );
     expect(defaultListResponse.status).toBe(200);
-    await expect(defaultListResponse.json()).resolves.toMatchObject([
+    expect(await defaultListResponse.json()).toMatchObject([
       {
         role_id: productManager.role_id,
         slug: "product-manager",
+      },
+      {
+        slug: "minimal-role",
       },
     ]);
 
@@ -1254,8 +1309,9 @@ describe("data-service server", () => {
       new Request("http://localhost/v1/roles?include_disabled=true"),
     );
     expect(includeDisabledResponse.status).toBe(200);
-    await expect(includeDisabledResponse.json()).resolves.toMatchObject([
+    expect(await includeDisabledResponse.json()).toMatchObject([
       { slug: "product-manager", enabled: true, sort_order: 10 },
+      { slug: "minimal-role", enabled: true, sort_order: 15 },
       { slug: "qa", enabled: false, sort_order: 20 },
     ]);
 
@@ -1291,7 +1347,10 @@ describe("data-service server", () => {
       new Request("http://localhost/v1/roles?include_disabled=true"),
     );
     expect(finalListResponse.status).toBe(200);
-    await expect(finalListResponse.json()).resolves.toMatchObject([
+    expect(await finalListResponse.json()).toMatchObject([
+      {
+        slug: "minimal-role",
+      },
       {
         slug: "qa",
       },
@@ -2419,6 +2478,128 @@ describe("data-service server", () => {
     await expect(resetBot.json()).resolves.toMatchObject({
       bot_id: "prd-bot",
       status: "draft",
+    });
+  });
+
+  it("includes pending admin claim in bot channel detail over HTTP", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+          wecom_bot_id: "wecom-bot-a",
+          wecom_secret: "super-secret-value",
+        }),
+      }),
+    );
+
+    const claimResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/admin/claims", {
+        method: "POST",
+      }),
+    );
+    const claim = await claimResponse.json() as {
+      code: string;
+      expires_at: string;
+    };
+
+    const detailResponse = await server.fetch(
+      new Request("http://localhost/v1/bot-channels/wecom:prd-bot"),
+    );
+
+    expect(detailResponse.status).toBe(200);
+    await expect(detailResponse.json()).resolves.toMatchObject({
+      bot: {
+        bot_id: "prd-bot",
+      },
+      pending_admin_claim: {
+        status: "pending",
+        code: claim.code,
+        expires_at: claim.expires_at,
+      },
+    });
+  });
+
+  it("does not expose pending admin claim after it is consumed", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+          wecom_bot_id: "wecom-bot-a",
+          wecom_secret: "super-secret-value",
+        }),
+      }),
+    );
+
+    const claimResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/admin/claims", {
+        method: "POST",
+      }),
+    );
+    const claim = await claimResponse.json() as { code: string };
+
+    await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/admin/claim/verify", {
+        method: "POST",
+        body: JSON.stringify({ wecom_user_id: "admin-a", code: claim.code }),
+      }),
+    );
+
+    const detailResponse = await server.fetch(
+      new Request("http://localhost/v1/bot-channels/wecom:prd-bot"),
+    );
+
+    expect(detailResponse.status).toBe(200);
+    const detail = await detailResponse.json() as Record<string, unknown>;
+    expect(detail.pending_admin_claim).toEqual({
+      status: "claimed",
+    });
+  });
+
+  it("treats pending admin claims without code as expired in channel detail", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          name: "PRD Bot",
+          runtime: "kiro",
+          wecom_bot_id: "wecom-bot-a",
+          wecom_secret: "super-secret-value",
+        }),
+      }),
+    );
+
+    const claimResponse = await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/admin/claims", {
+        method: "POST",
+      }),
+    );
+    const claim = await claimResponse.json() as { code: string };
+
+    await server.fetch(
+      new Request("http://localhost/v1/bots/prd-bot/admin/reset", {
+        method: "POST",
+      }),
+    );
+
+    const detailResponse = await server.fetch(
+      new Request("http://localhost/v1/bot-channels/wecom:prd-bot"),
+    );
+
+    expect(detailResponse.status).toBe(200);
+    const detail = await detailResponse.json() as Record<string, unknown>;
+    expect(detail.pending_admin_claim).not.toEqual({
+      status: "pending",
+      code: claim.code,
     });
   });
 

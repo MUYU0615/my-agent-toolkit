@@ -16,6 +16,34 @@
 
 当前角色配置也由 `data-service` 持久化管理。`playground`、`roles`、`role documents`、`role questions` 通过 WebUI / control-api 编辑，不再写死在 `bot-host` 代码里。
 
+当前标准角色集固定为 5 个：
+
+- 产品经理
+- 测试工程师
+- 研发工程师
+- 市场人员
+- 运营人员
+
+这些标准角色包含两层配置：
+
+- `role.md`
+  - 角色隐藏规则
+  - 默认专业工作方式
+- `role questions`
+  - 初始化时逐题询问管理员的问题
+
+如果需要把本地环境重置回标准角色集并清空旧 bot / channel / 角色相关数据，可调用：
+
+```bash
+curl -X POST http://localhost:8300/internal/reset-standard-role-config
+```
+
+这个重置动作会：
+
+- 清空 bot、channel、初始化、运行时和角色相关数据
+- 保留单例 `playground.md`
+- 重新写入 5 个标准角色种子数据
+
 ### 服务分层
 
 #### 接入与控制层
@@ -193,7 +221,7 @@ bot 私有能力链路则拆成另一条：
 基础服务：
 
 ```bash
-docker compose -f deploy/compose/docker-compose.yml up -d
+./scripts/dev-redeploy.sh
 ```
 
 额外启动真实企业微信 worker：
@@ -201,6 +229,13 @@ docker compose -f deploy/compose/docker-compose.yml up -d
 ```bash
 docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-worker
 ```
+
+部署校验原则：
+
+- 不再直接依赖裸 `docker compose up -d` 作为本地重建入口。
+- 统一通过 `scripts/dev-redeploy.sh` 构建并强制重建容器。
+- 脚本会把当前 `git sha` 和 `build time` 注入镜像，并在启动后逐个检查 `/health` 返回的 `git_sha` 是否等于当前 `HEAD`。
+- 如果镜像构建失败，或服务虽然存活但版本不是当前代码，脚本会直接失败，避免旧容器继续对外提供服务。
 
 更具体的本地容器部署说明见：
 

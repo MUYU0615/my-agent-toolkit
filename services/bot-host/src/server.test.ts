@@ -108,19 +108,43 @@ function mockEnabledRolesResponse(request: Request): Response | undefined {
     return Response.json([
       {
         role_id: "role-product-manager",
-        name: "产品经理助手",
+        name: "产品经理",
         slug: "product-manager",
         description: "PM role",
         enabled: true,
         sort_order: 10,
       },
       {
-        role_id: "role-qa",
-        name: "QA 测试助手",
-        slug: "qa",
+        role_id: "role-qa-engineer",
+        name: "测试工程师",
+        slug: "qa-engineer",
         description: "QA role",
         enabled: true,
         sort_order: 20,
+      },
+      {
+        role_id: "role-engineer",
+        name: "研发工程师",
+        slug: "engineer",
+        description: "Engineer role",
+        enabled: true,
+        sort_order: 30,
+      },
+      {
+        role_id: "role-marketing",
+        name: "市场人员",
+        slug: "marketing",
+        description: "Marketing role",
+        enabled: true,
+        sort_order: 40,
+      },
+      {
+        role_id: "role-operations",
+        name: "运营人员",
+        slug: "operations",
+        description: "Operations role",
+        enabled: true,
+        sort_order: 50,
       },
     ]);
   }
@@ -205,17 +229,36 @@ function mockRoleQuestionsResponse(
         question_id: "q-memory-storage",
         role_id: roleId,
         key: "memory_storage",
-        title: "是否需要长期沉淀规则和保存生成的文档？",
+        title: "是否需要长期沉淀规则和文档？",
         description: "",
         question_type: "single_choice",
         options_json: [
-          { value: "yes", label: "需要，确认后的业务规则和生成的 PRD / 方案 / 纪要都要保存" },
-          { value: "no", label: "不需要，只保留当前会话输出" },
-          { value: "pending", label: "待定" },
+          { value: "option_1", label: "需要" },
+          { value: "option_2", label: "不需要" },
+          { value: "other", label: "其他，可直接描述" },
         ],
         required: true,
         enabled: true,
         sort_order: 20,
+        depends_on_json: [],
+      },
+      {
+        question_id: "q-output-shape",
+        role_id: roleId,
+        key: "output_shape",
+        title: "默认输出更偏向哪类内容？",
+        description: "",
+        question_type: "single_choice",
+        options_json: [
+          { value: "option_1", label: "PRD" },
+          { value: "option_2", label: "需求评审" },
+          { value: "option_3", label: "用户故事" },
+          { value: "option_4", label: "拆解清单" },
+          { value: "other", label: "其他，可直接描述" },
+        ],
+        required: true,
+        enabled: true,
+        sort_order: 30,
         depends_on_json: [],
       },
       {
@@ -230,26 +273,25 @@ function mockRoleQuestionsResponse(
         ],
         required: false,
         enabled: false,
-        sort_order: 30,
+        sort_order: 35,
         depends_on_json: [],
       },
       {
         question_id: "q-work-rules",
         role_id: roleId,
         key: "work_rules",
-        title: "有没有必须遵守的工作规则？",
+        title: "是否有额外工作规则？",
         description: "",
         question_type: "single_choice",
         options_json: [
-          { value: "skip", label: "跳过，暂无额外规则" },
-          { value: "input", label: "直接输入必须遵守的工作规则" },
+          { value: "option_1", label: "没有" },
+          { value: "option_2", label: "有，需要补充" },
+          { value: "other", label: "其他，可直接描述" },
         ],
         required: true,
         enabled: true,
-        sort_order: 40,
-        depends_on_json: [
-          { key: "interaction_mode", equals: "step_by_step" },
-        ],
+        sort_order: 60,
+        depends_on_json: [],
       },
     ];
     if (url.searchParams.get("include_disabled") === "true") {
@@ -368,6 +410,10 @@ describe("bot-host server", () => {
   });
 
   it("responds to health checks", async () => {
+    const previousSha = process.env.APP_BUILD_SHA;
+    const previousBuildTime = process.env.APP_BUILD_TIME;
+    process.env.APP_BUILD_SHA = "sha-bot-host";
+    process.env.APP_BUILD_TIME = "2026-06-24T12:00:03.000Z";
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
@@ -380,7 +426,11 @@ describe("bot-host server", () => {
     await expect(response.json()).resolves.toEqual({
       service: "bot-host",
       status: "ok",
+      git_sha: "sha-bot-host",
+      build_time: "2026-06-24T12:00:03.000Z",
     });
+    process.env.APP_BUILD_SHA = previousSha;
+    process.env.APP_BUILD_TIME = previousBuildTime;
   });
 
   it("resolves conversation and sends prompt to llm-runner", async () => {
@@ -679,7 +729,7 @@ describe("bot-host server", () => {
           return Response.json([
             {
               title: "soul",
-              content: "你是产品经理助手。",
+              content: "你是产品经理。",
             },
           ]);
         }
@@ -716,7 +766,7 @@ describe("bot-host server", () => {
     expect(payload.output).toBe("LLM 运行器没有生成有效回复，请稍后重试或检查 runtime 配置。");
     expect(payload.output).not.toContain("<memory>");
     expect(payload.output).not.toContain("<message>");
-    expect(payload.output).not.toContain("你是产品经理助手");
+    expect(payload.output).not.toContain("你是产品经理");
     expect(payload.output).not.toContain("我需要一个语音转文字的api");
   });
 
@@ -1941,7 +1991,7 @@ describe("bot-host server", () => {
                 "Soul 已生成。",
                 "~document:private/soul.md",
                 "# Soul",
-                "你是产品经理助手，性格冷静务实，沟通简洁直接。",
+                "你是产品经理，性格冷静务实，沟通简洁直接。",
                 "~/document",
               ].join("\n"),
             });
@@ -1978,6 +2028,7 @@ describe("bot-host server", () => {
       "1",
       "1",
       "1",
+      "2",
       "PRD 生成前必须逐项确认 Console、IMM、计量计费",
     ];
     const outputs: string[] = [];
@@ -2000,10 +2051,11 @@ describe("bot-host server", () => {
 
     expect(outputs).toEqual([
       "Soul 引导 2/2：你希望我的沟通风格是什么？\n1. 简洁直接\n2. 严谨完整\n3. 先问清楚再回答\n4. 给出选项辅助决策\n5. 其他，请直接说明\n\n回复编号或直接输入。",
-      "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n请选择角色。\n\n角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理助手\n2. QA 测试助手\n\n回复编号或直接输入。",
+      "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n请选择角色。\n\n角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理\n2. 测试工程师\n3. 研发工程师\n4. 市场人员\n5. 运营人员\n\n回复编号或直接输入。",
       "你希望它用什么方式和你交互？\n1. 逐句引导，一次只问一个问题\n2. 批量引导，一次列出多个待确认项\n3. 先给推荐方案，再让用户确认\n4. 其他，请直接说明\n\n回复编号或直接输入。",
-      "是否需要长期沉淀规则和保存生成的文档？\n1. 需要，确认后的业务规则和生成的 PRD / 方案 / 纪要都要保存\n2. 不需要，只保留当前会话输出\n3. 待定\n\n回复编号或直接输入。",
-      "有没有必须遵守的工作规则？\n1. 跳过，暂无额外规则\n2. 直接输入必须遵守的工作规则\n\n回复编号或直接输入。",
+      "是否需要长期沉淀规则和文档？\n1. 需要\n2. 不需要\n3. 其他，可直接描述\n\n回复编号或直接输入。",
+      "默认输出更偏向哪类内容？\n1. PRD\n2. 需求评审\n3. 用户故事\n4. 拆解清单\n5. 其他，可直接描述\n\n回复编号或直接输入。",
+      "是否有额外工作规则？\n1. 没有\n2. 有，需要补充\n3. 其他，可直接描述\n\n回复编号或直接输入。",
       "工作方式配置已确认，正在生成 agents.md。\n\n初始化完成，可以开始工作。",
     ]);
     const llmCalls = calls.filter((call) => call.url === "http://llm-runner/v1/chat");
@@ -2014,7 +2066,7 @@ describe("bot-host server", () => {
       conversation_id: "conv-init",
       runtime: "mock",
     });
-    expect((llmCalls[0].body as { prompt: string }).prompt).toContain("我是谁：产品经理助手");
+    expect((llmCalls[0].body as { prompt: string }).prompt).toContain("我是谁：产品经理");
     expect((llmCalls[1].body as { prompt: string }).prompt).toContain("角色：role-product-manager");
     expect((llmCalls[1].body as { prompt: string }).prompt).toContain("你希望它用什么方式和你交互？：逐句引导，一次只问一个问题");
     expect((llmCalls[1].body as { prompt: string }).prompt).toContain("# Playground");
@@ -2027,7 +2079,7 @@ describe("bot-host server", () => {
       {
         bot_id: "prd-bot",
         title: "soul",
-        content: "# Soul\n你是产品经理助手，性格冷静务实，沟通简洁直接。",
+        content: "# Soul\n你是产品经理，性格冷静务实，沟通简洁直接。",
       },
       {
         bot_id: "prd-bot",
@@ -2117,7 +2169,7 @@ describe("bot-host server", () => {
           return Response.json([
             {
               role_id: "role-product-manager",
-              name: "产品经理助手",
+              name: "产品经理",
               slug: "product-manager",
               description: "PM role",
               enabled: true,
@@ -2125,7 +2177,7 @@ describe("bot-host server", () => {
             },
             {
               role_id: "role-qa",
-              name: "QA 测试助手",
+              name: "测试工程师",
               slug: "qa",
               description: "QA role",
               enabled: true,
@@ -2149,7 +2201,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+              "你是一个熟悉团队上下文的助手，沟通风格简洁直接，擅长把复杂协作事项整理成清晰结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2217,7 +2269,7 @@ describe("bot-host server", () => {
       "Soul 配置已确认，正在生成 soul。",
       "Soul 已生成。",
       "请选择角色。",
-      "角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理助手\n2. QA 测试助手\n\n回复编号或直接输入。",
+      "角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理\n2. 测试工程师\n3. 研发工程师\n4. 市场人员\n5. 运营人员\n\n回复编号或直接输入。",
     ].join("\n\n"));
 
     expect(calls.filter((call) => call.url === "http://llm-runner/v1/chat")).toHaveLength(1);
@@ -2227,7 +2279,7 @@ describe("bot-host server", () => {
       {
         bot_id: "prd-bot",
         title: "soul",
-        content: "# Soul\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+        content: "# Soul\n你是一个熟悉团队上下文的助手，沟通风格简洁直接，擅长把复杂协作事项整理成清晰结论。",
       },
     ]);
     expect(calls.map((call) => call.url)).toContain("http://data-service/v1/roles");
@@ -2302,7 +2354,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，沟通风格简洁直接。",
+              "你是产品经理，沟通风格简洁直接，擅长把模糊需求澄清成结构化结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2343,7 +2395,7 @@ describe("bot-host server", () => {
       body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "1", runtime: "mock" }),
     }));
     await expect(next.json()).resolves.toMatchObject({
-      output: expect.stringContaining("角色选择 1/1"),
+      output: expect.stringContaining("Soul 配置已确认，正在生成 soul。"),
     });
   });
 
@@ -2394,7 +2446,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，沟通风格简洁直接。",
+              "你是产品经理，沟通风格简洁直接，擅长把模糊需求澄清成结构化结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2425,7 +2477,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       conversation_id: "pending",
       phase: "soul",
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
       agents_answers: [],
       status: "active",
     });
@@ -2437,10 +2489,10 @@ describe("bot-host server", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      output: expect.stringContaining("角色选择 1/1"),
+      output: expect.stringContaining("Soul 配置已确认，正在生成 soul。"),
     });
     expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
-      soul_answers: ["产品经理助手", "1"],
+      soul_answers: ["产品经理", "1"],
     });
     expect(initializationSessions.has("prd-bot:admin-a:pending")).toBe(false);
   });
@@ -2501,7 +2553,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       conversation_id: "pending",
       phase: "soul",
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
       agents_answers: [],
       status: "active",
     });
@@ -2568,7 +2620,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，沟通风格简洁直接。",
+              "你是产品经理，沟通风格简洁直接，擅长把模糊需求澄清成结构化结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2599,7 +2651,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       conversation_id: "pending",
       phase: "soul",
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
       agents_answers: [],
       status: "active",
     });
@@ -2611,7 +2663,7 @@ describe("bot-host server", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      output: expect.stringContaining("角色选择 1/1"),
+      output: expect.stringContaining("Soul 配置已确认，正在生成 soul。"),
     });
     expect(calls).toContain("http://llm-runner/v1/chat");
   });
@@ -2670,7 +2722,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，沟通风格简洁直接。",
+              "你是产品经理，沟通风格简洁直接，擅长把模糊需求澄清成结构化结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2710,8 +2762,8 @@ describe("bot-host server", () => {
     }
 
     expect(outputs[1]).toContain("角色选择 1/1：你希望我承担哪个角色？");
-    expect(outputs[1]).toContain("1. 产品经理助手");
-    expect(outputs[1]).toContain("2. QA 测试助手");
+    expect(outputs[1]).toContain("1. 产品经理");
+    expect(outputs[1]).toContain("2. 测试工程师");
     expect(outputs[1]).toContain("回复编号或直接输入。");
     expect(outputs[1]).not.toContain("（回复 1）");
     expect(outputs[1]).not.toContain("A.");
@@ -2879,7 +2931,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，性格冷静务实，沟通简洁直接，负责把模糊需求澄清成可执行结论。",
+              "你是产品经理，性格冷静务实，沟通简洁直接，负责把模糊需求澄清成可执行结论。",
               "~/document",
             ].join("\n"),
           });
@@ -2917,8 +2969,8 @@ describe("bot-host server", () => {
     }
 
     expect(outputs[2]).toContain("你希望它用什么方式和你交互？");
-    expect(outputs[3]).toContain("是否需要长期沉淀规则和保存生成的文档？");
-    expect(outputs[4]).toContain("有没有必须遵守的工作规则？");
+    expect(outputs[3]).toContain("是否需要长期沉淀规则和文档？");
+    expect(outputs[4]).toContain("默认输出更偏向哪类内容？");
   });
 
   it("skips the conditional work rules question when interaction mode does not match depends_on", async () => {
@@ -2981,7 +3033,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手，性格冷静务实，沟通简洁直接。",
+              "你是产品经理，性格冷静务实，沟通简洁直接。",
               "~/document",
             ].join("\n"),
           });
@@ -3018,7 +3070,7 @@ describe("bot-host server", () => {
       outputs.push(payload.output);
     }
 
-    expect(outputs.at(-1)).toContain("是否需要长期沉淀规则和保存生成的文档？");
+    expect(outputs.at(-1)).toContain("是否需要长期沉淀规则和文档？");
     const finalResponse = await server.fetch(
       new Request("http://localhost/v1/messages/wecom", {
         method: "POST",
@@ -3032,7 +3084,7 @@ describe("bot-host server", () => {
     );
     expect(finalResponse.status).toBe(200);
     const finalPayload = await finalResponse.json() as { output: string };
-    expect(finalPayload.output).toContain("工作方式配置已确认，正在生成 agents.md。");
+    expect(finalPayload.output).toContain("默认输出更偏向哪类内容？");
   });
 
   it("rejects placeholder initialization documents without marking ready", async () => {
@@ -3195,7 +3247,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       conversation_id: "conv-init",
       phase: "soul",
-      soul_answers: ["产品经理助手", "1"],
+      soul_answers: ["产品经理", "1"],
       agents_answers: [],
       status: "active",
     });
@@ -3208,7 +3260,7 @@ describe("bot-host server", () => {
     expect(response.status).toBe(200);
     expect(prompts[0]).toContain("沟通风格：简洁直接");
     expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
-      soul_answers: ["产品经理助手", "1"],
+      soul_answers: ["产品经理", "1"],
     });
   });
 
@@ -3287,6 +3339,7 @@ describe("bot-host server", () => {
     const agentsAnswers = [
       "interaction_mode=step_by_step",
       "memory_storage=yes",
+      "output_shape=PRD",
       "work_rules=PRD 前确认 Console、IMM、计量计费",
     ];
     initializationSessions.set("prd-bot:admin-a:conv-init", {
@@ -3296,7 +3349,7 @@ describe("bot-host server", () => {
       conversation_id: "conv-init",
       phase: "agents",
       selected_role_id: "role-product-manager",
-      soul_answers: ["产品经理助手", "1"],
+      soul_answers: ["产品经理", "1"],
       agents_answers: agentsAnswers,
       status: "active",
     });
@@ -3385,7 +3438,7 @@ describe("bot-host server", () => {
       },
     });
 
-    const messages = ["1", "1", "1", "1", "PRD 需要逐项确认 Console、IMM、计量计费", "确认"];
+    const messages = ["1", "1", "1", "1", "1", "PRD 需要逐项确认 Console、IMM、计量计费", "确认"];
     let last: { output: string; ready?: boolean } | undefined;
     for (const text of messages) {
       const response = await server.fetch(
@@ -3427,7 +3480,7 @@ describe("bot-host server", () => {
       .map((call) => call.body as { title: string; content: string });
     const soul = configWrites.find((document) => document.title === "soul")?.content || "";
     const agents = configWrites.find((document) => document.title === "agents.md")?.content || "";
-    expect(soul).toContain("产品经理助手");
+    expect(soul).toContain("产品经理");
         expect(soul).not.toContain("核心职责：");
     expect(soul).not.toContain("Skill / MCP");
     expect(agents).toContain("角色：role-product-manager");
@@ -5709,6 +5762,7 @@ describe("bot-host server", () => {
     for (const text of [
       "1",
       "1",
+      "1",
       "PRD 需要确认是否涉及 console、计量计费、IMM 开关",
     ]) {
       await messageHandler?.({
@@ -6041,7 +6095,7 @@ describe("bot-host server", () => {
               "Soul 已生成。",
               "~document:private/soul.md",
               "# Soul",
-              "你是产品经理助手。",
+              "你是产品经理。",
               "~/document",
             ].join("\n"),
           });
@@ -6070,7 +6124,7 @@ describe("bot-host server", () => {
       wecom_user_id: "admin-a",
       conversation_id: "pending",
       phase: "soul",
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
       agents_answers: [],
       status: "active",
     });
@@ -6084,7 +6138,7 @@ describe("bot-host server", () => {
 
     expect(sent.at(0)?.text).toBe("Soul 正在生成，请稍等。");
     expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
       generation_in_progress: "soul",
     });
     expect(initializationSessions.has("prd-bot:admin-a:pending")).toBe(false);
@@ -6209,7 +6263,7 @@ describe("bot-host server", () => {
             "Soul 已生成。",
             "~document:private/soul.md",
             "# Soul",
-            "你是产品经理助手，沟通风格简洁直接。",
+            "你是产品经理，沟通风格简洁直接，擅长把模糊需求澄清成结构化结论。",
             "~/document",
           ].join("\n"),
         });
@@ -6231,7 +6285,7 @@ describe("bot-host server", () => {
         wecom_user_id: "user-a",
         conversation_id: "conv-chat",
         phase: "soul",
-        soul_answers: ["产品经理助手"],
+        soul_answers: ["产品经理"],
         agents_answers: [],
         status: "active",
       });
@@ -6302,7 +6356,7 @@ describe("bot-host server", () => {
 
     expect(shared).toMatchObject({
       conversation_id: "conv-chat",
-      output: "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n请选择角色。\n\n角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理助手\n2. QA 测试助手\n\n回复编号或直接输入。",
+      output: "Soul 配置已确认，正在生成 soul。\n\nSoul 已生成。\n\n请选择角色。\n\n角色选择 1/1：你希望我承担哪个角色？\n1. 产品经理\n2. 测试工程师\n3. 研发工程师\n4. 市场人员\n5. 运营人员\n\n回复编号或直接输入。",
     });
     expect(await apiResponse.json()).toMatchObject(shared);
     expect(sent).toEqual([
@@ -6313,13 +6367,13 @@ describe("bot-host server", () => {
       },
     ]);
     expect(sharedSessions.get("prd-bot:user-a:conv-chat")).toMatchObject({
-      soul_answers: ["产品经理助手", "冷静务实"],
+      soul_answers: ["产品经理", "冷静务实"],
     });
     expect(apiSessions.get("prd-bot:user-a:conv-chat")).toMatchObject({
-      soul_answers: ["产品经理助手", "冷静务实"],
+      soul_answers: ["产品经理", "冷静务实"],
     });
     expect(workerSessions.get("prd-bot:user-a:conv-chat")).toMatchObject({
-      soul_answers: ["产品经理助手"],
+      soul_answers: ["产品经理"],
     });
   });
 

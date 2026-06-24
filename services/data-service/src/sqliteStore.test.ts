@@ -485,22 +485,28 @@ describe("sqlite data store", () => {
 
     expect(first.listGlobalDocuments().map((document) => document.slug)).toEqual(["playground"]);
     const roles = first.listRoles();
-    expect(roles.map((role) => role.slug)).toEqual(["product-manager"]);
-    const productManager = roles[0];
+    expect(roles.map((role) => role.slug)).toEqual([
+      "product-manager",
+      "qa-engineer",
+      "engineer",
+      "marketing",
+      "operations",
+    ]);
+    const productManager = roles.find((role) => role.slug === "product-manager");
     expect(productManager).toMatchObject({
-      name: "产品经理助手",
+      name: "产品经理",
       slug: "product-manager",
     });
-    expect(first.listRoleDocuments(productManager.role_id)).toHaveLength(1);
-    expect(first.listRoleQuestions(productManager.role_id)).not.toHaveLength(0);
+    expect(first.listRoleDocuments(productManager!.role_id)).toHaveLength(1);
+    expect(first.listRoleQuestions(productManager!.role_id)).not.toHaveLength(0);
     first.close?.();
 
     const second = createSqliteDataStore(dbPath);
-    const [persistedRole] = second.listRoles();
+    const persistedRole = second.listRoles().find((role) => role.slug === "product-manager");
     expect(second.listGlobalDocuments().map((document) => document.slug)).toEqual(["playground"]);
-    expect(second.listRoleDocuments(persistedRole.role_id)).toHaveLength(1);
-    expect(second.listRoleQuestions(persistedRole.role_id)[0]).toMatchObject({
-      role_id: persistedRole.role_id,
+    expect(second.listRoleDocuments(persistedRole!.role_id)).toHaveLength(1);
+    expect(second.listRoleQuestions(persistedRole!.role_id)[0]).toMatchObject({
+      role_id: persistedRole!.role_id,
       description: expect.any(String),
       depends_on_json: expect.any(Array),
     });
@@ -599,13 +605,34 @@ describe("sqlite data store", () => {
     seedDefaultRoleConfig(store);
 
     expect(store.listGlobalDocuments({ includeDisabled: true })).toEqual([customizedPlayground]);
-    expect(store.listRoles({ includeDisabled: true })).toEqual([customizedRole]);
+    expect(store.listRoles({ includeDisabled: true })).toEqual(
+      expect.arrayContaining([customizedRole]),
+    );
     expect(
       store.listRoleDocuments(customizedRole.role_id, { includeDisabled: true }),
     ).toEqual([customizedRoleDocument]);
     expect(
       store.listRoleQuestions(customizedRole.role_id, { includeDisabled: true }),
-    ).toEqual([customizedMemoryStorage, customizedInteractionMode, customizedWorkRules]);
+    ).toEqual(expect.arrayContaining([
+      customizedMemoryStorage,
+      customizedInteractionMode,
+      customizedWorkRules,
+      expect.objectContaining({
+        role_id: customizedRole.role_id,
+        key: "output_shape",
+        title: "默认输出更偏向哪类内容？",
+      }),
+      expect.objectContaining({
+        role_id: customizedRole.role_id,
+        key: "structured_conclusion",
+        title: "是否强调结构化结论？",
+      }),
+      expect.objectContaining({
+        role_id: customizedRole.role_id,
+        key: "recommendation_first",
+        title: "是否需要优先给推荐方案？",
+      }),
+    ]));
     store.close?.();
   });
 
@@ -648,7 +675,9 @@ describe("sqlite data store", () => {
       expect.objectContaining({ slug: "playground", title: "playground.md" }),
       expect.objectContaining({ document_id: existingGlobal.document_id, slug: "safety" }),
     ]);
-    expect(store.listRoles({ includeDisabled: true })).toEqual([productManager]);
+    expect(store.listRoles({ includeDisabled: true })).toEqual(
+      expect.arrayContaining([productManager]),
+    );
     expect(store.listRoleDocuments(productManager.role_id, { includeDisabled: true })).toEqual([
       expect.objectContaining({
         role_id: productManager.role_id,
@@ -656,7 +685,7 @@ describe("sqlite data store", () => {
         content: expect.stringContaining("# Role: Product Manager"),
       }),
     ]);
-    expect(store.listRoleQuestions(productManager.role_id, { includeDisabled: true })).toEqual([
+    expect(store.listRoleQuestions(productManager.role_id, { includeDisabled: true })).toEqual(expect.arrayContaining([
       expect.objectContaining({
         role_id: productManager.role_id,
         key: "interaction_mode",
@@ -673,7 +702,17 @@ describe("sqlite data store", () => {
         title: "是否有额外工作规则？",
       }),
       existingQuestion,
-    ]);
+      expect.objectContaining({
+        role_id: productManager.role_id,
+        key: "structured_conclusion",
+        title: "是否强调结构化结论？",
+      }),
+      expect.objectContaining({
+        role_id: productManager.role_id,
+        key: "recommendation_first",
+        title: "是否需要优先给推荐方案？",
+      }),
+    ]));
     store.close?.();
   });
 
