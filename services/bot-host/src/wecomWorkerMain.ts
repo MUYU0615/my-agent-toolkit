@@ -1,4 +1,5 @@
 import { createNodeServer } from "./nodeServer.js";
+import { type RestartInitializationResult } from "./server.js";
 import { createBotHostSupervisor } from "./server.js";
 import { WeComLongConnectionClient } from "./wecomClient.js";
 
@@ -66,6 +67,30 @@ export function createWeComWorkerApp() {
             return jsonResponse({
               error: error instanceof Error ? error.message : "failed to sync runtime",
             }, 500);
+          }
+        }
+
+        const restartInitializationMatch = url.pathname.match(
+          /^\/internal\/bots\/([^/]+)\/initialization\/restart$/,
+        );
+        if (request.method === "POST" && restartInitializationMatch) {
+          try {
+            const body = await request.json() as { admin_wecom_user_id?: unknown };
+            if (typeof body.admin_wecom_user_id !== "string" || body.admin_wecom_user_id.trim() === "") {
+              return jsonResponse({ error: "admin_wecom_user_id is required" }, 400);
+            }
+            const result = await supervisor.restartInitialization?.({
+              botId: restartInitializationMatch[1],
+              adminWeComUserId: body.admin_wecom_user_id,
+            });
+            if (!result) {
+              return jsonResponse({ error: "initialization controller is not configured" }, 503);
+            }
+            return jsonResponse(result satisfies RestartInitializationResult);
+          } catch (error) {
+            return jsonResponse({
+              error: error instanceof Error ? error.message : "failed to restart initialization",
+            }, 400);
           }
         }
 

@@ -3,6 +3,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const sync = vi.fn(async () => undefined);
 const start = vi.fn(() => Promise.resolve());
 const restartInitialization = vi.fn();
+const listen = vi.fn();
+
+vi.mock("node:http", () => ({
+  createServer: vi.fn(() => ({
+    listen,
+  })),
+}));
 
 vi.mock("./server.js", () => ({
   createBotHostSupervisor: vi.fn(() => ({
@@ -33,6 +40,8 @@ describe("wecom worker entrypoint", () => {
     expect(await health.json()).toEqual({
       service: "wecom-worker",
       status: "ok",
+      git_sha: "unknown",
+      build_time: "unknown",
     });
 
     const syncResponse = await app.fetch(new Request("http://localhost/internal/wecom-runtime/sync", {
@@ -41,6 +50,31 @@ describe("wecom worker entrypoint", () => {
     expect(syncResponse.status).toBe(200);
     expect(await syncResponse.json()).toEqual({ synced: true });
     expect(sync).toHaveBeenCalledTimes(1);
+
+    restartInitialization.mockResolvedValueOnce({
+      bot_id: "prd-bot",
+      admin_wecom_user_id: "admin-a",
+      output: "Soul 引导 1/2：我是谁？",
+    });
+    const restartResponse = await app.fetch(new Request("http://localhost/internal/bots/prd-bot/initialization/restart", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        admin_wecom_user_id: "admin-a",
+      }),
+    }));
+    expect(restartResponse.status).toBe(200);
+    expect(await restartResponse.json()).toEqual({
+      bot_id: "prd-bot",
+      admin_wecom_user_id: "admin-a",
+      output: "Soul 引导 1/2：我是谁？",
+    });
+    expect(restartInitialization).toHaveBeenCalledWith({
+      botId: "prd-bot",
+      adminWeComUserId: "admin-a",
+    });
 
     const apiRoute = await app.fetch(new Request("http://localhost/v1/messages/wecom", {
       method: "POST",
