@@ -445,6 +445,18 @@ export async function beginWizardGenerationIfReady(
       await saveWizardState(config, input, conversationId, state);
       return { notice: "工作方式正在生成，请稍等。", shouldProcess: true };
     }
+    const simulatedAnswers = new Map(answerMap);
+    simulatedAnswers.set(
+      currentQuestion.key,
+      normalizeRoleQuestionAnswer(currentQuestion, normalizeWizardAnswer(input.text)),
+    );
+    const nextQuestion = findNextRoleQuestion(roleQuestions, simulatedAnswers);
+    if (!nextQuestion) {
+      state.agentsAnswers = encodeAgentsAnswerMap(simulatedAnswers);
+      state.generationInProgress = "agents";
+      await saveWizardState(config, input, conversationId, state);
+      return { notice: "正在生成工作方式，请稍等。", shouldProcess: true };
+    }
   }
   return undefined;
 }
@@ -563,19 +575,19 @@ async function handleWizardMessage(
   const answerMap = decodeAgentsAnswerMap(state.agentsAnswers);
   const currentQuestion = findNextRoleQuestion(roleQuestions, answerMap);
 
-  if (currentQuestion) {
-    answerMap.set(currentQuestion.key, normalizeRoleQuestionAnswer(currentQuestion, normalized));
-    state.agentsAnswers = encodeAgentsAnswerMap(answerMap);
-    await saveWizardState(config, input, conversationId, state);
-    await clearFallbackAfterSave();
-    const nextQuestion = findNextRoleQuestion(roleQuestions, answerMap);
-    if (nextQuestion) {
-      return {
-        conversation_id: conversationId,
-        output: buildRoleQuestionPrompt(nextQuestion),
-      };
-    }
-  } else if (fallbackConversationId) {
+    if (currentQuestion) {
+      answerMap.set(currentQuestion.key, normalizeRoleQuestionAnswer(currentQuestion, normalized));
+      state.agentsAnswers = encodeAgentsAnswerMap(answerMap);
+      await saveWizardState(config, input, conversationId, state);
+      await clearFallbackAfterSave();
+      const nextQuestion = findNextRoleQuestion(roleQuestions, answerMap);
+      if (nextQuestion) {
+        return {
+          conversation_id: conversationId,
+          output: buildRoleQuestionPrompt(nextQuestion),
+        };
+      }
+    } else if (fallbackConversationId) {
     await saveWizardState(config, input, conversationId, state);
     await clearFallbackAfterSave();
   }

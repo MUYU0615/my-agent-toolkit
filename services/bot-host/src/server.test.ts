@@ -283,7 +283,7 @@ function mockRoleQuestionsResponse(
         question_type: "single_choice",
         options_json: [
           { value: "option_1", label: "没有" },
-          { value: "option_2", label: "有，需要补充" },
+          { value: "option_2", label: "直接补充" },
                   ],
         required: true,
         enabled: true,
@@ -2050,7 +2050,7 @@ describe("bot-host server", () => {
       "你希望它用什么方式和你交互？\n1. 逐句引导，一次只问一个问题\n2. 批量引导，一次列出多个待确认项\n3. 先给推荐方案，再让用户确认\n4. 其他，请直接说明\n\n回复编号或直接输入。",
       "是否需要长期沉淀规则和文档？\n1. 需要\n2. 不需要\n\n回复编号或直接输入。",
       "默认输出更偏向哪类内容？\n1. PRD\n2. 需求评审\n3. 用户故事\n4. 拆解清单\n\n回复编号或直接输入。",
-      "是否有额外工作规则？\n1. 没有\n2. 有，需要补充\n\n回复编号或直接输入。",
+      "是否有额外工作规则？\n1. 没有\n2. 直接补充\n\n回复编号或直接输入。",
       "工作方式配置已确认，正在生成 agents.md。\n\n初始化完成，可以开始工作。",
     ]);
     const llmCalls = calls.filter((call) => call.url === "http://llm-runner/v1/chat");

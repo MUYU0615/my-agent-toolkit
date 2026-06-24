@@ -2125,7 +2125,7 @@ export function seedDefaultRoleConfig(store: Pick<
         ]),
         buildSingleChoiceQuestion("work_rules", "是否有额外工作规则？", 60, [
           "没有",
-          "有，需要补充",
+          "直接补充",
         ]),
       ],
     },
@@ -2171,7 +2171,7 @@ export function seedDefaultRoleConfig(store: Pick<
         ]),
         buildSingleChoiceQuestion("work_rules", "是否有额外工作规则？", 60, [
           "没有",
-          "有，需要补充",
+          "直接补充",
         ]),
       ],
     },
@@ -2217,7 +2217,7 @@ export function seedDefaultRoleConfig(store: Pick<
         ]),
         buildSingleChoiceQuestion("work_rules", "是否有额外工作规则？", 60, [
           "没有",
-          "有，需要补充",
+          "直接补充",
         ]),
       ],
     },
@@ -2263,7 +2263,7 @@ export function seedDefaultRoleConfig(store: Pick<
         ]),
         buildSingleChoiceQuestion("work_rules", "是否有额外工作规则？", 60, [
           "没有",
-          "有，需要补充",
+          "直接补充",
         ]),
       ],
     },
@@ -2309,7 +2309,7 @@ export function seedDefaultRoleConfig(store: Pick<
         ]),
         buildSingleChoiceQuestion("work_rules", "是否有额外工作规则？", 60, [
           "没有",
-          "有，需要补充",
+          "直接补充",
         ]),
       ],
     },
