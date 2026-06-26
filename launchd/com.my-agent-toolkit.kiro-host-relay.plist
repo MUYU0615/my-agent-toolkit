@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.my-agent-toolkit.kiro-host-relay</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/dujiepeng/.nvm/versions/node/v22.16.0/bin/node</string>
+    <string>services/llm-runner/scripts/kiro-host-relay.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/dujiepeng/Project/AI/my-agent-toolkit</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KIRO_HOST_RELAY_HOST</key>
+    <string>0.0.0.0</string>
+    <key>KIRO_HOST_RELAY_PORT</key>
+    <string>8210</string>
+    <key>KIRO_COMMAND</key>
+    <string>/Users/dujiepeng/.local/bin/kiro-cli</string>
+    <key>KIRO_TIMEOUT_MS</key>
+    <string>120000</string>
+    <key>PATH</key>
+    <string>/Users/dujiepeng/.nvm/versions/node/v22.16.0/bin:/Users/dujiepeng/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/dujiepeng/Project/AI/my-agent-toolkit/runtime/kiro-host-relay.launchd.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/dujiepeng/Project/AI/my-agent-toolkit/runtime/kiro-host-relay.launchd.err.log</string>
+</dict>
+</plist>

@@ -854,15 +854,32 @@ async function generateSoulFromWizardAnswers(
   conversationId: string,
   soulAnswers: string[],
 ): Promise<{ run_id: string; output: string }> {
-  const result = await processAllowedWeComMessage(
-    {
-      ...input,
-      text: buildSoulGenerationPrompt(soulAnswers),
-    },
-    config,
-    conversationId,
-  );
-  if (result.output === MISSING_SOUL_DOCUMENT_MESSAGE) {
+  let result: { run_id: string; output: string };
+  try {
+    result = await processAllowedWeComMessage(
+      {
+        ...input,
+        text: buildSoulGenerationPrompt(soulAnswers),
+      },
+      config,
+      conversationId,
+    );
+  } catch (error) {
+    console.warn("[bot-host] soul generation runtime failed; using local fallback", {
+      botId: input.bot_id,
+      conversationId,
+      error: error instanceof Error ? error.message : "unknown error",
+    });
+    const fallback = await initializeSoulFromWizardAnswers(config, input, soulAnswers);
+    return {
+      run_id: `fallback_soul_${crypto.randomUUID()}`,
+      output: fallback.visibleOutput,
+    };
+  }
+  if (
+    result.output === MISSING_SOUL_DOCUMENT_MESSAGE
+    || result.output.startsWith("初始化文档生成失败：")
+  ) {
     const fallback = await initializeSoulFromWizardAnswers(config, input, soulAnswers);
     return {
       run_id: result.run_id,
@@ -888,22 +905,46 @@ async function generateAgentsFromWizardAnswers(
     listEnabledGlobalDocuments(config),
     selectedRoleId ? listEnabledRoleDocuments(config, selectedRoleId) : Promise.resolve([]),
   ]);
-  const result = await processAllowedWeComMessage(
-    {
-      ...input,
-      text: buildAgentsGenerationPrompt(
-        soulAnswers,
-        selectedRoleId,
-        roleQuestions,
-        agentsAnswers,
-        globalDocuments,
-        roleDocuments,
-      ),
-    },
-    config,
-    conversationId,
-  );
-  if (result.output === MISSING_AGENTS_DOCUMENT_MESSAGE) {
+  let result: { run_id: string; output: string };
+  try {
+    result = await processAllowedWeComMessage(
+      {
+        ...input,
+        text: buildAgentsGenerationPrompt(
+          soulAnswers,
+          selectedRoleId,
+          roleQuestions,
+          agentsAnswers,
+          globalDocuments,
+          roleDocuments,
+        ),
+      },
+      config,
+      conversationId,
+    );
+  } catch (error) {
+    console.warn("[bot-host] agents generation runtime failed; using local fallback", {
+      botId: input.bot_id,
+      conversationId,
+      error: error instanceof Error ? error.message : "unknown error",
+    });
+    const fallback = await initializeAgentsFromWizardAnswers(
+      config,
+      input,
+      soulAnswers,
+      selectedRoleId,
+      roleQuestions,
+      agentsAnswers,
+    );
+    return {
+      run_id: `fallback_agents_${crypto.randomUUID()}`,
+      output: fallback.visibleOutput,
+    };
+  }
+  if (
+    result.output === MISSING_AGENTS_DOCUMENT_MESSAGE
+    || result.output.startsWith("初始化文档生成失败：")
+  ) {
     const fallback = await initializeAgentsFromWizardAnswers(
       config,
       input,
@@ -997,7 +1038,19 @@ async function streamAllowedWeComMessage(
       continue;
     }
     if (event.type === "error") {
-      throw new Error(typeof event.error === "string" ? event.error : "llm stream failed");
+      const output = formatRuntimeUnavailableMessage(
+        typeof event.error === "string" ? event.error : undefined,
+      );
+      await presentationStream.finish();
+      await config.wecomClient.sendText(wecomConversationId, output, { finish: true });
+      await recordChatEvent(
+        config,
+        input,
+        resolvedConversationId,
+        { run_id: runId, output },
+        memoryDocuments,
+      );
+      return;
     }
     if (event.type === "done") {
       break;
@@ -1006,7 +1059,9 @@ async function streamAllowedWeComMessage(
 
   const rawFinalOutput = sentAnyChunk ? output : INVALID_RUNTIME_OUTPUT_MESSAGE;
   const processed = await processAssistantOutput(config, input, rawFinalOutput, resolvedConversationId);
-  const finalOutput = selectVisibleAssistantOutput(input.text, rawFinalOutput, processed);
+  const finalOutput = normalizeVisibleAssistantFormatting(
+    selectVisibleAssistantOutput(input.text, rawFinalOutput, processed),
+  );
   await presentationStream.finish();
   await config.wecomClient.sendText(wecomConversationId, finalOutput, { finish: true });
   await recordChatEvent(
@@ -1099,6 +1154,13 @@ function cleanupRuntimeStreamChunk(content: string): string {
   return content
     .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/^>\s*/, "");
+}
+
+function normalizeVisibleAssistantFormatting(output: string): string {
+  return output
+    .replace(/([^\n])([2-9]\.\s+)/g, "$1\n$2")
+    .replace(/^([1-9]\.)\s*/gm, "$1 ")
+    .trim();
 }
 
 function createCoalescedPresentationStream(
@@ -1304,6 +1366,11 @@ function selectVisibleAssistantOutput(
 
 function isPromptEchoOutput(output: string): boolean {
   return /<memory>[\s\S]*<\/memory>/.test(output) && /<message>[\s\S]*<\/message>/.test(output);
+}
+
+function formatRuntimeUnavailableMessage(error: string | undefined): string {
+  const reason = error?.trim() || "runtime unavailable";
+  return `LLM 运行器暂不可用：${reason}。请检查 Kiro relay 或 runtime 配置后重试。`;
 }
 
 function isValidGeneratedConfigDocument(document: ConfigDocument): boolean {
@@ -2180,11 +2247,13 @@ function buildAgentsGenerationPrompt(
     "3. 澄清需求时，一次只问一个问题，不得一次抛出多个问题。",
     "4. 每次提问应优先给出 2 到 4 个候选选项；如果能够判断，应明确给出推荐项。",
     "5. 在给出候选项时，必须允许用户直接自由回答，不能把用户限制成只能选编号。",
-    "6. 当核心工作涉及 PRD，且管理员配置了 Console、IMM、计量计费等必须确认项时，必须逐项确认。",
-    "7. 一次只能问一个管理员指定项。",
-    "8. 不得要求用户使用组合格式一次回复多个确认项，例如 1a 2a 3a。",
-    "9. Console、IMM、计量计费等项必须分别完成确认后，才能输出 PRD。",
-    "10. 不要重复 soul 里的身份、性格和角色气质；不要写入敏感信息。",
+    "6. 候选项必须逐项独立成行，格式固定为 `1. 内容`、`2. 内容`、`3. 内容`；不得输出 `推荐2.` 或 `4.其他` 这类粘连格式。",
+    "7. 推荐说明必须单独成句，例如 `推荐选择：1，因为...`，不要写在候选项行尾。",
+    "8. 当核心工作涉及 PRD，且管理员配置了 Console、IMM、计量计费等必须确认项时，必须逐项确认。",
+    "9. 一次只能问一个管理员指定项。",
+    "10. 不得要求用户使用组合格式一次回复多个确认项，例如 1a 2a 3a。",
+    "11. Console、IMM、计量计费等项必须分别完成确认后，才能输出 PRD。",
+    "12. 不要重复 soul 里的身份、性格和角色气质；不要写入敏感信息。",
     "",
     "输出要求：",
     "1. 只输出简短确认语和一个 document block。",
@@ -2275,6 +2344,8 @@ function buildFallbackAgentsDocument(
       "- 澄清需求时，一次只问一个问题，不要一次抛出多个问题。",
       "- 每次提问优先给出 2 到 4 个候选选项，方便用户直接选择。",
       "- 能够判断时先给推荐项，再让用户确认或修正。",
+      "- 候选项必须逐项独立成行，格式固定为 `1. 内容`、`2. 内容`、`3. 内容`。",
+      "- 推荐说明必须单独成句，例如 `推荐选择：1，因为...`，不要写在候选项行尾。",
       "- 用户也可以直接自由回答，不得强制用户只能回复编号。",
       "- 输出结论前要显式处理约束、风险、范围和待确认事项。",
       ...prdRule,

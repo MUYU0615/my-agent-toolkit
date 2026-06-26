@@ -463,7 +463,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url === "http://data-service/v1/global-documents") {
@@ -566,7 +571,18 @@ describe("bot-host server", () => {
           user_id: "user-a",
           conversation_id: "conv-1",
           runtime: "mock",
-          prompt: "hello",
+          prompt: [
+            "<memory>",
+            "[bot-config/prd-bot] soul",
+            "# Soul",
+            "",
+            "你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            "</memory>",
+            "",
+            "<message>",
+            "hello",
+            "</message>",
+          ].join("\n"),
         },
       },
     );
@@ -982,7 +998,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1111,7 +1132,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1233,7 +1259,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1354,7 +1385,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1488,7 +1524,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1633,7 +1674,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1763,7 +1809,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -1852,7 +1903,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -2146,7 +2202,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -2358,7 +2419,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -2501,8 +2567,16 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
@@ -2605,8 +2679,16 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
@@ -2710,8 +2792,16 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
@@ -3088,7 +3178,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -3295,17 +3390,39 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
           return Response.json([]);
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            memory_doc_id: "doc-soul",
+            bot_id: "prd-bot",
+            title: "soul",
+            content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+          });
         }
 
         if (request.url === "http://llm-runner/v1/chat") {
@@ -3341,10 +3458,13 @@ describe("bot-host server", () => {
       last = await response.json() as { output: string; ready?: boolean };
     }
 
-    expect(last).toMatchObject({
-      output: "初始化文档生成失败：生成结果仍是模板占位符。请回复“确认”重新生成，或说明需要修改的配置。",
+    expect(last?.output).toContain("你希望它用什么方式和你交互？");
+    expect(calls.find((call) => call.url === "http://data-service/v1/bot-config-documents")).toMatchObject({
+      body: expect.objectContaining({
+        title: "soul",
+        content: expect.stringContaining("你是产品经理助手。"),
+      }),
     });
-    expect(calls.map((call) => call.url)).not.toContain("http://data-service/v1/bot-config-documents");
     expect(calls.map((call) => call.url)).not.toContain("http://data-service/v1/bots/prd-bot/ready");
   });
 
@@ -3384,17 +3504,43 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
           return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/internal/pending-generated-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            memory_doc_id: "doc-soul",
+            bot_id: "prd-bot",
+            title: "soul",
+            content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+          });
         }
 
         if (request.url === "http://llm-runner/v1/chat") {
@@ -3429,10 +3575,219 @@ describe("bot-host server", () => {
     }));
 
     expect(response.status).toBe(200);
+    const payload = await response.json() as { output: string };
+    expect(payload.output).toContain("Soul 配置已确认，正在生成 soul。");
+    expect(payload.output).toContain("Soul 已生成。");
+    expect(payload.output).toContain("请选择角色。");
     expect(prompts[0]).toContain("沟通风格：简洁直接");
-    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
-      soul_answers: ["产品经理", "1"],
+  });
+
+  it("falls back to local soul generation when the runtime exits", async () => {
+    const initializationSessions = new Map<string, MockInitializationSession>();
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT"
+          ? await request.json().catch(() => undefined)
+          : undefined;
+        const initializationSessionResponse = mockInitializationSessionResponse(request, body, initializationSessions);
+        if (initializationSessionResponse) {
+          return initializationSessionResponse;
+        }
+        const enabledRolesResponse = mockEnabledRolesResponse(request);
+        if (enabledRolesResponse) {
+          return enabledRolesResponse;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
+            is_admin: true,
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          return Response.json({
+            error: "runtime exited with code 1",
+            code: "runtime_exit",
+            details: "fetch failed",
+          }, { status: 502 });
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            memory_doc_id: "doc-soul",
+            bot_id: "prd-bot",
+            title: "soul",
+            content: "# Soul\n\n你是产品经理机器人。",
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
     });
+    initializationSessions.set("prd-bot:admin-a:conv-init", {
+      session_id: "init-soul",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-init",
+      phase: "soul",
+      soul_answers: ["产品经理机器人", "1"],
+      agents_answers: [],
+      status: "active",
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "确认", runtime: "kiro" }),
+    }));
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { output: string };
+    expect(payload.output).toContain("Soul 配置已确认，正在生成 soul。");
+    expect(payload.output).toContain("Soul 已生成。");
+    expect(payload.output).toContain("请选择角色。");
+    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
+      phase: "role_select",
+    });
+    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).not.toHaveProperty("generation_in_progress");
+  });
+
+  it("accepts generated soul output and advances to role selection", async () => {
+    const prompts: string[] = [];
+    const initializationSessions = new Map<string, MockInitializationSession>();
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT"
+          ? await request.json().catch(() => undefined)
+          : undefined;
+        const initializationSessionResponse = mockInitializationSessionResponse(request, body, initializationSessions);
+        if (initializationSessionResponse) {
+          return initializationSessionResponse;
+        }
+        const enabledRolesResponse = mockEnabledRolesResponse(request);
+        if (enabledRolesResponse) {
+          return enabledRolesResponse;
+        }
+        const roleQuestionsResponse = mockRoleQuestionsResponse(request);
+        if (roleQuestionsResponse) {
+          return roleQuestionsResponse;
+        }
+        const globalDocumentsResponse = mockGlobalDocumentsResponse(request);
+        if (globalDocumentsResponse) {
+          return globalDocumentsResponse;
+        }
+        const roleDocumentsResponse = mockRoleDocumentsResponse(request);
+        if (roleDocumentsResponse) {
+          return roleDocumentsResponse;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
+            is_admin: true,
+          });
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            memory_doc_id: "doc-soul",
+            bot_id: "prd-bot",
+            title: "soul",
+            content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          prompts.push((body as { prompt?: string } | undefined)?.prompt ?? "");
+          return Response.json({
+            run_id: "run-soul",
+            output: [
+              "Soul 已生成。",
+              "~document:private/soul.md",
+              "# Soul",
+              "我是 PRD 助手。",
+              "~/document",
+            ].join("\n"),
+          });
+        }
+
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+    initializationSessions.set("prd-bot:admin-a:conv-init", {
+      session_id: "init-soul",
+      bot_id: "prd-bot",
+      wecom_user_id: "admin-a",
+      conversation_id: "conv-init",
+      phase: "soul",
+      soul_answers: ["产品经理", "1"],
+      agents_answers: [],
+      status: "active",
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "prd-bot", wecom_user_id: "admin-a", text: "确认", runtime: "mock" }),
+    }));
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { output: string };
+    expect(payload.output).toContain("Soul 配置已确认，正在生成 soul。");
+    expect(payload.output).toContain("Soul 已生成。");
+    expect(payload.output).toContain("请选择角色。");
+    expect(payload.output).not.toContain("初始化文档生成失败：");
+    expect(prompts[0]).toContain("请根据以下 Soul 引导配置生成 soul 文档。");
   });
 
   it("retries failed agents generation without appending retry text", async () => {
@@ -3471,17 +3826,43 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
           return Response.json([]);
+        }
+
+        if (request.url.startsWith("http://data-service/internal/pending-generated-documents")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            memory_doc_id: "mem-soul",
+            bot_id: "prd-bot",
+            title: "soul",
+            content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+          });
         }
 
         if (request.url === "http://llm-runner/v1/chat") {
@@ -3531,10 +3912,10 @@ describe("bot-host server", () => {
     }));
 
     expect(response.status).toBe(200);
+    const payload = await response.json() as { output: string };
+    expect(payload.output).toContain("工作方式配置已确认，正在生成 agents.md。");
+    expect(payload.output).toContain("初始化完成，可以开始工作。");
     expect(prompts[0]).toContain("角色：role-product-manager");
-    expect(initializationSessions.get("prd-bot:admin-a:conv-init")).toMatchObject({
-      agents_answers: agentsAnswers,
-    });
   });
 
   it("falls back to deterministic initialization documents when document generation returns plain text", async () => {
@@ -3574,24 +3955,34 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "initializing",
+            bot_id: "prd-bot",
+            wecom_user_id: "admin-a",
+            conversation: {
+              conversation_id: "conv-init",
+              bot_id: "prd-bot",
+              wecom_user_id: "admin-a",
+              channel: "wecom_direct",
+              purpose: "init",
+            },
             is_admin: true,
-            conversation: { conversation_id: "conv-init", purpose: "init" },
           });
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
           return Response.json([]);
         }
 
-        if (request.url === "http://llm-runner/v1/chat") {
-          return Response.json({
-            run_id: "run-plain-text",
-            output: "fake-kiro: 请根据以下管理员初始化配置生成两个文档块：soul 和 agents.md。",
-          });
+        if (request.url.startsWith("http://data-service/internal/pending-generated-documents")) {
+          return Response.json([]);
         }
 
         if (request.url === "http://data-service/v1/bot-config-documents") {
@@ -3599,6 +3990,13 @@ describe("bot-host server", () => {
             memory_doc_id: `mem-${(body as { title: string }).title}`,
             ...(body as object),
           }, { status: 201 });
+        }
+
+        if (request.url === "http://llm-runner/v1/chat") {
+          return Response.json({
+            run_id: "run-plain-text",
+            output: "fake-kiro: 请根据以下管理员初始化配置生成两个文档块：soul 和 agents.md。",
+          });
         }
 
         if (request.url === "http://data-service/v1/bots/prd-bot/ready") {
@@ -3738,7 +4136,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -4070,7 +4473,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url === "http://data-service/v1/memory-documents/current?scope=bot&owner_id=prd-bot") {
@@ -5161,7 +5569,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5326,7 +5739,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5509,7 +5927,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5632,7 +6055,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5685,6 +6113,106 @@ describe("bot-host server", () => {
     });
   });
 
+  it("normalizes glued numbered options in streamed replies", async () => {
+    const sent: Array<{ text: string; finish: boolean }> = [];
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "kiro",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-1" },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat/stream") {
+          return new Response([
+            JSON.stringify({ type: "run", run_id: "run-1" }),
+            JSON.stringify({
+              type: "chunk",
+              content: [
+                "这个语音转文字主要用在什么场景？\n",
+                "1. IM聊天内语音消息转文字——最贴合环信 IM 主场景，推荐2. 实时音视频通话/会议的字幕转写\n",
+                "3. 音频文件离线批量转写\n",
+                "4.其他场景（你直接描述）",
+              ].join(""),
+            }),
+            JSON.stringify({ type: "done" }),
+          ].join("\n") + "\n", {
+            headers: { "content-type": "application/x-ndjson" },
+          });
+        }
+
+        if (request.url === "http://log-service/v1/chat-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+      logServiceUrl: "http://log-service",
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(_conversationId, text, options) {
+          sent.push({ text, finish: options?.finish ?? true });
+        },
+      },
+    });
+
+    await worker.start();
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "user-a",
+      text: "语音转文字的PRD",
+    });
+
+    expect(sent.at(-1)).toEqual({
+      text: [
+        "这个语音转文字主要用在什么场景？",
+        "1. IM聊天内语音消息转文字——最贴合环信 IM 主场景，推荐",
+        "2. 实时音视频通话/会议的字幕转写",
+        "3. 音频文件离线批量转写",
+        "4. 其他场景（你直接描述）",
+      ].join("\n"),
+      finish: true,
+    });
+  });
+
   it("refreshes pending wecom stream updates on a fixed interval", async () => {
     const sent: Array<{ text: string; finish: boolean }> = [];
     let messageHandler:
@@ -5717,7 +6245,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5800,7 +6333,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -5854,6 +6392,100 @@ describe("bot-host server", () => {
       { text: "正在思考...", finish: false },
       { text: "hello", finish: false },
       { text: "hello world", finish: true },
+    ]);
+  });
+
+  it("reports runtime stream errors without falling back to generic worker failure", async () => {
+    const sent: Array<{ text: string; finish: boolean }> = [];
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "kiro",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
+
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-1" },
+          });
+        }
+
+        if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
+        }
+
+        if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
+          return Response.json([]);
+        }
+
+        if (request.url === "http://llm-runner/v1/chat/stream") {
+          const encoder = new TextEncoder();
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode(`${JSON.stringify({ type: "run", run_id: "run-1" })}\n`));
+              controller.enqueue(encoder.encode(`${JSON.stringify({
+                type: "error",
+                error: "runtime exited with code 1",
+                code: "runtime_exit",
+                details: "fetch failed",
+              })}\n`));
+              controller.close();
+            },
+          });
+          return new Response(body, {
+            headers: { "content-type": "application/x-ndjson" },
+          });
+        }
+
+        if (request.url === "log-service/v1/chat-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(_conversationId, text, options) {
+          sent.push({ text, finish: options?.finish ?? true });
+        },
+      },
+    });
+
+    await worker.start();
+    await messageHandler?.({
+      conversationId: "conversation-a",
+      userId: "user-a",
+      text: "hello",
+    });
+
+    expect(sent).toEqual([
+      { text: "正在思考...", finish: false },
+      { text: "LLM 运行器暂不可用：runtime exited with code 1。请检查 Kiro relay 或 runtime 配置后重试。", finish: true },
     ]);
   });
 
@@ -6032,7 +6664,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {
@@ -6497,7 +7134,12 @@ describe("bot-host server", () => {
         }
 
         if (request.url.startsWith("http://data-service/v1/bots/") && request.url.endsWith("/config-documents")) {
-          return Response.json([]);
+          return Response.json([
+            {
+              title: "soul",
+              content: "# Soul\n\n你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
+            },
+          ]);
         }
 
         if (request.url.startsWith("http://data-service/v1/memory-documents/current?")) {

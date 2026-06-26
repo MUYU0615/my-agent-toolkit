@@ -2156,9 +2156,6 @@ function migrate(db: Database.Database): void {
       updated_at text not null
     );
 
-    create index if not exists idx_conversations_scope_key on conversations(scope_key, updated_at desc, created_at desc);
-    create index if not exists idx_conversations_bot_scope on conversations(bot_id, wecom_user_id, channel, purpose, updated_at desc, created_at desc);
-
     create table if not exists conversation_scope_states (
       scope_key text primary key,
       conversation_id text not null,
@@ -2447,6 +2444,47 @@ function migrate(db: Database.Database): void {
   addColumnIfMissing(db, "bots", "last_wecom_check_at", "text");
   addColumnIfMissing(db, "bots", "last_wecom_error", "text");
   addColumnIfMissing(db, "admin_claims", "code", "text not null default ''");
+  addColumnIfMissing(db, "conversations", "conversation_key", "text");
+  addColumnIfMissing(db, "conversations", "scope_key", "text");
+  addColumnIfMissing(db, "conversations", "display_name", "text");
+  addColumnIfMissing(db, "conversations", "is_active", "integer not null default 1");
+  db.prepare(
+    `
+      update conversations
+      set conversation_key = bot_id || ':' || wecom_user_id || ':' || channel || ':' || purpose
+      where conversation_key is null or conversation_key = ''
+    `,
+  ).run();
+  db.prepare(
+    `
+      update conversations
+      set scope_key = bot_id || ':' || wecom_user_id || ':' || channel || ':' || purpose
+      where scope_key is null or scope_key = ''
+    `,
+  ).run();
+  db.prepare(
+    `
+      insert into conversation_scope_states (scope_key, conversation_id, updated_at)
+      select source.scope_key, source.conversation_id, source.updated_at
+      from conversations source
+      where source.scope_key is not null
+        and source.scope_key != ''
+        and source.is_active = 1
+        and source.updated_at = (
+          select max(latest.updated_at)
+          from conversations latest
+          where latest.scope_key = source.scope_key
+            and latest.is_active = 1
+        )
+      on conflict(scope_key) do nothing
+    `,
+  ).run();
+  db.prepare(
+    "create index if not exists idx_conversations_scope_key on conversations(scope_key, updated_at desc, created_at desc)",
+  ).run();
+  db.prepare(
+    "create index if not exists idx_conversations_bot_scope on conversations(bot_id, wecom_user_id, channel, purpose, updated_at desc, created_at desc)",
+  ).run();
   addColumnIfMissing(db, "initialization_sessions", "selected_role_id", "text");
   db.prepare(
     "create unique index if not exists idx_bots_wecom_bot_id_unique on bots (wecom_bot_id) where wecom_bot_id is not null",

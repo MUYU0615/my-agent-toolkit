@@ -42,6 +42,10 @@ echo "BUILD_TIME=$BUILD_TIME"
 echo "BUILD_TIMEOUT_SECONDS=$BUILD_TIMEOUT_SECONDS"
 echo "Services: ${SERVICES[*]}"
 
+if [[ "${START_KIRO_RELAY:-1}" == "1" ]]; then
+  "$ROOT_DIR/scripts/dev-kiro-relay.sh"
+fi
+
 (
   cd "$ROOT_DIR"
   export BUILD_SHA BUILD_TIME
@@ -97,3 +101,8 @@ for entry in "${HEALTH_URLS[@]}"; do
 done
 
 echo "Redeploy complete. All services report git_sha=$BUILD_SHA"
+
+if ! curl -fsS "http://127.0.0.1:${KIRO_HOST_RELAY_PORT:-8210}/health" >/dev/null 2>&1; then
+  echo "Warning: Kiro host relay is not reachable on localhost:${KIRO_HOST_RELAY_PORT:-8210}."
+  echo "Run ./scripts/dev-kiro-relay.sh before testing real kiro runtime messages."
+fi

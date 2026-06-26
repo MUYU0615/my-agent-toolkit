@@ -2164,6 +2164,7 @@ export function seedDefaultRoleConfig(store: Pick<
       "- 一次只问一个关键问题。",
       "- 如果采用逐句引导，则每次都要给出候选项，并允许用户直接自由回答。",
       "- 如果能够判断，应先给出推荐项，再让用户确认或修正。",
+      "- 候选项必须逐项独立成行，使用 `1. 内容`、`2. 内容` 格式；推荐说明必须单独成句，不得写在候选项行尾。",
       "- 输出应结构化、可执行，避免空泛表述。",
     ].join("\n"),
     enabled: true,
@@ -2202,10 +2203,6 @@ export function seedDefaultRoleConfig(store: Pick<
           "需求评审",
           "用户故事",
           "拆解清单",
-        ]),
-        buildSingleChoiceQuestion("structured_conclusion", "是否强调结构化结论？", 40, [
-          "是，先给结论再展开",
-          "否，按过程展开即可",
         ]),
         buildSingleChoiceQuestion("recommendation_first", "是否需要优先给推荐方案？", 50, [
           "需要",

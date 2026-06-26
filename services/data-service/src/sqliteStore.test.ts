@@ -101,6 +101,60 @@ describe("sqlite data store", () => {
     second.close?.();
   });
 
+  it("migrates existing conversation rows without scope keys", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const raw = new Database(dbPath);
+    raw.exec(`
+      create table bots (
+        bot_id text primary key,
+        name text not null,
+        runtime text not null,
+        status text not null,
+        created_at text not null,
+        updated_at text not null
+      );
+      create table conversations (
+        conversation_id text primary key,
+        conversation_key text not null,
+        bot_id text not null,
+        wecom_user_id text not null,
+        channel text not null,
+        purpose text not null,
+        display_name text,
+        created_at text not null,
+        updated_at text not null
+      );
+      insert into bots (
+        bot_id, name, runtime, status, created_at, updated_at
+      ) values (
+        'prd-bot', 'PRD Bot', 'kiro', 'ready',
+        '2026-06-25T00:00:00.000Z', '2026-06-25T00:00:00.000Z'
+      );
+      insert into conversations (
+        conversation_id, conversation_key, bot_id, wecom_user_id,
+        channel, purpose, display_name, created_at, updated_at
+      ) values (
+        'conv-a', 'legacy-key', 'prd-bot', 'user-a',
+        'wecom_direct', 'normal_chat', null,
+        '2026-06-25T00:00:00.000Z', '2026-06-25T00:00:00.000Z'
+      );
+    `);
+    raw.close();
+
+    const store = createSqliteDataStore(dbPath);
+    expect(store.resolveConversation({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+    })).toMatchObject({
+      conversation_id: "conv-a",
+    });
+    store.close?.();
+  });
+
   it("persists pending and claimed admin claim detail states across store instances", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);
@@ -624,15 +678,14 @@ describe("sqlite data store", () => {
       }),
       expect.objectContaining({
         role_id: customizedRole.role_id,
-        key: "structured_conclusion",
-        title: "是否强调结构化结论？",
-      }),
-      expect.objectContaining({
-        role_id: customizedRole.role_id,
         key: "recommendation_first",
         title: "是否需要优先给推荐方案？",
       }),
     ]));
+    expect(
+      store.listRoleQuestions(customizedRole.role_id, { includeDisabled: true })
+        .map((question) => question.key),
+    ).not.toContain("structured_conclusion");
     store.close?.();
   });
 
@@ -704,15 +757,14 @@ describe("sqlite data store", () => {
       existingQuestion,
       expect.objectContaining({
         role_id: productManager.role_id,
-        key: "structured_conclusion",
-        title: "是否强调结构化结论？",
-      }),
-      expect.objectContaining({
-        role_id: productManager.role_id,
         key: "recommendation_first",
         title: "是否需要优先给推荐方案？",
       }),
     ]));
+    expect(
+      store.listRoleQuestions(productManager.role_id, { includeDisabled: true })
+        .map((question) => question.key),
+    ).not.toContain("structured_conclusion");
     store.close?.();
   });
 
