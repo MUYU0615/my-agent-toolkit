@@ -1859,7 +1859,7 @@ async function handleConversationCommand(
     });
     return {
       output: [
-        `已创建并切换到新会话：${formatConversationLabel(created, 1)}`,
+        `已创建并切换到新会话：${formatConversationLabel(created)}`,
         `会话 ID：${created.conversation_id}`,
       ].join("\n"),
     };
@@ -1867,7 +1867,9 @@ async function handleConversationCommand(
 
   if (command.kind === "open") {
     const conversations = await listConversations(config, baseInput);
-    const target = conversations[command.index ? command.index - 1 : -1];
+    const target = conversations.find(
+      (conversation) => conversation.sequence_no === command.index,
+    );
     if (!target) {
       return {
         blocked: true,
@@ -1881,7 +1883,7 @@ async function handleConversationCommand(
       conversation_id: target.conversation_id,
     });
     return {
-      output: `已切换到会话：${formatConversationLabel(opened, command.index ?? 1)}。`,
+      output: `已切换到会话：${formatConversationLabel(opened)}。`,
     };
   }
 
@@ -1916,6 +1918,7 @@ function buildHelpTable(): string {
 
 function buildConversationHistoryTable(conversations: {
   conversation_id: string;
+  sequence_no: number;
   display_name?: string;
   is_active: boolean;
   created_at: string;
@@ -1929,9 +1932,9 @@ function buildConversationHistoryTable(conversations: {
     "",
     "| 序号 | 会话 | 状态 | 更新时间 |",
     "| --- | --- | --- | --- |",
-    ...conversations.map((conversation, index) => [
-      `${index + 1}`,
-      formatConversationLabel(conversation, index + 1),
+    ...conversations.map((conversation) => [
+      `${conversation.sequence_no}`,
+      formatConversationLabel(conversation),
       conversation.is_active ? "当前" : "历史",
       conversation.updated_at,
     ].join(" | ")),
@@ -1939,11 +1942,16 @@ function buildConversationHistoryTable(conversations: {
 }
 
 function formatConversationLabel(
-  conversation: { conversation_id: string; display_name?: string },
-  fallbackIndex?: number,
+  conversation: {
+    conversation_id: string;
+    sequence_no?: number;
+    display_name?: string;
+  },
 ): string {
   return conversation.display_name?.trim()
-    || (fallbackIndex ? `会话 ${fallbackIndex}` : conversation.conversation_id);
+    || (conversation.sequence_no
+      ? `会话 ${conversation.sequence_no}`
+      : conversation.conversation_id);
 }
 
 function buildEnvSummary(items: BotEnvVarMetadataDto[]): string {

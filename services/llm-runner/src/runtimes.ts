@@ -4,11 +4,13 @@ import { redactText } from "./redact.js";
 
 export interface RuntimeResult {
   runner_session_id: string;
+  provider_session_id?: string;
   output: string;
 }
 
 export interface RuntimeStreamResult {
   runner_session_id: string;
+  provider_session_id: Promise<string | undefined>;
   stream: ReadableStream<string>;
 }
 
@@ -17,15 +19,19 @@ export interface CliRuntimeConfig {
   args: string[];
   timeout_ms: number;
   env?: Record<string, string>;
-  resume?: boolean;
+  provider_session_id?: string;
 }
+
+const runtimeMetadataPrefix = "__MY_AGENT_TOOLKIT_RUNTIME_META__";
+const kiroSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class RuntimeExecutionError extends Error {
   constructor(
     public readonly code:
       | "runtime_exit"
       | "runtime_timeout"
-      | "runtime_spawn_error",
+      | "runtime_spawn_error"
+      | "runtime_session_error",
     public readonly status: number,
     message: string,
     public readonly details?: string,
@@ -48,10 +54,10 @@ export async function runCliRuntime(
   request: ChatRequest,
 ): Promise<RuntimeResult> {
   const runnerSessionId = buildRunnerSessionId(request.runtime, request);
-  const output = await runProcess(config, request.prompt, runnerSessionId);
+  const result = await runProcess(config, request.prompt);
   return {
     runner_session_id: runnerSessionId,
-    output,
+    ...result,
   };
 }
 
@@ -60,6 +66,7 @@ export function runMockRuntimeStream(
 ): RuntimeStreamResult {
   return {
     runner_session_id: buildRunnerSessionId("mock", request),
+    provider_session_id: Promise.resolve(undefined),
     stream: new ReadableStream<string>({
       start(controller) {
         controller.enqueue(`mock: ${request.prompt}`);
@@ -76,7 +83,7 @@ export function runCliRuntimeStream(
   const runnerSessionId = buildRunnerSessionId(request.runtime, request);
   return {
     runner_session_id: runnerSessionId,
-    stream: streamProcess(config, request.prompt, runnerSessionId),
+    ...streamProcess(config, request.prompt),
   };
 }
 
@@ -89,9 +96,12 @@ export function buildRunnerSessionId(
   );
 }
 
-function runProcess(config: CliRuntimeConfig, input: string, runnerSessionId: string): Promise<string> {
+function runProcess(
+  config: CliRuntimeConfig,
+  input: string,
+): Promise<{ output: string; provider_session_id?: string }> {
   return new Promise((resolve, reject) => {
-    const args = argsForRunnerSession(config.args, Boolean(config.resume));
+    const args = argsForRunnerSession(config.args, config.provider_session_id);
     const child = spawn(config.command, args, {
       env: { ...process.env, ...config.env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -140,29 +150,44 @@ function runProcess(config: CliRuntimeConfig, input: string, runnerSessionId: st
       settled = true;
       clearTimeout(timeout);
 
+      const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
       if (code !== 0) {
         reject(
           new RuntimeExecutionError(
             "runtime_exit",
             502,
             `runtime exited with code ${code ?? "unknown"}`,
-            redactText(Buffer.concat(stderr).toString()),
+            runtimeStderr.diagnostics
+              ? redactText(runtimeStderr.diagnostics)
+              : undefined,
           ),
         );
         return;
       }
 
-      resolve(Buffer.concat(stdout).toString());
+      resolve({
+        output: Buffer.concat(stdout).toString(),
+        ...(runtimeStderr.provider_session_id ?? config.provider_session_id
+          ? { provider_session_id: runtimeStderr.provider_session_id ?? config.provider_session_id }
+          : {}),
+      });
     });
 
     child.stdin.end(input);
   });
 }
 
-function streamProcess(config: CliRuntimeConfig, input: string, runnerSessionId: string): ReadableStream<string> {
-  return new ReadableStream<string>({
+function streamProcess(
+  config: CliRuntimeConfig,
+  input: string,
+): Pick<RuntimeStreamResult, "provider_session_id" | "stream"> {
+  let resolveProviderSessionId!: (value: string | undefined) => void;
+  const providerSessionId = new Promise<string | undefined>((resolve) => {
+    resolveProviderSessionId = resolve;
+  });
+  const stream = new ReadableStream<string>({
     start(controller) {
-      const args = argsForRunnerSession(config.args, Boolean(config.resume));
+      const args = argsForRunnerSession(config.args, config.provider_session_id);
       const child = spawn(config.command, args, {
         env: { ...process.env, ...config.env },
         stdio: ["pipe", "pipe", "pipe"],
@@ -176,6 +201,7 @@ function streamProcess(config: CliRuntimeConfig, input: string, runnerSessionId:
         }
         settled = true;
         clearTimeout(timeout);
+        resolveProviderSessionId(undefined);
         controller.error(error);
       };
       const timeout = setTimeout(() => {
@@ -203,36 +229,107 @@ function streamProcess(config: CliRuntimeConfig, input: string, runnerSessionId:
         }
         settled = true;
         clearTimeout(timeout);
+        const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
         if (code !== 0) {
+          resolveProviderSessionId(undefined);
           controller.error(
             new RuntimeExecutionError(
               "runtime_exit",
               502,
               `runtime exited with code ${code ?? "unknown"}`,
-              redactText(Buffer.concat(stderr).toString()),
+              runtimeStderr.diagnostics
+                ? redactText(runtimeStderr.diagnostics)
+                : undefined,
             ),
           );
           return;
         }
+        resolveProviderSessionId(
+          runtimeStderr.provider_session_id ?? config.provider_session_id,
+        );
         controller.close();
       });
 
       child.stdin.end(input);
     },
   });
+  return {
+    provider_session_id: providerSessionId,
+    stream,
+  };
 }
 
-function argsForRunnerSession(args: string[], resume: boolean): string[] {
-  if (!resume) {
+function argsForRunnerSession(args: string[], providerSessionId?: string): string[] {
+  if (args.includes("--resume")) {
+    throw new RuntimeExecutionError(
+      "runtime_session_error",
+      500,
+      "bare --resume is not allowed",
+    );
+  }
+  if (args.includes("--resume-id") || args.some((arg) => arg.startsWith("--resume-id="))) {
+    throw new RuntimeExecutionError(
+      "runtime_session_error",
+      500,
+      "runtime args must not contain a fixed --resume-id",
+    );
+  }
+  if (!providerSessionId) {
     return [...args];
+  }
+  if (!isKiroSessionId(providerSessionId)) {
+    throw new RuntimeExecutionError(
+      "runtime_session_error",
+      500,
+      "invalid provider session id",
+    );
   }
 
   const chatIndex = args.indexOf("chat");
-  if (chatIndex < 0 || args.includes("--resume") || args.includes("--resume-id")) {
-    return [...args];
+  if (chatIndex < 0) {
+    throw new RuntimeExecutionError(
+      "runtime_session_error",
+      500,
+      "kiro chat command is required to resume a session",
+    );
   }
 
   const nextArgs = [...args];
-  nextArgs.splice(chatIndex + 1, 0, "--resume");
+  nextArgs.splice(chatIndex + 1, 0, "--resume-id", providerSessionId);
   return nextArgs;
+}
+
+function parseRuntimeStderr(stderr: string): {
+  provider_session_id?: string;
+  diagnostics: string;
+} {
+  let providerSessionId: string | undefined;
+  const diagnostics: string[] = [];
+  for (const line of stderr.split(/\r?\n/)) {
+    if (!line.startsWith(runtimeMetadataPrefix)) {
+      if (line) {
+        diagnostics.push(line);
+      }
+      continue;
+    }
+
+    try {
+      const metadata = JSON.parse(line.slice(runtimeMetadataPrefix.length)) as {
+        provider_session_id?: unknown;
+      };
+      if (isKiroSessionId(metadata.provider_session_id)) {
+        providerSessionId = metadata.provider_session_id;
+      }
+    } catch {
+      diagnostics.push("invalid runtime metadata");
+    }
+  }
+  return {
+    ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
+    diagnostics: diagnostics.join("\n"),
+  };
+}
+
+function isKiroSessionId(value: unknown): value is string {
+  return typeof value === "string" && kiroSessionIdPattern.test(value);
 }

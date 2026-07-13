@@ -48,7 +48,8 @@ Important behavior:
 - `--no-interactive` prevents the CLI from waiting for terminal input.
 - `--trust-all-tools` or `-a` allows the agent to execute tools without confirmation prompts.
 - A selected session uses `--resume-id <SESSION_ID>`.
-- Ongoing same-user sessions use `--resume` when the runtime already has a Kiro session.
+- Ongoing sessions persist the real Kiro UUID and resume only with `--resume-id <SESSION_ID>`.
+- Never use bare `--resume`; it resumes the most recent session for the working directory and is not safe for multiple users or conversations.
 - `kiro-cli chat --list-sessions` is used for `/history`, `/open N`, and naming helpers.
 - Keep bot runtime state under `workspace/cli-home/kiro` through `KIRO_HOME`.
 - Host auth/config is mounted read-only separately, usually at `/host/kiro-auth`; it is not user content and must not be inspected by the model.

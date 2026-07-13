@@ -2212,6 +2212,7 @@ function migrate(db: Database.Database): void {
       conversation_id text primary key,
       conversation_key text not null,
       scope_key text not null,
+      sequence_no integer not null,
       bot_id text not null,
       wecom_user_id text not null,
       channel text not null,
@@ -2523,6 +2524,7 @@ function migrate(db: Database.Database): void {
   addColumnIfMissing(db, "admin_claims", "code", "text not null default ''");
   addColumnIfMissing(db, "conversations", "conversation_key", "text");
   addColumnIfMissing(db, "conversations", "scope_key", "text");
+  addColumnIfMissing(db, "conversations", "sequence_no", "integer");
   addColumnIfMissing(db, "conversations", "display_name", "text");
   addColumnIfMissing(db, "conversations", "is_active", "integer not null default 1");
   db.prepare(
@@ -2537,6 +2539,26 @@ function migrate(db: Database.Database): void {
       update conversations
       set scope_key = bot_id || ':' || wecom_user_id || ':' || channel || ':' || purpose
       where scope_key is null or scope_key = ''
+    `,
+  ).run();
+  db.prepare(
+    `
+      with ranked as (
+        select
+          conversation_id,
+          row_number() over (
+            partition by scope_key
+            order by created_at asc, conversation_id asc
+          ) as stable_sequence_no
+        from conversations
+      )
+      update conversations
+      set sequence_no = (
+        select ranked.stable_sequence_no
+        from ranked
+        where ranked.conversation_id = conversations.conversation_id
+      )
+      where sequence_no is null or sequence_no < 1
     `,
   ).run();
   db.prepare(
@@ -2561,6 +2583,9 @@ function migrate(db: Database.Database): void {
   ).run();
   db.prepare(
     "create index if not exists idx_conversations_bot_scope on conversations(bot_id, wecom_user_id, channel, purpose, updated_at desc, created_at desc)",
+  ).run();
+  db.prepare(
+    "create unique index if not exists idx_conversations_scope_sequence on conversations(scope_key, sequence_no)",
   ).run();
   addColumnIfMissing(db, "initialization_sessions", "selected_role_id", "text");
   db.prepare(
@@ -2689,7 +2714,7 @@ function getActiveConversationForScope(
   return mapConversationRecord(
     db
       .prepare(
-        "select conversation_id, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where conversation_id = ?",
+        "select conversation_id, sequence_no, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where conversation_id = ?",
       )
       .get(state.conversation_id),
   );
@@ -2702,7 +2727,7 @@ function listConversations(
   getRequiredBot(db, input.bot_id);
   return db
     .prepare(
-      "select conversation_id, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ? order by updated_at desc, created_at desc",
+      "select conversation_id, sequence_no, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ? order by sequence_no desc",
     )
     .all(
       input.bot_id,
@@ -2726,8 +2751,14 @@ function createConversation(
     input.purpose,
   );
   const now = new Date().toISOString();
+  const sequenceNo = (
+    db.prepare(
+      "select coalesce(max(sequence_no), 0) + 1 as sequence_no from conversations where scope_key = ?",
+    ).get(scopeKey) as { sequence_no: number }
+  ).sequence_no;
   const conversation: ConversationRecord = {
     conversation_id: `conv_${crypto.randomUUID()}`,
+    sequence_no: sequenceNo,
     bot_id: bot.bot_id,
     wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
     channel: input.channel,
@@ -2739,20 +2770,20 @@ function createConversation(
   };
   db.transaction(() => {
     db.prepare(
-      "update conversations set is_active = 0, updated_at = ? where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ?",
+      "update conversations set is_active = 0 where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ?",
     ).run(
-      nextIsoTimestamp(now),
       conversation.bot_id,
       conversation.wecom_user_id,
       conversation.channel,
       conversation.purpose,
     );
     db.prepare(
-      "insert into conversations (conversation_id, conversation_key, scope_key, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "insert into conversations (conversation_id, conversation_key, scope_key, sequence_no, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     ).run(
       conversation.conversation_id,
       scopeKey,
       scopeKey,
+      conversation.sequence_no,
       conversation.bot_id,
       conversation.wecom_user_id,
       conversation.channel,
@@ -2784,7 +2815,7 @@ function openConversation(
   const conversation = mapConversationRecord(
     db
       .prepare(
-        "select conversation_id, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where conversation_id = ?",
+        "select conversation_id, sequence_no, bot_id, wecom_user_id, channel, purpose, display_name, is_active, created_at, updated_at from conversations where conversation_id = ?",
       )
       .get(requireText(input.conversation_id, "conversation_id")),
   );
@@ -2801,9 +2832,8 @@ function openConversation(
   const updatedAt = nextIsoTimestamp(conversation.updated_at);
   db.transaction(() => {
     db.prepare(
-      "update conversations set is_active = 0, updated_at = ? where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ? and conversation_id != ?",
+      "update conversations set is_active = 0 where bot_id = ? and wecom_user_id = ? and channel = ? and purpose = ? and conversation_id != ?",
     ).run(
-      updatedAt,
       conversation.bot_id,
       conversation.wecom_user_id,
       conversation.channel,
@@ -3553,6 +3583,7 @@ function mapConversationRecord(row: unknown): ConversationRecord | undefined {
   const record = row as Record<string, unknown>;
   return {
     conversation_id: record.conversation_id as string,
+    sequence_no: Number(record.sequence_no),
     bot_id: record.bot_id as string,
     wecom_user_id: record.wecom_user_id as string,
     channel: record.channel as ConversationChannel,

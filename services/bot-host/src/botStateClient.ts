@@ -70,6 +70,7 @@ export interface BotCapabilityAuditLogDto {
 
 export interface ConversationDto {
   conversation_id: string;
+  sequence_no: number;
   bot_id: string;
   wecom_user_id: string;
   channel: "wecom_direct" | "wecom_group";

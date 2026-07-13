@@ -3,6 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunnerConfig } from "./config.js";
 import { createLlmRunnerServer } from "./server.js";
 
+const providerSessionId = "f2946a26-3735-4b08-8d05-c928010302d5";
+const runtimeMetadata = `__MY_AGENT_TOOLKIT_RUNTIME_META__${JSON.stringify({
+  provider_session_id: providerSessionId,
+})}`;
+
 describe("llm-runner server", () => {
   it("responds to health checks", async () => {
     const previousSha = process.env.APP_BUILD_SHA;
@@ -267,6 +272,7 @@ describe("llm-runner server", () => {
     const command = [
       "const fs = require('node:fs');",
       "fs.appendFileSync(process.env.ARGS_LOG, JSON.stringify(process.argv.slice(1)) + '\\n');",
+      `process.stderr.write(${JSON.stringify(`${runtimeMetadata}\n`)});`,
       "process.stdin.pipe(process.stdout);",
     ].join(" ");
     const storedSessions = new Map<string, unknown>();
@@ -326,13 +332,88 @@ describe("llm-runner server", () => {
       .map((line) => JSON.parse(line));
     expect(argsLines).toEqual([
       ["chat", "--no-interactive"],
-      ["chat", "--resume", "--no-interactive"],
+      ["chat", "--resume-id", providerSessionId, "--no-interactive"],
     ]);
     expect(fetchRequests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
       "GET /internal/runtime-sessions/kiro%3Aprd-bot%3Auser-a%3Aconv-1",
       "PUT /internal/runtime-sessions",
       "GET /internal/runtime-sessions/kiro%3Aprd-bot%3Auser-a%3Aconv-1",
       "PUT /internal/runtime-sessions",
+    ]);
+    expect(storedSessions.get("kiro:prd-bot:user-a:conv-1")).toMatchObject({
+      provider_session_id: providerSessionId,
+    });
+  });
+
+  it("serializes concurrent calls for the same runner session", async () => {
+    const argsLogPath = `/tmp/kiro-runtime-lock-${crypto.randomUUID()}.log`;
+    const command = [
+      "const fs = require('node:fs');",
+      "let input = '';",
+      "process.stdin.on('data', chunk => input += chunk);",
+      "process.stdin.on('end', () => {",
+      "  fs.appendFileSync(process.env.ARGS_LOG, JSON.stringify({ args: process.argv.slice(1), input }) + '\\n');",
+      "  setTimeout(() => {",
+      "    process.stdout.write(input);",
+      `    process.stderr.write(${JSON.stringify(`${runtimeMetadata}\n`)});`,
+      "  }, 40);",
+      "});",
+    ].join(" ");
+    const storedSessions = new Map<string, Record<string, unknown>>();
+    const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input);
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname.startsWith("/internal/runtime-sessions/")) {
+        const runnerSessionId = decodeURIComponent(url.pathname.split("/").pop() ?? "");
+        const session = storedSessions.get(runnerSessionId);
+        return session
+          ? new Response(JSON.stringify(session), { status: 200 })
+          : new Response(JSON.stringify({ error: "runtime session not found" }), { status: 404 });
+      }
+      if (request.method === "PUT" && url.pathname === "/internal/runtime-sessions") {
+        const payload = await request.json() as Record<string, unknown>;
+        storedSessions.set(String(payload.runner_session_id), payload);
+        return new Response(JSON.stringify(payload), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "unexpected request" }), { status: 500 });
+    });
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      data_service_url: "http://data-service:8300",
+      kiro: {
+        command: process.execPath,
+        args: ["-e", command, "chat", "--no-interactive"],
+        timeout_ms: 1000,
+        env: { ARGS_LOG: argsLogPath },
+      },
+      fetch: fetchStub,
+    });
+    const requestFor = (prompt: string) => server.fetch(
+      new Request("http://localhost/v1/chat", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          user_id: "user-a",
+          conversation_id: "conv-lock",
+          runtime: "kiro",
+          prompt,
+        }),
+      }),
+    );
+
+    const responses = await Promise.all([requestFor("first"), requestFor("second")]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    const invocations = (await fs.readFile(argsLogPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { args: string[]; input: string });
+    expect(invocations).toHaveLength(2);
+    expect(invocations.filter(({ args }) => args.includes("--resume-id"))).toHaveLength(1);
+    expect(invocations.find(({ args }) => args.includes("--resume-id"))?.args).toEqual([
+      "chat",
+      "--resume-id",
+      providerSessionId,
+      "--no-interactive",
     ]);
   });
 
@@ -420,6 +501,61 @@ describe("llm-runner server", () => {
       { type: "chunk", content: "llo" },
       { type: "done" },
     ]);
+  });
+
+  it("persists provider session ids after streamed Kiro output completes", async () => {
+    const storedSessions = new Map<string, Record<string, unknown>>();
+    const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input);
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname.startsWith("/internal/runtime-sessions/")) {
+        return new Response(JSON.stringify({ error: "runtime session not found" }), { status: 404 });
+      }
+      if (request.method === "PUT" && url.pathname === "/internal/runtime-sessions") {
+        const payload = await request.json() as Record<string, unknown>;
+        storedSessions.set(String(payload.runner_session_id), payload);
+        return new Response(JSON.stringify(payload), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "unexpected request" }), { status: 500 });
+    });
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      data_service_url: "http://data-service:8300",
+      kiro: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "process.stdout.write('streamed');",
+            `process.stderr.write(${JSON.stringify(`${runtimeMetadata}\n`)});`,
+          ].join(" "),
+        ],
+        timeout_ms: 1000,
+      },
+      fetch: fetchStub,
+    });
+    const response = await server.fetch(
+      new Request("http://localhost/v1/chat/stream", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          user_id: "user-a",
+          conversation_id: "conv-stream-session",
+          runtime: "kiro",
+          prompt: "hello",
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(events.slice(1)).toEqual([
+      { type: "chunk", content: "streamed" },
+      { type: "done" },
+    ]);
+    expect(storedSessions.get("kiro:prd-bot:user-a:conv-stream-session")).toMatchObject({
+      provider_session_id: providerSessionId,
+    });
   });
 
   it("streams final runtime output after an MCP tool call", async () => {

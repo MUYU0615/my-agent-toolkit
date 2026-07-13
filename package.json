@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev:up": "./scripts/dev-up.sh",
+    "dev:down": "./scripts/dev-down.sh",
+    "dev:logs": "./scripts/dev-logs.sh",
+    "dev:status": "./scripts/dev-status.sh",
+    "dev:relay": "./scripts/dev-kiro-relay-watch.sh",
     "test": "vitest run",
     "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service",
     "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service"

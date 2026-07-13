@@ -1184,15 +1184,19 @@ describe("data-service store", () => {
     });
 
     expect(second.conversation_id).not.toBe(first.conversation_id);
-    expect(store.listConversations({
+    expect(first.sequence_no).toBe(1);
+    expect(second.sequence_no).toBe(2);
+    const beforeOpen = store.listConversations({
       bot_id: "prd-bot",
       wecom_user_id: "user-a",
       channel: "wecom_direct",
       purpose: "normal_chat",
-    }).map((conversation) => conversation.display_name)).toEqual([
+    });
+    expect(beforeOpen.map((conversation) => conversation.display_name)).toEqual([
       "第二轮",
       "第一轮",
     ]);
+    expect(beforeOpen.map((conversation) => conversation.sequence_no)).toEqual([2, 1]);
     expect(store.resolveConversation({
       bot_id: "prd-bot",
       wecom_user_id: "user-a",
@@ -1207,7 +1211,17 @@ describe("data-service store", () => {
     });
 
     expect(opened.conversation_id).toBe(first.conversation_id);
+    expect(opened.sequence_no).toBe(1);
     expect(opened.is_active).toBe(true);
+    const afterOpen = store.listConversations({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+    });
+    expect(afterOpen.map((conversation) => conversation.sequence_no)).toEqual([2, 1]);
+    expect(afterOpen.find((conversation) => conversation.sequence_no === 1)?.is_active).toBe(true);
+    expect(afterOpen.find((conversation) => conversation.sequence_no === 2)?.is_active).toBe(false);
     expect(store.resolveConversation({
       bot_id: "prd-bot",
       wecom_user_id: "user-a",

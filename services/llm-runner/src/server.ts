@@ -27,6 +27,7 @@ export interface LlmRunnerServer {
 export function createLlmRunnerServer(
   config: RunnerConfig = loadRunnerConfig(),
 ): LlmRunnerServer {
+  const sessionLocks = createSessionLocks();
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -42,11 +43,11 @@ export function createLlmRunnerServer(
       }
 
       if (request.method === "POST" && url.pathname === "/v1/chat") {
-        return handleChat(request, config);
+        return handleChat(request, config, sessionLocks);
       }
 
       if (request.method === "POST" && url.pathname === "/v1/chat/stream") {
-        return handleChatStream(request, config);
+        return handleChatStream(request, config, sessionLocks);
       }
 
       return jsonResponse({ error: "not found" }, 404);
@@ -71,10 +72,13 @@ function healthResponse(service: string): {
 async function handleChatStream(
   request: Request,
   config: RunnerConfig,
+  sessionLocks: RuntimeSessionLocks,
 ): Promise<Response> {
+  let releaseSessionLock: (() => void) | undefined;
   try {
     const chatRequest = parseChatRequest(await request.json());
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
+    releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntimeStreamResolved(config, runtimeRequest);
     const runId = `run_${crypto.randomUUID()}`;
     const encoder = new TextEncoder();
@@ -114,6 +118,8 @@ async function handleChatStream(
           } catch (error) {
             controller.enqueue(encoder.encode(ndjsonLine(runtimeStreamErrorPayload(error))));
             controller.close();
+          } finally {
+            releaseSessionLock?.();
           }
         },
       }),
@@ -126,6 +132,7 @@ async function handleChatStream(
       },
     );
   } catch (error) {
+    releaseSessionLock?.();
     if (error instanceof UnavailableRuntimeError) {
       return jsonResponse({ error: error.message }, 501);
     }
@@ -183,10 +190,13 @@ function enqueueChunk(
 async function handleChat(
   request: Request,
   config: RunnerConfig,
+  sessionLocks: RuntimeSessionLocks,
 ): Promise<Response> {
+  let releaseSessionLock: (() => void) | undefined;
   try {
     const chatRequest = parseChatRequest(await request.json());
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
+    releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntime(config, runtimeRequest);
     const finalResult = await continueAfterMcpToolCall(config, chatRequest, runtimeResult);
     const response: ChatResponse = {
@@ -216,6 +226,8 @@ async function handleChat(
       { error: error instanceof Error ? error.message : "invalid request" },
       400,
     );
+  } finally {
+    releaseSessionLock?.();
   }
 }
 
@@ -322,11 +334,18 @@ async function runRuntime(
     const runtimeResult = await runCliRuntime(
       {
         ...(await withBotEnv(config, chatRequest)),
-        resume: Boolean(runtimeSession),
+        ...(runtimeSession?.provider_session_id
+          ? { provider_session_id: runtimeSession.provider_session_id }
+          : {}),
       },
       chatRequest,
     );
-    await persistRuntimeSession(config, chatRequest, runtimeResult.runner_session_id, runtimeSession);
+    await persistRuntimeSession(
+      config,
+      chatRequest,
+      runtimeResult.runner_session_id,
+      runtimeResult.provider_session_id,
+    );
     return runtimeResult;
   }
 
@@ -369,11 +388,13 @@ async function runRuntimeStreamResolved(
     const runtimeResult = runCliRuntimeStream(
       {
         ...(await withBotEnv(config, chatRequest)),
-        resume: Boolean(runtimeSession),
+        ...(runtimeSession?.provider_session_id
+          ? { provider_session_id: runtimeSession.provider_session_id }
+          : {}),
       },
       chatRequest,
     );
-    return persistRuntimeSessionAfterStream(config, chatRequest, runtimeResult, runtimeSession);
+    return persistRuntimeSessionAfterStream(config, chatRequest, runtimeResult);
   }
 
   throw new UnavailableRuntimeError("runtime is not available yet");
@@ -420,10 +441,17 @@ async function persistRuntimeSession(
   config: RunnerConfig,
   chatRequest: ReturnType<typeof parseChatRequest>,
   runnerSessionId: string,
-  existing?: RuntimeSessionRecord,
+  providerSessionId?: string,
 ): Promise<void> {
   if (!config.data_service_url) {
     return;
+  }
+  if (chatRequest.runtime === "kiro" && !providerSessionId) {
+    throw new RuntimeExecutionError(
+      "runtime_session_error",
+      502,
+      "kiro runtime did not provide a session id",
+    );
   }
 
   const response = await fetchWithConfig(config, new Request(
@@ -439,8 +467,8 @@ async function persistRuntimeSession(
         wecom_user_id: chatRequest.user_id,
         conversation_id: chatRequest.conversation_id,
         runtime: chatRequest.runtime,
-        ...(existing?.provider_session_id
-          ? { provider_session_id: existing.provider_session_id }
+        ...(providerSessionId
+          ? { provider_session_id: providerSessionId }
           : {}),
       }),
     },
@@ -454,10 +482,10 @@ function persistRuntimeSessionAfterStream(
   config: RunnerConfig,
   chatRequest: ReturnType<typeof parseChatRequest>,
   runtimeResult: RuntimeStreamResult,
-  existing?: RuntimeSessionRecord,
 ): RuntimeStreamResult {
   return {
     runner_session_id: runtimeResult.runner_session_id,
+    provider_session_id: runtimeResult.provider_session_id,
     stream: new ReadableStream<string>({
       async start(controller) {
         const reader = runtimeResult.stream.getReader();
@@ -471,7 +499,13 @@ function persistRuntimeSessionAfterStream(
               controller.enqueue(value);
             }
           }
-          await persistRuntimeSession(config, chatRequest, runtimeResult.runner_session_id, existing);
+          const providerSessionId = await runtimeResult.provider_session_id;
+          await persistRuntimeSession(
+            config,
+            chatRequest,
+            runtimeResult.runner_session_id,
+            providerSessionId,
+          );
           controller.close();
         } catch (error) {
           controller.error(error);
@@ -479,6 +513,48 @@ function persistRuntimeSessionAfterStream(
       },
     }),
   };
+}
+
+interface RuntimeSessionLocks {
+  acquire(key: string): Promise<() => void>;
+}
+
+function createSessionLocks(): RuntimeSessionLocks {
+  const tails = new Map<string, Promise<void>>();
+  return {
+    async acquire(key) {
+      const previous = tails.get(key) ?? Promise.resolve();
+      let releaseTicket!: () => void;
+      const ticket = new Promise<void>((resolve) => {
+        releaseTicket = resolve;
+      });
+      const tail = previous.then(() => ticket);
+      tails.set(key, tail);
+      await previous;
+
+      let released = false;
+      return () => {
+        if (released) {
+          return;
+        }
+        released = true;
+        releaseTicket();
+        if (tails.get(key) === tail) {
+          tails.delete(key);
+        }
+      };
+    },
+  };
+}
+
+async function acquireRuntimeSessionLock(
+  sessionLocks: RuntimeSessionLocks,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+): Promise<() => void> {
+  if (chatRequest.runtime !== "kiro") {
+    return () => {};
+  }
+  return sessionLocks.acquire(buildRunnerSessionId(chatRequest.runtime, chatRequest));
 }
 
 async function fetchWithConfig(config: RunnerConfig, request: Request): Promise<Response> {

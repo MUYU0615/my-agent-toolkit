@@ -62,4 +62,6 @@ workspace/private/history/<user-id>/<session-id>.jsonl
 
 Use JSONL entries with at least: `timestamp`, `role`, `content`, `event`, and optional `metadata`.
 
-Kiro session identifiers are tracked per WeCom user. `/history` lists Kiro sessions, `/open N` stores a selected Kiro session id, and subsequent Kiro runs resume with `--resume-id` or `--resume` when appropriate.
+Kiro session identifiers are tracked per bot, WeCom user, and platform conversation. `/history` lists Kiro sessions, `/open N` stores a selected Kiro session id, and subsequent Kiro runs resume only with `--resume-id <SESSION_ID>`. Never use bare `--resume`, because it selects the most recent session for the working directory and can cross conversation boundaries.
+
+Conversation numbers shown to users must be stable within the bot/user/channel/purpose scope. Persist a monotonically increasing sequence number when creating a conversation. `/open N` resolves that stable sequence number, not the current list index, and opening a conversation must not renumber history entries.

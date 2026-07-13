@@ -101,6 +101,48 @@ describe("sqlite data store", () => {
     second.close?.();
   });
 
+  it("keeps stable conversation sequence numbers after opening history", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const store = createSqliteDataStore(dbPath);
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    const first = store.createConversation({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+    });
+    const second = store.createConversation({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+    });
+    const secondUpdatedAt = second.updated_at;
+
+    expect([first.sequence_no, second.sequence_no]).toEqual([1, 2]);
+    store.openConversation({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      conversation_id: first.conversation_id,
+    });
+    const conversations = store.listConversations({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+    });
+
+    expect(conversations.map((conversation) => conversation.sequence_no)).toEqual([2, 1]);
+    expect(conversations.find((conversation) => conversation.sequence_no === 1)?.is_active).toBe(true);
+    expect(conversations.find((conversation) => conversation.sequence_no === 2)).toMatchObject({
+      is_active: false,
+      updated_at: secondUpdatedAt,
+    });
+    store.close?.();
+  });
+
   it("persists runtime sessions across store instances", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);
@@ -173,6 +215,7 @@ describe("sqlite data store", () => {
       purpose: "normal_chat",
     })).toMatchObject({
       conversation_id: "conv-a",
+      sequence_no: 1,
     });
     store.close?.();
   });

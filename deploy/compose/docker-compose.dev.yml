@@ -1,0 +1,104 @@
+services:
+  contracts-watch:
+    build:
+      context: ../..
+      dockerfile: services/llm-runner/Dockerfile
+      target: build
+    command:
+      [
+        "npx",
+        "tsc",
+        "-b",
+        "packages/contracts",
+        "--watch",
+        "--preserveWatchOutput"
+      ]
+    volumes:
+      - ../../packages/contracts/src:/app/packages/contracts/src:ro
+      - contracts-dev-dist:/app/packages/contracts/dist
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /app/packages/contracts/dist/index.js"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  control-api:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/control-api/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ../../services/control-api/src:/app/services/control-api/src:ro
+
+  bot-api:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/bot-host/src/botApiMain.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ../../services/bot-host/src:/app/services/bot-host/src:ro
+
+  wecom-worker:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/bot-host/src/wecomWorkerMain.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ../../services/bot-host/src:/app/services/bot-host/src:ro
+
+  data-service:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/data-service/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    depends_on:
+      contracts-watch:
+        condition: service_healthy
+    volumes:
+      - data-service-data:/data
+      - ../../services/data-service/src:/app/services/data-service/src:ro
+      - ../../packages/contracts/src:/app/packages/contracts/src:ro
+      - contracts-dev-dist:/app/packages/contracts/dist
+
+  log-service:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/log-service/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - log-service-data:/data
+      - ../../services/log-service/src:/app/services/log-service/src:ro
+
+  llm-runner:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/llm-runner/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    depends_on:
+      contracts-watch:
+        condition: service_healthy
+    volumes:
+      - ../../services/llm-runner/src:/app/services/llm-runner/src:ro
+      - ../../services/llm-runner/scripts:/app/services/llm-runner/scripts:ro
+      - ../../packages/contracts/src:/app/packages/contracts/src:ro
+      - contracts-dev-dist:/app/packages/contracts/dist
+
+  capability-runner:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/capability-runner/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ../../runtime:/workspace/runtime
+      - ../../services/capability-runner/src:/app/services/capability-runner/src:ro
+
+volumes:
+  contracts-dev-dist:
