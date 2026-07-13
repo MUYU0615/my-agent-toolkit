@@ -4,4 +4,5 @@ dist/
 *.tsbuildinfo
 .DS_Store
 *.log
+/runtime/kiro-host-relay.pid
 deploy/compose/.env.wecom

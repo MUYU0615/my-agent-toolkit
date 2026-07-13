@@ -624,6 +624,7 @@ describe("bot-host server", () => {
           return Response.json([
             {
               conversation_id: "conv-2",
+              sequence_no: 2,
               bot_id: "prd-bot",
               wecom_user_id: "user-a",
               channel: "wecom_direct",
@@ -635,6 +636,7 @@ describe("bot-host server", () => {
             },
             {
               conversation_id: "conv-1",
+              sequence_no: 1,
               bot_id: "prd-bot",
               wecom_user_id: "user-a",
               channel: "wecom_direct",
@@ -706,6 +708,7 @@ describe("bot-host server", () => {
         if (request.url === "http://data-service/v1/conversations" && request.method === "POST") {
           return Response.json({
             conversation_id: "conv-2",
+            sequence_no: 2,
             bot_id: "prd-bot",
             wecom_user_id: "user-a",
             channel: "wecom_direct",
@@ -747,6 +750,7 @@ describe("bot-host server", () => {
     expect(created.status).toBe(200);
     const createdPayload = await created.json() as { output: string };
     expect(createdPayload.output).toContain("已创建并切换到新会话");
+    expect(createdPayload.output).toContain("会话 2");
     expect(createdPayload.output).toContain("conv-2");
 
     const renamed = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
@@ -762,6 +766,86 @@ describe("bot-host server", () => {
     const renamedPayload = await renamed.json() as { output: string };
     expect(renamedPayload.output).toContain("会议记录");
     expect(calls.map((call) => call.url)).not.toContain("http://llm-runner/v1/chat");
+  });
+
+  it("opens conversations by stable sequence number and keeps history numbering stable", async () => {
+    let activeSequence = 5;
+    const openBodies: unknown[] = [];
+    const conversation = (sequenceNo: number) => ({
+      conversation_id: `conv-${sequenceNo}`,
+      sequence_no: sequenceNo,
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      channel: "wecom_direct",
+      purpose: "normal_chat",
+      is_active: activeSequence === sequenceNo,
+      created_at: `2026-06-${20 + sequenceNo}T00:00:00.000Z`,
+      updated_at: `2026-06-${20 + sequenceNo}T00:00:00.000Z`,
+    });
+    const server = createBotHostServer({
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST"
+          ? await request.json().catch(() => undefined)
+          : undefined;
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: conversation(activeSequence),
+          });
+        }
+        if (request.url === "http://data-service/v1/conversations?bot_id=prd-bot&wecom_user_id=user-a&channel=wecom_direct&purpose=normal_chat") {
+          return Response.json([conversation(5), conversation(4), conversation(3)]);
+        }
+        if (request.url === "http://data-service/v1/conversations/open") {
+          openBodies.push(body);
+          activeSequence = 4;
+          return Response.json(conversation(4));
+        }
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+
+    const opened = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        text: "/open 4",
+        runtime: "mock",
+      }),
+    }));
+    expect(opened.status).toBe(200);
+    await expect(opened.json()).resolves.toMatchObject({
+      output: "已切换到会话：会话 4。",
+    });
+    expect(openBodies).toEqual([{
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      conversation_id: "conv-4",
+    }]);
+
+    const history = await server.fetch(new Request("http://localhost/v1/messages/wecom", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        text: "/history",
+        runtime: "mock",
+      }),
+    }));
+    const historyPayload = await history.json() as { output: string };
+    expect(historyPayload.output).toContain("4 | 会话 4 | 当前");
+    expect(historyPayload.output).toContain("5 | 会话 5 | 历史");
   });
 
   it("injects current memory documents into the llm prompt", async () => {

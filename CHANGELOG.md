@@ -1,5 +1,26 @@
 # 更新日志
 
+## 2026-07-13
+
+### llm-runner / Kiro 会话隔离
+
+- 保留平台 `runner_session_id` 作为 bot、企微用户和 conversation 的业务会话键
+- 从 Kiro CLI 获取真实 UUID，并持久化到 `runtime_sessions.provider_session_id`
+- 兼容 Kiro CLI 2.12.1 非交互模式不输出 session 提示的行为：新会话在全局创建锁内通过 `--list-sessions --format json` 前后差分识别 UUID
+- 后续请求统一使用 `kiro-cli chat --resume-id <SESSION_ID>` 精确恢复会话
+- runner 和宿主机 relay 双层拒绝裸 `--resume`，避免同工作目录下恢复到其他用户的最近会话
+- 普通与流式 relay 协议新增内部 session 元数据传递，不向企微回复暴露运行时标记
+- 新增相同 `runner_session_id` 的执行锁，防止并发首轮请求创建多个 Kiro 会话
+- 已有但缺少 `provider_session_id` 的记录按新会话处理，并在首次成功调用后补齐映射，无需 SQLite 迁移
+
+### Bot 会话稳定编号
+
+- `conversations` 新增 scope 内稳定递增的 `sequence_no`，现有数据按创建时间自动回填
+- `/new` 返回实际新会话编号，不再固定显示“会话 1”
+- `/history` 按稳定编号倒序展示，当前状态切换后编号不再变化
+- `/open N` 按 `sequence_no=N` 精确选择会话，不再依赖动态列表下标
+- 切换或创建会话时不再批量覆盖其他会话的 `updated_at`
+
 ## 2026-06-15
 
 ### memory-service（新增）

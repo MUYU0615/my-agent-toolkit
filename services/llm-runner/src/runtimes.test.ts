@@ -14,6 +14,8 @@ const request = {
 };
 
 describe("runtime adapters", () => {
+  const providerSessionId = "f2946a26-3735-4b08-8d05-c928010302d5";
+
   it("runs mock runtime with deterministic session identity", async () => {
     const result = await runMockRuntime(request);
 
@@ -39,7 +41,7 @@ describe("runtime adapters", () => {
     });
   });
 
-  it("adds resume args when runtime config requests resume", async () => {
+  it("adds an exact resume id when a provider session is known", async () => {
     const command = [
       "const fs = require('node:fs');",
       "const log = process.env.ARGS_LOG;",
@@ -60,13 +62,62 @@ describe("runtime adapters", () => {
       runtime: "kiro" as const,
     };
     await runCliRuntime(config, { ...isolatedRequest, prompt: "first" });
-    await runCliRuntime({ ...config, resume: true }, { ...isolatedRequest, prompt: "second" });
+    await runCliRuntime(
+      { ...config, provider_session_id: providerSessionId },
+      { ...isolatedRequest, prompt: "second" },
+    );
 
     const lines = (await import("node:fs")).readFileSync(logPath, "utf8").trim().split("\n");
     expect(lines.map((line) => JSON.parse(line))).toEqual([
       ["chat", "--no-interactive"],
-      ["chat", "--resume", "--no-interactive"],
+      ["chat", "--resume-id", providerSessionId, "--no-interactive"],
     ]);
+  });
+
+  it("reads provider session metadata without including it in output", async () => {
+    const command = [
+      "process.stdout.write('hello');",
+      `process.stderr.write('__MY_AGENT_TOOLKIT_RUNTIME_META__${JSON.stringify({ provider_session_id: providerSessionId })}\\n');`,
+    ].join(" ");
+
+    await expect(runCliRuntime(
+      {
+        command: process.execPath,
+        args: ["-e", command],
+        timeout_ms: 1000,
+      },
+      { ...request, runtime: "kiro" },
+    )).resolves.toMatchObject({
+      output: "hello",
+      provider_session_id: providerSessionId,
+    });
+  });
+
+  it("rejects bare resume and invalid provider session ids", async () => {
+    await expect(runCliRuntime(
+      {
+        command: process.execPath,
+        args: ["chat", "--resume"],
+        timeout_ms: 1000,
+      },
+      { ...request, runtime: "kiro" },
+    )).rejects.toMatchObject({
+      code: "runtime_session_error",
+      message: "bare --resume is not allowed",
+    });
+
+    await expect(runCliRuntime(
+      {
+        command: process.execPath,
+        args: ["chat"],
+        provider_session_id: "not-a-uuid",
+        timeout_ms: 1000,
+      },
+      { ...request, runtime: "kiro" },
+    )).rejects.toMatchObject({
+      code: "runtime_session_error",
+      message: "invalid provider session id",
+    });
   });
 
   it("redacts stderr when CLI runtime exits non-zero", async () => {

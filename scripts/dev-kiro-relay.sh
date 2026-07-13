@@ -7,7 +7,7 @@ PORT="${KIRO_HOST_RELAY_PORT:-8210}"
 HOST="${KIRO_HOST_RELAY_HOST:-0.0.0.0}"
 PID_FILE="${KIRO_HOST_RELAY_PID_FILE:-$ROOT_DIR/runtime/kiro-host-relay.pid}"
 LOG_FILE="${KIRO_HOST_RELAY_LOG_FILE:-$ROOT_DIR/runtime/kiro-host-relay.log}"
-COMMAND="${KIRO_COMMAND:-/Users/dujiepeng/.local/bin/kiro-cli}"
+COMMAND="${KIRO_COMMAND:-$HOME/.local/bin/kiro-cli}"
 
 mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_FILE")"
 

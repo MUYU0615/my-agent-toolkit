@@ -107,6 +107,7 @@ export interface UpdateBotInput {
 
 export interface ConversationRecord {
   conversation_id: string;
+  sequence_no: number;
   bot_id: string;
   wecom_user_id: string;
   channel: ConversationChannel;
@@ -1505,11 +1506,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
           && conversation.channel === input.channel
           && conversation.purpose === input.purpose
         )
-        .sort((left, right) =>
-          Number(right.is_active) - Number(left.is_active)
-          || right.updated_at.localeCompare(left.updated_at)
-          || right.created_at.localeCompare(left.created_at)
-        )
+        .sort((left, right) => right.sequence_no - left.sequence_no)
         .map((conversation) => cloneConversationRecord(conversation));
     },
 
@@ -1531,7 +1528,6 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
           conversationHistory.set(previous.conversation_id, {
             ...previous,
             is_active: false,
-            updated_at: nextIsoTimestamp(previous.updated_at),
           });
         }
       }
@@ -3232,10 +3228,14 @@ function conversationScopeKey(
   return [botId, wecomUserId, channel, purpose].join(":");
 }
 
-function createConversationRecord(input: CreateConversationInput): ConversationRecord {
+function createConversationRecord(
+  input: CreateConversationInput,
+  sequenceNo: number,
+): ConversationRecord {
   const now = new Date().toISOString();
   return {
     conversation_id: `conv_${crypto.randomUUID()}`,
+    sequence_no: sequenceNo,
     bot_id: requireText(input.bot_id, "bot_id"),
     wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
     channel: input.channel,
@@ -3275,7 +3275,15 @@ function createConversationForScope(
   activeConversationIds: Map<string, string>,
   input: CreateConversationInput,
 ): ConversationRecord {
-  const conversation = createConversationRecord(input);
+  const sequenceNo = [...conversationHistory.values()]
+    .filter((conversation) =>
+      conversation.bot_id === input.bot_id
+      && conversation.wecom_user_id === input.wecom_user_id
+      && conversation.channel === input.channel
+      && conversation.purpose === input.purpose
+    )
+    .reduce((maximum, conversation) => Math.max(maximum, conversation.sequence_no), 0) + 1;
+  const conversation = createConversationRecord(input, sequenceNo);
   conversationHistory.set(conversation.conversation_id, conversation);
   activeConversationIds.set(
     conversationScopeKey(
@@ -3298,7 +3306,6 @@ function createConversationForScope(
       conversationHistory.set(id, {
         ...record,
         is_active: false,
-        updated_at: nextIsoTimestamp(record.updated_at),
       });
     }
   }

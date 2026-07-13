@@ -5,6 +5,8 @@ const relayStreamUrl = process.env.KIRO_RELAY_STREAM_URL ?? relayUrl.replace(/\/
 const streamEnabled = process.env.KIRO_RELAY_STREAM === "true";
 const forwardedArgs = process.argv.slice(2);
 const chunks = [];
+const runtimeMetadataPrefix = "__MY_AGENT_TOOLKIT_RUNTIME_META__";
+const kiroSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 for await (const chunk of process.stdin) {
   chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -41,8 +43,13 @@ try {
     process.stderr.write("kiro relay returned invalid output");
     process.exit(1);
   }
+  if (!isKiroSessionId(payload?.provider_session_id)) {
+    process.stderr.write("kiro relay returned invalid session id");
+    process.exit(1);
+  }
 
   process.stdout.write(payload.output);
+  writeRuntimeMetadata(payload.provider_session_id);
 } catch (error) {
   process.stderr.write(error instanceof Error ? error.message : "kiro relay request failed");
   process.exit(1);
@@ -63,6 +70,7 @@ async function runStream(prompt) {
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
   let buffer = "";
+  let providerSessionId;
   while (true) {
     const { done, value } = await reader.read();
     if (done) {
@@ -72,28 +80,45 @@ async function runStream(prompt) {
     const lines = buffer.split("\n");
     buffer = lines.pop() ?? "";
     for (const line of lines) {
-      handleStreamLine(line);
+      providerSessionId = handleStreamLine(line, providerSessionId);
     }
   }
   if (buffer.trim()) {
-    handleStreamLine(buffer);
+    providerSessionId = handleStreamLine(buffer, providerSessionId);
   }
+  if (!isKiroSessionId(providerSessionId)) {
+    throw new Error("kiro relay stream returned invalid session id");
+  }
+  writeRuntimeMetadata(providerSessionId);
 }
 
-function handleStreamLine(line) {
+function handleStreamLine(line, providerSessionId) {
   if (!line.trim()) {
-    return;
+    return providerSessionId;
   }
   const event = JSON.parse(line);
   if (event.type === "chunk" && typeof event.content === "string") {
     process.stdout.write(event.content);
-    return;
+    return providerSessionId;
+  }
+  if (event.type === "session" && isKiroSessionId(event.provider_session_id)) {
+    return event.provider_session_id;
   }
   if (event.type === "done") {
-    return;
+    return providerSessionId;
   }
   if (event.type === "error") {
-    process.stderr.write(event.error ?? "kiro relay stream failed");
-    process.exit(1);
+    throw new Error(event.error ?? "kiro relay stream failed");
   }
+  return providerSessionId;
+}
+
+function writeRuntimeMetadata(providerSessionId) {
+  process.stderr.write(`${runtimeMetadataPrefix}${JSON.stringify({
+    provider_session_id: providerSessionId,
+  })}\n`);
+}
+
+function isKiroSessionId(value) {
+  return typeof value === "string" && kiroSessionIdPattern.test(value);
 }

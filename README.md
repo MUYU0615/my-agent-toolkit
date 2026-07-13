@@ -218,6 +218,33 @@ bot 私有能力链路则拆成另一条：
 
 ### Compose 启动方式
 
+日常本地开发使用热更新模式。第一次启动会构建开发镜像，之后修改各服务的 `src/` 会自动重启对应进程：
+
+```bash
+# 终端 1：宿主机 Kiro relay（修改 relay 源码也会自动重启）
+npm run dev:relay
+
+# 终端 2：Docker 中的全部 Node 服务（默认包含企业微信 worker）
+npm run dev:up
+
+# 终端 3：查看所有开发服务日志
+npm run dev:logs
+```
+
+常用命令：
+
+```bash
+npm run dev:status
+npm run dev:down
+
+# 不连接企业微信，只启动 HTTP/API 服务
+DEV_WECOM=0 npm run dev:up
+```
+
+热更新覆盖 `control-api`、`bot-api`、`wecom-worker`、`data-service`、`log-service`、`llm-runner`、`capability-runner` 和共享 `contracts`。修改依赖、`package-lock.json`、Dockerfile 或 Compose 后仍需重新执行 `npm run dev:up` 构建镜像。SQLite 数据继续保存在原有 Docker named volume 中，停止开发环境时不要添加 `-v`。
+
+生产式完整重建仍使用：
+
 基础服务：
 
 ```bash
