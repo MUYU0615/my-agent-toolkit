@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { createCapabilityRunnerServer } from "./server.js";
 import { createSkillManager } from "./skillManager.js";
+import { createProjectManager } from "./projectManager.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8400", 10);
 const skillManager = createSkillManager({
@@ -8,9 +9,20 @@ const skillManager = createSkillManager({
   kiroWorkspaceRoot: process.env.KIRO_WORKSPACE_ROOT ?? "/kiro-workspaces",
   skillCatalogRoot: process.env.SKILL_CATALOG_ROOT ?? "/skill-catalog",
 });
+const projectManager = createProjectManager({
+  dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
+  userCredentialsInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN,
+  kiroWorkspaceRoot: process.env.KIRO_WORKSPACE_ROOT ?? "/kiro-workspaces",
+  repositoryCacheRoot: process.env.PROJECT_REPOSITORY_CACHE_ROOT,
+});
 const app = createCapabilityRunnerServer({
   dispatch: (context) => skillManager.dispatch(context),
   listSkills: () => skillManager.listCatalog(),
+  ensureProject: (context) => projectManager.ensure(context),
+  inspectProject: (context) => projectManager.inspect(context),
+  readProject: (context) => projectManager.read(context),
+  searchProject: (context) => projectManager.search(context),
+  projectRunnerToken: process.env.MCP_RUNNER_SECRET,
 });
 
 const server = createServer(async (req, res) => {

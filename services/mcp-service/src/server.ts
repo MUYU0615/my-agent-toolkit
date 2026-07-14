@@ -5,6 +5,7 @@ import {
   type MemoryBackendClient,
 } from "./memoryBackendClient.js";
 import { callMcpTool, listMcpTools, type McpToolResult } from "./tools.js";
+import { createProjectClient, type ProjectClient } from "./projectClient.js";
 
 export type McpMemoryBackendDependency = Pick<
   MemoryBackendClient,
@@ -18,6 +19,8 @@ export interface McpServiceConfig {
   memoryBackendUrl?: string;
   memoryBackend?: McpMemoryBackendDependency;
   allowedDirectoryRefs?: Record<string, string>;
+  capabilityRunnerUrl?: string;
+  projectClient?: ProjectClient;
 }
 
 export interface McpServiceServer {
@@ -33,6 +36,12 @@ export function createMcpServiceServer(
   const memoryBackend = config.memoryBackend ?? createMemoryBackendClient({
     baseUrl: config.memoryBackendUrl ?? "http://memory-service:8100",
   });
+  const projectClient = config.projectClient ?? (config.capabilityRunnerUrl
+    ? createProjectClient({
+      baseUrl: config.capabilityRunnerUrl,
+      token: config.runnerSecret,
+    })
+    : undefined);
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -78,6 +87,7 @@ export function createMcpServiceServer(
           config,
           dataClient,
           memoryBackend,
+          projectClient,
           decodeURIComponent(toolRoute[1]),
           decodeURIComponent(toolRoute[2]),
         );
@@ -138,6 +148,7 @@ async function handleToolCall(
   config: McpServiceConfig,
   dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats" | "getMcpCapabilityConfig">,
   memoryBackend: McpMemoryBackendDependency,
+  projectClient: ProjectClient | undefined,
   botId: string,
   conversationId: string,
 ): Promise<Response> {
@@ -159,6 +170,7 @@ async function handleToolCall(
         capabilityConfig.directory_refs,
       ),
       capabilityConfig,
+      projectClient,
     }, toolCall));
   } catch (error) {
     return mcpErrorResponse(

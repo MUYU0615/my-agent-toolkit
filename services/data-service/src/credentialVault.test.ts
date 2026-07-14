@@ -28,4 +28,16 @@ describe("credential vault", () => {
     const ciphertext = vault.encrypt({ username: "user", password: "password" });
     expect(() => vault.decrypt(`${ciphertext}x`)).toThrow("credential decryption failed");
   });
+
+  it("encrypts and decrypts project dotenv text without plaintext leakage", () => {
+    const vault = createCredentialVault(Buffer.alloc(32, 3).toString("base64"));
+    const plaintext = "APPKEY=example#app\nCLIENT_SECRET=private-value\n";
+
+    const ciphertext = vault.encryptText(plaintext);
+
+    expect(ciphertext).not.toContain("CLIENT_SECRET");
+    expect(ciphertext).not.toContain("private-value");
+    expect(vault.decryptText(ciphertext)).toBe(plaintext);
+    expect(() => vault.decrypt(ciphertext)).toThrow();
+  });
 });

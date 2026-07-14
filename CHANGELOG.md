@@ -1,5 +1,24 @@
 # 更新日志
 
+## 2026-07-14
+
+### 专项测试能力
+
+- 新增 `im-test-hub-qa` Skill，支持识别现有测试能力、复用既有 Case，并辅助生成、修改 SDK 与 REST 自动化测试
+
+### 用户级代码访问
+
+- 新增 `/github bind`、`/github status`、`/github unbind`；用户可绑定个人 fork、目标分支与 GitHub Token，凭证加密保存并按 Bot、企微用户隔离
+- `project.inspect`、`project.read`、`project.search` 改为基于当前用户绑定的 fork 读取项目结构、源码与已有测试，不再依赖 WebUI 项目仓库配置
+- 新增 `project.ensure`：仅在生成代码或执行测试时，为当前会话准备独立的可写项目副本
+
+### MCP 工具编排
+
+- MCP Runner 支持受控的多轮工具调用与结果回灌，同一 Kiro 会话可完成“检索项目 → 读取源码 → 分析总结”等连续任务
+- 补充工具调用协议、参数字段说明与调用上限；过滤内部工具标记和调用轨迹，企微仅展示最终回复
+
+
+
 ## 2026-07-13
 
 ### Jira 测试能力

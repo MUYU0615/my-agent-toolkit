@@ -21,6 +21,8 @@ export type UserEnvResolver = (
 export interface McpRunnerConfig {
   service_url: string;
   runner_secret: string;
+  /** Maximum MCP calls the runner may execute for one user message. */
+  max_tool_rounds?: number;
 }
 
 export function loadRunnerConfig(
@@ -53,7 +55,7 @@ export function loadRunnerConfig(
     config.kiro = {
       command,
       args: parseArgs(env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools"),
-      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 180_000),
+      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 300_000),
     };
   }
 
@@ -63,6 +65,7 @@ export function loadRunnerConfig(
     config.mcp = {
       service_url: mcpServiceUrl.replace(/\/+$/, ""),
       runner_secret: mcpRunnerSecret,
+      max_tool_rounds: parsePositiveInteger(env.MCP_MAX_TOOL_ROUNDS, 4),
     };
   }
 

@@ -5,6 +5,7 @@ const relayStreamUrl = process.env.KIRO_RELAY_STREAM_URL ?? relayUrl.replace(/\/
 const streamEnabled = process.env.KIRO_RELAY_STREAM === "true";
 const botId = process.env.KIRO_RELAY_BOT_ID?.trim();
 const userId = process.env.KIRO_RELAY_USER_ID?.trim();
+const conversationId = process.env.KIRO_RELAY_CONVERSATION_ID?.trim();
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const runtimeEnv = collectRuntimeEnv(process.env);
 const forwardedArgs = process.argv.slice(2);
@@ -23,6 +24,9 @@ try {
   if (!userId) {
     throw new Error("KIRO_RELAY_USER_ID is required");
   }
+  if (!conversationId) {
+    throw new Error("KIRO_RELAY_CONVERSATION_ID is required");
+  }
   if (Object.keys(runtimeEnv).length > 0 && !relayAuthToken) {
     throw new Error("KIRO_RELAY_AUTH_TOKEN is required for credential forwarding");
   }
@@ -38,6 +42,7 @@ try {
     body: JSON.stringify({
       bot_id: botId,
       user_id: userId,
+      conversation_id: conversationId,
       prompt: Buffer.concat(chunks).toString(),
       args: forwardedArgs,
       runtime_env: runtimeEnv,
@@ -79,6 +84,7 @@ async function runStream(prompt) {
     body: JSON.stringify({
       bot_id: botId,
       user_id: userId,
+      conversation_id: conversationId,
       prompt,
       args: forwardedArgs,
       runtime_env: runtimeEnv,

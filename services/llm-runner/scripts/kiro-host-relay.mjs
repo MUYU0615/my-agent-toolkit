@@ -11,14 +11,14 @@ const port = Number.parseInt(process.env.KIRO_HOST_RELAY_PORT ?? "8210", 10);
 const host = process.env.KIRO_HOST_RELAY_HOST ?? "127.0.0.1";
 const command = process.env.KIRO_COMMAND ?? "/Users/dujiepeng/.local/bin/kiro-cli";
 const args = parseArgs(process.env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools");
-const timeoutMs = Number.parseInt(process.env.KIRO_TIMEOUT_MS ?? "180000", 10);
+const timeoutMs = Number.parseInt(process.env.KIRO_TIMEOUT_MS ?? "300000", 10);
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const workspaceRoot = initializeWorkspaceRoot(
   process.env.KIRO_WORKSPACE_ROOT ?? join(homedir(), "Documents", "KiroBotWorkspaces"),
 );
 const kiroSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const kiroResumeIdPattern = /--resume-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
-let newSessionCreationTail = Promise.resolve();
+const newSessionCreationTails = new Map();
 
 const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
@@ -34,8 +34,9 @@ const server = createServer(async (request, response) => {
         writeJson(response, 400, { error: "prompt is required" });
         return;
       }
-      const workspaceDir = resolveBotWorkspace(payload.bot_id);
-      const runtimeEnv = prepareRuntimeEnv(payload, workspaceDir);
+      const runtimeWorkspace = resolveRuntimeWorkspace(payload);
+      const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
+      const runtimeEnv = prepareRuntimeEnv(payload, botRoot, kiroHome);
 
       response.writeHead(200, {
         "content-type": "application/x-ndjson",
@@ -45,6 +46,7 @@ const server = createServer(async (request, response) => {
       const providerSessionId = await runWithSessionDiscovery(
         requestArgs,
         workspaceDir,
+        runtimeEnv,
         (sessionsBefore) => streamKiro(payload.prompt, requestArgs, (event) => {
           response.write(`${JSON.stringify(event)}\n`);
         }, sessionsBefore, workspaceDir, runtimeEnv),
@@ -81,13 +83,15 @@ const server = createServer(async (request, response) => {
       writeJson(response, 400, { error: "prompt is required" });
       return;
     }
-    const workspaceDir = resolveBotWorkspace(payload.bot_id);
-    const runtimeEnv = prepareRuntimeEnv(payload, workspaceDir);
+    const runtimeWorkspace = resolveRuntimeWorkspace(payload);
+    const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
+    const runtimeEnv = prepareRuntimeEnv(payload, botRoot, kiroHome);
 
     const requestArgs = argsFromPayload(payload);
     const result = await runWithSessionDiscovery(
       requestArgs,
       workspaceDir,
+      runtimeEnv,
       (sessionsBefore) => runKiro(
         payload.prompt,
         requestArgs,
@@ -157,6 +161,7 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
           stderrText,
           sessionsBefore,
           workspaceDir,
+          runtimeEnv,
         );
         if (!providerSessionId) {
           reject(new Error("kiro runtime did not report a session id"));
@@ -233,6 +238,7 @@ function streamKiro(
           Buffer.concat(stderr).toString(),
           sessionsBefore,
           workspaceDir,
+          runtimeEnv,
         );
         if (!providerSessionId) {
           reject(new Error("kiro runtime did not report a session id"));
@@ -274,7 +280,7 @@ function assertRelayAuthorized(request) {
   }
 }
 
-function prepareRuntimeEnv(payload, workspaceDir) {
+function prepareRuntimeEnv(payload, botRoot, kiroHome) {
   if (
     payload.runtime_env !== undefined
     && (!payload.runtime_env || typeof payload.runtime_env !== "object" || Array.isArray(payload.runtime_env))
@@ -292,32 +298,23 @@ function prepareRuntimeEnv(payload, workspaceDir) {
     throw new RelayRequestError("relay auth token is required for credential forwarding");
   }
   result.MY_AGENT_RUNTIME = "wecom";
+  result.KIRO_HOME = kiroHome;
   if (result.EASEMOB_JIRA_USERNAME || result.EASEMOB_JIRA_PASSWORD) {
-    if (
-      typeof payload.user_id !== "string"
-      || payload.user_id.trim() === ""
-      || payload.user_id.length > 256
-    ) {
-      throw new RelayRequestError("user_id is required for credential forwarding");
-    }
     if (!result.EASEMOB_JIRA_USERNAME || !result.EASEMOB_JIRA_PASSWORD) {
       throw new RelayRequestError("Jira username and password must be provided together");
     }
-    const userHash = createHash("sha256")
-      .update(payload.user_id, "utf8")
-      .digest("hex")
-      .slice(0, 32);
+    const userHash = hashUserId(payload.user_id);
     const credentialVersion = result.MY_AGENT_JIRA_CREDENTIAL_VERSION ?? "legacy";
     const credentialHash = createHash("sha256")
       .update(credentialVersion, "utf8")
       .digest("hex")
       .slice(0, 16);
     delete result.MY_AGENT_JIRA_CREDENTIAL_VERSION;
-    const jiraRoot = join(workspaceDir, ".runtime", "users", userHash, "jira");
+    const jiraRoot = join(botRoot, ".runtime", "users", userHash, "jira");
     const jiraDirectory = join(jiraRoot, credentialHash);
-    ensurePrivateDirectory(join(workspaceDir, ".runtime"));
-    ensurePrivateDirectory(join(workspaceDir, ".runtime", "users"));
-    ensurePrivateDirectory(join(workspaceDir, ".runtime", "users", userHash));
+    ensurePrivateDirectory(join(botRoot, ".runtime"));
+    ensurePrivateDirectory(join(botRoot, ".runtime", "users"));
+    ensurePrivateDirectory(join(botRoot, ".runtime", "users", userHash));
     ensurePrivateDirectory(jiraRoot);
     ensurePrivateDirectory(jiraDirectory);
     result.EASEMOB_JIRA_COOKIE_FILE = join(jiraDirectory, "cookies.json");
@@ -377,6 +374,47 @@ function resolveBotWorkspace(botId) {
   ensureSafeDirectory(join(candidate, ".kiro", "agents"));
   ensureSafeDirectory(join(candidate, ".kiro", "skills"));
   return realpathSync(candidate);
+}
+
+function resolveRuntimeWorkspace(payload) {
+  const botRoot = resolveBotWorkspace(payload.bot_id);
+  if (
+    typeof payload.user_id !== "string"
+    || payload.user_id.trim() === ""
+    || payload.user_id.length > 256
+  ) {
+    throw new RelayRequestError("user_id is required");
+  }
+  if (
+    typeof payload.conversation_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.conversation_id)
+  ) {
+    throw new RelayRequestError("conversation_id must be a safe path segment");
+  }
+
+  const userHash = hashUserId(payload.user_id);
+  const usersRoot = join(botRoot, "users");
+  const userRoot = join(usersRoot, userHash);
+  const conversationsRoot = join(userRoot, "conversations");
+  const workspaceDir = join(conversationsRoot, payload.conversation_id);
+  for (const directory of [usersRoot, userRoot, conversationsRoot, workspaceDir]) {
+    ensureSafeDirectory(directory);
+  }
+  ensureSafeDirectory(join(workspaceDir, "projects"));
+  ensureSafeDirectory(join(workspaceDir, "artifacts"));
+
+  return {
+    botRoot,
+    workspaceDir: realpathSync(workspaceDir),
+    kiroHome: realpathSync(join(botRoot, ".kiro")),
+  };
+}
+
+function hashUserId(userId) {
+  return createHash("sha256")
+    .update(userId, "utf8")
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function ensureSafeDirectory(directory) {
@@ -448,18 +486,28 @@ function extractProviderSessionId(requestArgs, stdout, stderr) {
   return `${stderr}\n${stdout}`.match(kiroResumeIdPattern)?.[1];
 }
 
-async function runWithSessionDiscovery(requestArgs, workspaceDir, operation) {
+async function runWithSessionDiscovery(requestArgs, workspaceDir, runtimeEnv, operation) {
   if (extractProviderSessionId(requestArgs, "", "")) {
     return operation(undefined);
   }
 
-  return withNewSessionCreationLock(async () => {
-    const sessionsBefore = await listKiroSessionIds(workspaceDir).catch(() => undefined);
+  return withNewSessionCreationLock(workspaceDir, async () => {
+    const sessionsBefore = await listKiroSessionIds(
+      workspaceDir,
+      sessionUtilityEnv(runtimeEnv),
+    ).catch(() => undefined);
     return operation(sessionsBefore);
   });
 }
 
-async function resolveProviderSessionId(requestArgs, stdout, stderr, sessionsBefore, workspaceDir) {
+async function resolveProviderSessionId(
+  requestArgs,
+  stdout,
+  stderr,
+  sessionsBefore,
+  workspaceDir,
+  runtimeEnv,
+) {
   const reportedSessionId = extractProviderSessionId(requestArgs, stdout, stderr);
   if (reportedSessionId) {
     return reportedSessionId;
@@ -468,7 +516,10 @@ async function resolveProviderSessionId(requestArgs, stdout, stderr, sessionsBef
     return undefined;
   }
 
-  const sessionsAfter = await listKiroSessionIds(workspaceDir);
+  const sessionsAfter = await listKiroSessionIds(
+    workspaceDir,
+    sessionUtilityEnv(runtimeEnv),
+  );
   const createdSessionIds = [...sessionsAfter].filter((sessionId) => !sessionsBefore.has(sessionId));
   if (createdSessionIds.length > 1) {
     throw new Error("multiple new kiro sessions were discovered");
@@ -476,8 +527,8 @@ async function resolveProviderSessionId(requestArgs, stdout, stderr, sessionsBef
   return createdSessionIds[0];
 }
 
-async function listKiroSessionIds(workspaceDir) {
-  const output = await runKiroUtility(["chat", "--list-sessions", "--format", "json"], workspaceDir);
+async function listKiroSessionIds(workspaceDir, runtimeEnv = {}) {
+  const output = await runKiroUtility(["chat", "--list-sessions", "--format", "json"], workspaceDir, runtimeEnv);
   const groups = JSON.parse(output);
   if (!Array.isArray(groups)) {
     throw new Error("kiro session list returned invalid output");
@@ -497,11 +548,18 @@ async function listKiroSessionIds(workspaceDir) {
   return sessionIds;
 }
 
-function runKiroUtility(utilityArgs, workspaceDir) {
+function sessionUtilityEnv(runtimeEnv) {
+  return typeof runtimeEnv.KIRO_HOME === "string"
+    ? { KIRO_HOME: runtimeEnv.KIRO_HOME }
+    : {};
+}
+
+function runKiroUtility(utilityArgs, workspaceDir, runtimeEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, utilityArgs, {
       cwd: workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
+      env: childProcessEnv(runtimeEnv),
     });
     const stdout = [];
     let settled = false;
@@ -538,18 +596,22 @@ function runKiroUtility(utilityArgs, workspaceDir) {
   });
 }
 
-async function withNewSessionCreationLock(operation) {
-  const previous = newSessionCreationTail;
+async function withNewSessionCreationLock(workspaceDir, operation) {
+  const previous = newSessionCreationTails.get(workspaceDir) ?? Promise.resolve();
   let release;
   const ticket = new Promise((resolve) => {
     release = resolve;
   });
-  newSessionCreationTail = previous.then(() => ticket);
+  const tail = previous.then(() => ticket);
+  newSessionCreationTails.set(workspaceDir, tail);
   await previous;
   try {
     return await operation();
   } finally {
     release();
+    if (newSessionCreationTails.get(workspaceDir) === tail) {
+      newSessionCreationTails.delete(workspaceDir);
+    }
   }
 }
 

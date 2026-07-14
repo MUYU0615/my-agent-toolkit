@@ -10,6 +10,7 @@ const app = createMcpServiceServer({
   runnerSecret,
   dataServiceUrl: process.env.DATA_SERVICE_URL,
   memoryBackendUrl: process.env.MEMORY_BACKEND_URL,
+  capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
   allowedDirectoryRefs: parseAllowedDirectoryRefs(process.env.MCP_ALLOWED_DIRECTORY_REFS ?? ""),
 });
 

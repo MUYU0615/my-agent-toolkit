@@ -7,4 +7,4 @@ dist/
 /runtime/kiro-host-relay.pid
 deploy/compose/.env.wecom
 deploy/compose/.env.credentials
-AGENTS.md
+

@@ -26,6 +26,57 @@ describe("data-service store", () => {
     expect(store.getBot("prd-bot")).toEqual(bot);
   });
 
+  it("stores, updates, and clears the Bot main project config", () => {
+    const store = createDataStore();
+    const created = store.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "develop",
+    });
+
+    expect(created).toMatchObject({
+      project_key: "im-test-hub",
+      project_default_branch: "develop",
+      project_directory: "im-test-hub",
+    });
+    expect(store.updateBot("qa-bot", { project_default_branch: "main" }))
+      .toMatchObject({ project_default_branch: "main" });
+    expect(store.updateBot("qa-bot", { project_repository_url: "" }).project_repository_url)
+      .toBeUndefined();
+  });
+
+  it("derives project defaults when only a repository URL is supplied", () => {
+    const store = createDataStore();
+    expect(store.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "",
+      project_directory: "",
+    })).toMatchObject({
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+  });
+
+  it("rejects project repository URLs containing credentials", () => {
+    const store = createDataStore();
+    expect(() => store.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "im-test-hub",
+      project_repository_url: "https://token@example.com/org/im-test-hub.git",
+    })).toThrow("project_repository_url must not contain credentials");
+  });
+
   it("gets and updates bot MCP capability config", () => {
     const store = createDataStore();
     store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });

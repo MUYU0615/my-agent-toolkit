@@ -97,6 +97,82 @@ describe("control-api server", () => {
     expect(html).not.toContain("写入 Memory 文档");
   });
 
+  it("renders separate project and project dotenv configuration controls", async () => {
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async () => new Response("not used", { status: 500 }),
+    });
+
+    const html = await (await server.fetch(new Request("http://localhost/"))).text();
+
+    expect(html).toContain('data-action="edit-project"');
+    expect(html).toContain("项目配置");
+    expect(html).toContain("项目 .env 文件");
+    expect(html).toContain("整份文件按 Bot 加密保存");
+    expect(html).toContain('id="projectForm"');
+    expect(html).toContain('id="projectEnvForm"');
+    expect(html).toContain("只填 Git 仓库地址也可以保存");
+  });
+
+  it("proxies project dotenv management without auditing its content", async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const body = request.method === "POST" || request.method === "PUT" || request.method === "DELETE"
+          ? await request.json().catch(() => undefined)
+          : undefined;
+        calls.push({ url: request.url, method: request.method, body });
+        if (request.url === "http://data-service/v1/bots/qa-bot/project-env" && request.method === "GET") {
+          return Response.json({ configured: false });
+        }
+        if (request.url === "http://data-service/v1/bots/qa-bot/project-env" && request.method === "PUT") {
+          return Response.json({ configured: true, updated_at: "2026-07-14T00:00:00.000Z" });
+        }
+        if (request.url === "http://data-service/v1/bots/qa-bot/project-env" && request.method === "DELETE") {
+          return Response.json({ configured: false });
+        }
+        if (request.url === "http://log-service/v1/audit-events" && request.method === "POST") {
+          return Response.json({ ok: true });
+        }
+        return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
+      },
+    });
+
+    const listResponse = await server.fetch(new Request("http://localhost/v1/bots/qa-bot/project-env"));
+    const saveResponse = await server.fetch(new Request("http://localhost/v1/bots/qa-bot/project-env", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        actor_id: "admin-a",
+        content: "CLIENT_SECRET=private-value\n",
+        updated_by_wecom_user_id: "admin-a",
+      }),
+    }));
+    const deleteResponse = await server.fetch(new Request("http://localhost/v1/bots/qa-bot/project-env", {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ actor_id: "admin-a" }),
+    }));
+
+    expect(listResponse.status).toBe(200);
+    expect(saveResponse.status).toBe(200);
+    expect(deleteResponse.status).toBe(200);
+    expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual(expect.arrayContaining([
+      "GET http://data-service/v1/bots/qa-bot/project-env",
+      "PUT http://data-service/v1/bots/qa-bot/project-env",
+      "DELETE http://data-service/v1/bots/qa-bot/project-env",
+    ]));
+    expect(calls.filter((call) => call.url === "http://log-service/v1/audit-events")).toHaveLength(2);
+    expect(JSON.stringify(calls.filter((call) => call.url === "http://log-service/v1/audit-events")))
+      .not.toContain("private-value");
+  });
+
   it("exposes a prominent bot private capability management entry", async () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",

@@ -172,11 +172,16 @@ services:
       KIRO_RELAY_URL: "http://host.docker.internal:8210/v1/kiro/chat"
       KIRO_RELAY_STREAM: "true"
       KIRO_RELAY_STREAM_URL: "http://host.docker.internal:8210/v1/kiro/chat/stream"
-      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-180000}"
+      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-300000}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
       KIRO_RELAY_AUTH_TOKEN: "${KIRO_RELAY_AUTH_TOKEN:-}"
+      MCP_SERVICE_URL: "http://mcp-service:8800"
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
     ports:
       - "8200:8200"
+    depends_on:
+      mcp-service:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -199,7 +204,10 @@ services:
       WORKSPACE_ROOT: "/workspace/runtime/bots"
       DATA_SERVICE_URL: "http://data-service:8300"
       KIRO_WORKSPACE_ROOT: "/kiro-workspaces"
+      PROJECT_REPOSITORY_CACHE_ROOT: "/workspace/runtime/repository-cache"
       SKILL_CATALOG_ROOT: "/skill-catalog"
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
+      USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
     ports:
       - "8700:8700"
     volumes:
@@ -216,6 +224,35 @@ services:
           "node",
           "-e",
           "fetch('http://127.0.0.1:8700/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  mcp-service:
+    build:
+      context: ../..
+      dockerfile: services/mcp-service/Dockerfile
+    environment:
+      PORT: "8800"
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
+      DATA_SERVICE_URL: "http://data-service:8300"
+      CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
+    ports:
+      - "8800:8800"
+    depends_on:
+      data-service:
+        condition: service_healthy
+      capability-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8800/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 10s
       timeout: 3s

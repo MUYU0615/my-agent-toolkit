@@ -10,6 +10,9 @@ import {
 import type { CredentialVault, UserCredentialPayload } from "./credentialVault.js";
 import { timingSafeEqual } from "node:crypto";
 
+const PROJECT_DOTENV_ENV_KEY = "__PROJECT_DOTENV_FILE__";
+const MAX_PROJECT_DOTENV_BYTES = 256 * 1024;
+
 export interface DataServiceServer {
   fetch(request: Request): Promise<Response>;
 }
@@ -65,6 +68,39 @@ export function createDataServiceServer(
         && url.pathname === "/internal/user-credentials/runtime-env"
       ) {
         return handleGetUserCredentialRuntimeEnv(request, url, store, config);
+      }
+
+      if (
+        request.method === "GET"
+        && url.pathname === "/internal/user-credentials/project-git"
+      ) {
+        return handleGetUserCredentialProjectGit(request, url, store, config);
+      }
+
+      const internalProjectEnvMatch = url.pathname.match(
+        /^\/internal\/bots\/([^/]+)\/project-env$/,
+      );
+      if (request.method === "GET" && internalProjectEnvMatch) {
+        return withDecodedBotId(internalProjectEnvMatch[1], (botId) =>
+          handleGetInternalBotProjectEnv(request, store, config, botId),
+        );
+      }
+
+      const projectEnvMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/project-env$/);
+      if (request.method === "GET" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handleGetBotProjectEnvMetadata(store, botId),
+        );
+      }
+      if (request.method === "PUT" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handlePutBotProjectEnv(request, store, config, botId),
+        );
+      }
+      if (request.method === "DELETE" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handleDeleteBotProjectEnv(store, botId),
+        );
       }
 
       if (request.method === "POST" && url.pathname === "/v1/bots") {
@@ -1037,10 +1073,111 @@ function handleListBotEnvVars(
   botId: string,
 ): Response {
   try {
-    return jsonResponse({ items: store.listBotEnvVars(botId) });
+    return jsonResponse({
+      items: store.listBotEnvVars(botId)
+        .filter((item) => item.key !== PROJECT_DOTENV_ENV_KEY),
+    });
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function handleGetBotProjectEnvMetadata(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse({
+      configured: Boolean(record),
+      ...(record ? { updated_at: record.updated_at } : {}),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handlePutBotProjectEnv(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  botId: string,
+): Promise<Response> {
+  try {
+    if (!config.credentialVault) {
+      return jsonResponse({ error: "credential vault is not configured" }, 503);
+    }
+    const body = await request.json() as {
+      content?: unknown;
+      updated_by_wecom_user_id?: unknown;
+    };
+    const content = requireProjectDotenvContent(body.content);
+    const record = store.upsertBotEnvVar(botId, {
+      key: PROJECT_DOTENV_ENV_KEY,
+      value_ciphertext: config.credentialVault.encryptText(content),
+      updated_by_wecom_user_id: requireText(
+        body.updated_by_wecom_user_id,
+        "updated_by_wecom_user_id",
+      ),
+    });
+    return jsonResponse({
+      configured: true,
+      updated_at: record.updated_at,
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteBotProjectEnv(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    store.deleteBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse({ configured: false });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetInternalBotProjectEnv(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  botId: string,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "credential vault is not configured" }, 503);
+  }
+  try {
+    const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse(record
+      ? {
+          configured: true,
+          content: config.credentialVault.decryptText(record.value_ciphertext),
+        }
+      : { configured: false });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function requireProjectDotenvContent(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error("project .env content is required");
+  }
+  if (value.includes("\0")) {
+    throw new Error("project .env content contains an invalid character");
+  }
+  if (Buffer.byteLength(value, "utf8") > MAX_PROJECT_DOTENV_BYTES) {
+    throw new Error("project .env content is too large");
+  }
+  return value;
 }
 
 async function handleUpsertBotEnvVar(
@@ -1939,7 +2076,11 @@ async function handleCompleteUserCredentialBinding(
   }
   try {
     const body = await request.json() as Record<string, unknown>;
-    const payload = normalizeCredentialPayload(body);
+    const binding = store.getUserCredentialBinding(decodeURIComponent(encodedToken));
+    if (!binding) {
+      return jsonResponse({ error: "credential binding link is invalid or expired" }, 404);
+    }
+    const payload = normalizeCredentialPayload(binding.provider, body);
     const metadata = store.completeUserCredentialBinding({
       token: decodeURIComponent(encodedToken),
       payload_ciphertext: config.credentialVault.encrypt(payload),
@@ -1999,6 +2140,9 @@ function handleGetUserCredentialRuntimeEnv(
       return jsonResponse({ env: {} });
     }
     const payload = config.credentialVault.decrypt(credential.payload_ciphertext);
+    if (payload.provider === "github_fork") {
+      return jsonResponse({ env: {} });
+    }
     return jsonResponse({
       env: {
         MY_AGENT_JIRA_CREDENTIAL_VERSION: credential.updated_at,
@@ -2019,6 +2163,45 @@ function handleGetUserCredentialRuntimeEnv(
   }
 }
 
+function handleGetUserCredentialProjectGit(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "user credential vault is not configured" }, 503);
+  }
+  try {
+    const scope = credentialScopeFromUrl(url);
+    if (scope.provider !== "github_fork") {
+      return jsonResponse({ error: "github fork credential is required" }, 400);
+    }
+    const projectKey = requireText(url.searchParams.get("project_key"), "project_key");
+    const credential = store.getUserCredential(scope);
+    if (!credential) {
+      return jsonResponse({ error: "GitHub fork is not bound for the current WeCom user and Bot. Send /github bind first." }, 404);
+    }
+    const payload = config.credentialVault.decrypt(credential.payload_ciphertext);
+    if (payload.provider !== "github_fork") {
+      return jsonResponse({ error: "GitHub fork credential is invalid" }, 500);
+    }
+    return jsonResponse({
+      project_key: projectKey,
+      repository_url: payload.repository_url,
+      branch: payload.branch,
+      access_token: payload.access_token,
+      credential_version: credential.updated_at,
+    });
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "GitHub credential lookup failed" }, 500);
+  }
+}
+
 function credentialScopeFromUrl(url: URL) {
   return {
     bot_id: requireText(url.searchParams.get("bot_id"), "bot_id"),
@@ -2030,16 +2213,25 @@ function credentialScopeFromUrl(url: URL) {
   };
 }
 
-function requireCredentialProvider(value: unknown): "easemob_jira" {
-  if (value !== "easemob_jira") {
+function requireCredentialProvider(value: unknown): "easemob_jira" | "github_fork" {
+  if (value !== "easemob_jira" && value !== "github_fork") {
     throw new Error("unsupported credential provider");
   }
   return value;
 }
 
 function normalizeCredentialPayload(
+  provider: "easemob_jira" | "github_fork",
   body: Record<string, unknown>,
 ): UserCredentialPayload {
+  if (provider === "github_fork") {
+    return {
+      provider,
+      access_token: requireSecret(body.access_token, "access_token"),
+      repository_url: requireSecret(body.repository_url, "repository_url"),
+      branch: requireSecret(body.branch, "branch"),
+    };
+  }
   const username = requireSecret(body.username, "username");
   const password = requireSecret(body.password, "password");
   const redirectUsername = optionalSecret(body.redirect_username);
@@ -2048,6 +2240,7 @@ function normalizeCredentialPayload(
     throw new Error("redirect username and password must be provided together");
   }
   return {
+    provider,
     username,
     password,
     ...(redirectUsername ? { redirect_username: redirectUsername } : {}),

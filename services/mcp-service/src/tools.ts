@@ -10,6 +10,7 @@ import {
 } from "@my-agent-toolkit/contracts";
 import type { DataServiceClient } from "./dataClient.js";
 import type { MemoryBackendClient } from "./memoryBackendClient.js";
+import type { ProjectClient } from "./projectClient.js";
 
 export interface McpToolCall {
   tool: string;
@@ -22,6 +23,7 @@ export interface McpToolDependencies {
     Partial<Pick<MemoryBackendClient, "ingestFile" | "fetchUrl" | "scanDirectory" | "deleteMemory">>;
   allowedDirectoryRefs?: Record<string, string>;
   capabilityConfig?: McpCapabilityConfig;
+  projectClient?: ProjectClient;
 }
 
 export type McpToolResult =
@@ -45,7 +47,7 @@ export interface McpToolManifest {
 
 export interface McpToolDescriptor {
   name: string;
-  category: "document" | "memory" | "search";
+  category: "document" | "memory" | "search" | "project";
   description: string;
   input_schema: {
     type: "object";
@@ -162,6 +164,43 @@ export function listMcpTools(options: {
       ["query", "scopes", "owner_ids"],
       searchProperties(),
       { writes: [], reads: readableScopes() },
+    ),
+    toolDescriptor(
+      "project.ensure",
+      "project",
+      "Prepare the current WeCom user's bound GitHub fork in the conversation workspace. Call only when repository files are required.",
+      ["project_key"],
+      { project_key: stringProperty() },
+      { writes: [], reads: [] },
+    ),
+    toolDescriptor(
+      "project.inspect",
+      "project",
+      "Read the current WeCom user's bound GitHub fork overview without creating a conversation workspace.",
+      ["project_key"],
+      { project_key: stringProperty() },
+      { writes: [], reads: [] },
+    ),
+    toolDescriptor(
+      "project.read",
+      "project",
+      "Read a safe text file from the current WeCom user's bound GitHub fork without creating a conversation workspace.",
+      ["project_key", "path"],
+      {
+        project_key: stringProperty(),
+        path: stringProperty(),
+        start_line: integerProperty({ minimum: 1 }),
+        end_line: integerProperty({ minimum: 1 }),
+      },
+      { writes: [], reads: [] },
+    ),
+    toolDescriptor(
+      "project.search",
+      "project",
+      "Search safe source files in the current WeCom user's bound GitHub fork without creating a conversation workspace.",
+      ["project_key", "query"],
+      { project_key: stringProperty(), query: stringProperty(), path: stringProperty() },
+      { writes: [], reads: [] },
     ),
   ].filter((tool) => !enabledTools || enabledTools.has(tool.name));
   return {
@@ -420,6 +459,41 @@ export async function callMcpTool(
       };
     }
 
+    if (call.tool === "project.ensure") {
+      const input = parseProjectEnsureInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return {
+        ok: true,
+        result: await deps.projectClient.ensure(context, input.project_key),
+      };
+    }
+
+    if (call.tool === "project.inspect") {
+      const input = parseProjectEnsureInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return { ok: true, result: await deps.projectClient.inspect(context, input.project_key) };
+    }
+
+    if (call.tool === "project.read") {
+      const input = parseProjectReadInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return { ok: true, result: await deps.projectClient.read(context, input) };
+    }
+
+    if (call.tool === "project.search") {
+      const input = parseProjectSearchInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return { ok: true, result: await deps.projectClient.search(context, input) };
+    }
+
     return toolError("validation_error", `unsupported MCP tool: ${call.tool}`);
   } catch (error) {
     return toolError(errorCodeFor(error), errorMessageFor(error));
@@ -584,6 +658,13 @@ function stringProperty(extra: Record<string, unknown> = {}): Record<string, unk
   };
 }
 
+function integerProperty(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    type: "integer",
+    ...extra,
+  };
+}
+
 function assertDocumentWritePermission(
   context: TrustedMcpContext,
   input: DocumentCreateInput,
@@ -739,6 +820,10 @@ interface DeleteInput {
   memory_id: string;
 }
 
+interface ProjectEnsureInput {
+  project_key: string;
+}
+
 interface DocumentIngestFileInput extends DocumentCreateInput {
   filename: string;
 }
@@ -867,6 +952,41 @@ function parseDeleteInput(value: unknown): DeleteInput {
   const record = requireRecord(value, "delete input");
   return {
     memory_id: readRequiredString(record, "memory_id"),
+  };
+}
+
+function parseProjectEnsureInput(value: unknown): ProjectEnsureInput {
+  const record = requireRecord(value, "project ensure input");
+  return {
+    project_key: readRequiredString(record, "project_key"),
+  };
+}
+
+function parseProjectReadInput(value: unknown): {
+  projectKey: string;
+  path: string;
+  startLine?: number;
+  endLine?: number;
+} {
+  const record = requireRecord(value, "project read input");
+  return {
+    projectKey: readRequiredString(record, "project_key"),
+    path: readRequiredString(record, "path"),
+    ...(record.start_line === undefined ? {} : { startLine: parsePositiveInteger(record.start_line, "start_line") }),
+    ...(record.end_line === undefined ? {} : { endLine: parsePositiveInteger(record.end_line, "end_line") }),
+  };
+}
+
+function parseProjectSearchInput(value: unknown): {
+  projectKey: string;
+  query: string;
+  path?: string;
+} {
+  const record = requireRecord(value, "project search input");
+  return {
+    projectKey: readRequiredString(record, "project_key"),
+    query: readRequiredString(record, "query"),
+    ...(record.path === undefined ? {} : { path: readRequiredString(record, "path") }),
   };
 }
 

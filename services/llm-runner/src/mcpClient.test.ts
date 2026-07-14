@@ -85,6 +85,8 @@ describe("mcpClient", () => {
     expect(section).toContain("Allowed directory refs: knowledge-base");
     expect(section).toContain("document.create");
     expect(section).toContain("required: scope, owner_id, title, doc_type, content");
+    expect(section).toContain("&lt;mcp_tool_call&gt;{\"tool\":\"tool.name\",\"input\":{}}&lt;/mcp_tool_call&gt;");
+    expect(section).toContain("Do not invoke native Kiro CLI tools");
     expect(section).toContain("</mcp_tools>");
   });
 

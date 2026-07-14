@@ -81,6 +81,7 @@ services:
     command: ["npx", "tsx", "watch", "services/llm-runner/src/main.ts"]
     environment:
       NODE_ENV: development
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-local-dev-mcp-secret}"
     depends_on:
       contracts-watch:
         condition: service_healthy
@@ -96,8 +97,24 @@ services:
     command: ["npx", "tsx", "watch", "services/capability-runner/src/main.ts"]
     environment:
       NODE_ENV: development
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-local-dev-mcp-secret}"
     volumes:
       - ../../services/capability-runner/src:/app/services/capability-runner/src:ro
+
+  mcp-service:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/mcp-service/src/main.ts"]
+    environment:
+      NODE_ENV: development
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-local-dev-mcp-secret}"
+    depends_on:
+      contracts-watch:
+        condition: service_healthy
+    volumes:
+      - ../../services/mcp-service/src:/app/services/mcp-service/src:ro
+      - ../../packages/contracts/src:/app/packages/contracts/src:ro
+      - contracts-dev-dist:/app/packages/contracts/dist
 
 volumes:
   contracts-dev-dist:

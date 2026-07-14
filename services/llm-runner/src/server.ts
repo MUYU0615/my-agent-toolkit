@@ -99,20 +99,12 @@ async function handleChatStream(
               controller.close();
               return;
             }
-            const firstOutput = await collectRuntimeStream(runtimeResult.stream);
-            const toolRequest = parseMcpToolCallRequest(firstOutput);
-            if (toolRequest.status === "none") {
-              enqueueChunk(controller, encoder, firstOutput);
-            } else {
-              const toolResult = toolRequest.status === "call"
-                ? await executeMcpToolCall(config, chatRequest, toolRequest.call)
-                : formatMcpToolResult(toolRequest.result);
-              const secondRuntimeResult = await runRuntimeStreamResolved(config, {
-                ...chatRequest,
-                prompt: toolResult,
-              });
-              await pipeRuntimeStream(secondRuntimeResult.stream, controller, encoder);
-            }
+            const finalOutput = await continueAfterMcpToolCallsStream(
+              config,
+              chatRequest,
+              runtimeResult,
+            );
+            enqueueChunk(controller, encoder, finalOutput);
             controller.enqueue(encoder.encode(ndjsonLine({ type: "done" })));
             controller.close();
           } catch (error) {
@@ -198,7 +190,7 @@ async function handleChat(
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
     releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntime(config, runtimeRequest);
-    const finalResult = await continueAfterMcpToolCall(config, chatRequest, runtimeResult);
+    const finalResult = await continueAfterMcpToolCalls(config, chatRequest, runtimeResult);
     const response: ChatResponse = {
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: finalResult.runner_session_id,
@@ -231,7 +223,7 @@ async function handleChat(
   }
 }
 
-async function continueAfterMcpToolCall(
+async function continueAfterMcpToolCalls(
   config: RunnerConfig,
   chatRequest: ReturnType<typeof parseChatRequest>,
   runtimeResult: RuntimeResult,
@@ -239,17 +231,94 @@ async function continueAfterMcpToolCall(
   if (!config.mcp) {
     return runtimeResult;
   }
-  const toolRequest = parseMcpToolCallRequest(runtimeResult.output);
-  if (toolRequest.status === "none") {
-    return runtimeResult;
+  let currentResult = runtimeResult;
+  for (let round = 0; round < getMaxMcpToolRounds(config); round += 1) {
+    const toolRequest = parseMcpToolCallRequest(currentResult.output);
+    if (toolRequest.status === "none") {
+      return currentResult;
+    }
+    currentResult = await runRuntime(config, {
+      ...chatRequest,
+      prompt: await resolveMcpToolResult(config, chatRequest, toolRequest),
+    });
   }
-  const toolResult = toolRequest.status === "call"
-    ? await executeMcpToolCall(config, chatRequest, toolRequest.call)
-    : formatMcpToolResult(toolRequest.result);
-  return runRuntime(config, {
+  const finalResult = await runRuntime(config, {
     ...chatRequest,
-    prompt: toolResult,
+    prompt: formatMcpToolResult({
+      ok: false,
+      error: {
+        code: "tool_call_limit_reached",
+        message: "The runner reached the MCP tool-call limit. Do not call more tools; provide the best available answer now.",
+      },
+    }),
   });
+  return withoutLeakedMcpToolCall(finalResult);
+}
+
+async function continueAfterMcpToolCallsStream(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  runtimeResult: RuntimeStreamResult,
+): Promise<string> {
+  if (!config.mcp) {
+    return collectRuntimeStream(runtimeResult.stream);
+  }
+  let currentResult = runtimeResult;
+  for (let round = 0; round < getMaxMcpToolRounds(config); round += 1) {
+    const output = await collectRuntimeStream(currentResult.stream);
+    const toolRequest = parseMcpToolCallRequest(output);
+    if (toolRequest.status === "none") {
+      return output;
+    }
+    currentResult = await runRuntimeStreamResolved(config, {
+      ...chatRequest,
+      prompt: await resolveMcpToolResult(config, chatRequest, toolRequest),
+    });
+  }
+  const finalResult = await runRuntimeStreamResolved(config, {
+    ...chatRequest,
+    prompt: formatMcpToolResult({
+      ok: false,
+      error: {
+        code: "tool_call_limit_reached",
+        message: "The runner reached the MCP tool-call limit. Do not call more tools; provide the best available answer now.",
+      },
+    }),
+  });
+  return withoutLeakedMcpToolCallOutput(
+    await collectRuntimeStream(finalResult.stream),
+  );
+}
+
+function getMaxMcpToolRounds(config: RunnerConfig): number {
+  return config.mcp?.max_tool_rounds ?? 4;
+}
+
+function withoutLeakedMcpToolCall(result: RuntimeResult): RuntimeResult {
+  return {
+    ...result,
+    output: withoutLeakedMcpToolCallOutput(result.output),
+  };
+}
+
+function withoutLeakedMcpToolCallOutput(output: string): string {
+  return parseMcpToolCallRequest(output).status === "none"
+    ? output
+    : "当前任务需要的工具调用次数过多，已停止继续调用。请缩小问题范围后重试。";
+}
+
+async function resolveMcpToolResult(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  toolRequest: ReturnType<typeof parseMcpToolCallRequest>,
+): Promise<string> {
+  if (toolRequest.status === "call") {
+    return executeMcpToolCall(config, chatRequest, toolRequest.call);
+  }
+  if (toolRequest.status === "error") {
+    return formatMcpToolResult(toolRequest.result);
+  }
+  throw new Error("MCP tool result requested without a tool call");
 }
 
 interface RuntimeSessionRecord {
@@ -418,6 +487,7 @@ async function withBotEnv(
       ...userEnv,
       KIRO_RELAY_BOT_ID: chatRequest.bot_id,
       KIRO_RELAY_USER_ID: chatRequest.user_id,
+      KIRO_RELAY_CONVERSATION_ID: chatRequest.conversation_id,
     },
   };
 }

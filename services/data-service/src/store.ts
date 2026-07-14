@@ -32,6 +32,10 @@ export interface BotRecord {
   wecom_connection_status: WeComConnectionStatus;
   last_wecom_check_at?: string;
   last_wecom_error?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
   created_at: string;
   updated_at: string;
 }
@@ -96,6 +100,10 @@ export interface CreateBotInput {
   runtime: string;
   wecom_bot_id?: string;
   wecom_secret?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
 }
 
 export interface UpdateBotInput {
@@ -104,7 +112,19 @@ export interface UpdateBotInput {
   status?: BotStatus;
   wecom_bot_id?: string;
   wecom_secret?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
 }
+
+export type BotProjectConfig = Pick<
+  BotRecord,
+  | "project_key"
+  | "project_repository_url"
+  | "project_default_branch"
+  | "project_directory"
+>;
 
 export interface ConversationRecord {
   conversation_id: string;
@@ -238,7 +258,7 @@ export interface BotEnvVarMetadataRecord {
   updated_at: string;
 }
 
-export type UserCredentialProvider = "easemob_jira";
+export type UserCredentialProvider = "easemob_jira" | "github_fork";
 
 export interface UserCredentialRecord {
   bot_id: string;
@@ -795,6 +815,7 @@ export interface DataStore {
     input: UpdateBotRuntimePolicyInput,
   ): BotRuntimePolicyRecord;
   upsertBotEnvVar(botId: string, input: UpsertBotEnvVarInput): BotEnvVarRecord;
+  getBotEnvVar(botId: string, key: string): BotEnvVarRecord | undefined;
   listBotEnvVars(botId: string): BotEnvVarMetadataRecord[];
   deleteBotEnvVar(botId: string, key: string): void;
   createUserCredentialBinding(input: UserCredentialScopeInput): UserCredentialBindingRecord;
@@ -926,6 +947,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       const now = new Date().toISOString();
       const wecomSecret = optionalText(input.wecom_secret);
       const wecomBotId = optionalText(input.wecom_bot_id);
+      const project = normalizeBotProjectConfig(input);
       assertUniqueWeComBotId(bots, wecomBotId);
       const bot: BotRecord = {
         bot_id: requireText(input.bot_id, "bot_id"),
@@ -935,6 +957,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         wecom_bot_id: wecomBotId,
         wecom_secret_configured: Boolean(wecomSecret),
         wecom_connection_status: "unchecked",
+        ...project,
         created_at: now,
         updated_at: now,
       };
@@ -960,6 +983,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         ? bot.wecom_bot_id
         : optionalText(input.wecom_bot_id);
       assertUniqueWeComBotId(bots, wecomBotId, bot.bot_id);
+      const project = normalizeBotProjectConfig(input, bot);
       const updated: BotRecord = {
         ...bot,
         name: input.name === undefined ? bot.name : requireText(input.name, "name"),
@@ -976,6 +1000,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         wecom_connection_status: "unchecked",
         last_wecom_check_at: undefined,
         last_wecom_error: undefined,
+        ...project,
         updated_at: nextIsoTimestamp(bot.updated_at),
       };
       bots.set(bot.bot_id, updated);
@@ -1271,6 +1296,15 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       };
       botEnvVars.set(key, record);
       return cloneBotEnvVarRecord(record);
+    },
+
+    getBotEnvVar(botId, envKey) {
+      const bot = getRequiredBot(bots, botId);
+      const record = botEnvVars.get(botCapabilityScopedKey(
+        bot.bot_id,
+        requireText(envKey, "key"),
+      ));
+      return record ? cloneBotEnvVarRecord(record) : undefined;
     },
 
     listBotEnvVars(botId) {
@@ -3100,6 +3134,81 @@ export function optionalText(value: string | undefined): string | undefined {
   return trimmed === "" ? undefined : trimmed;
 }
 
+export function normalizeBotProjectConfig(
+  input: Partial<BotProjectConfig>,
+  existing: Partial<BotProjectConfig> = {},
+): BotProjectConfig {
+  const repositoryUrl = input.project_repository_url === undefined
+    ? existing.project_repository_url
+    : optionalText(input.project_repository_url);
+  if (!repositoryUrl) {
+    return {
+      project_key: undefined,
+      project_repository_url: undefined,
+      project_default_branch: undefined,
+      project_directory: undefined,
+    };
+  }
+
+  validateProjectRepositoryUrl(repositoryUrl);
+  const projectKey = requireSafeProjectSegment(
+    input.project_key === undefined
+      ? existing.project_key ?? projectKeyFromRepositoryUrl(repositoryUrl)
+      : optionalText(input.project_key) ?? projectKeyFromRepositoryUrl(repositoryUrl),
+    "project_key",
+  );
+  const projectDirectory = requireSafeProjectSegment(
+    input.project_directory === undefined
+      ? existing.project_directory ?? projectKey
+      : optionalText(input.project_directory) ?? projectKey,
+    "project_directory",
+  );
+  const defaultBranch = requireText(
+    input.project_default_branch === undefined
+      ? existing.project_default_branch ?? "main"
+      : optionalText(input.project_default_branch) ?? "main",
+    "project_default_branch",
+  );
+  if (defaultBranch.startsWith("-") || defaultBranch.length > 255) {
+    throw new Error("project_default_branch is invalid");
+  }
+  return {
+    project_key: projectKey,
+    project_repository_url: repositoryUrl,
+    project_default_branch: defaultBranch,
+    project_directory: projectDirectory,
+  };
+}
+
+function projectKeyFromRepositoryUrl(repositoryUrl: string): string {
+  const path = /^https:\/\//i.test(repositoryUrl)
+    ? new URL(repositoryUrl).pathname
+    : repositoryUrl.replace(/^ssh:\/\//, "").replace(/^[^:]+:/, "");
+  return path.replace(/\/+$/, "").split("/").at(-1)?.replace(/\.git$/i, "") ?? "";
+}
+
+function requireSafeProjectSegment(value: string | undefined, field: string): string {
+  const segment = requireText(value ?? "", field);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(segment)) {
+    throw new Error(`${field} must be a safe path segment`);
+  }
+  return segment;
+}
+
+function validateProjectRepositoryUrl(value: string): void {
+  if (/^https:\/\//i.test(value)) {
+    const url = new URL(value);
+    if (url.username || url.password) {
+      throw new Error("project_repository_url must not contain credentials");
+    }
+    return;
+  }
+  if (/^(?:ssh:\/\/[^\s]+|git@[^\s:]+:[^\s]+)$/.test(value)) {
+    return;
+  }
+  throw new Error("project_repository_url must be an HTTPS or SSH Git URL");
+}
+
 export function buildWeComConnectionTestResult(
   bot: Pick<BotRecord, "bot_id" | "wecom_bot_id" | "wecom_secret_configured">,
   verification?: { verified: true } | { verified: false; error: string },
@@ -3353,7 +3462,7 @@ export function hashCredentialBindingToken(token: string): string {
 }
 
 export function requireUserCredentialProvider(value: string): UserCredentialProvider {
-  if (value !== "easemob_jira") {
+  if (value !== "easemob_jira" && value !== "github_fork") {
     throw new Error("unsupported credential provider");
   }
   return value;

@@ -71,7 +71,7 @@ export interface BotCapabilityAuditLogDto {
 export interface UserCredentialScopeDto {
   bot_id: string;
   wecom_user_id: string;
-  provider: "easemob_jira";
+  provider: "easemob_jira" | "github_fork";
 }
 
 export interface UserCredentialStatusDto extends UserCredentialScopeDto {
@@ -81,7 +81,7 @@ export interface UserCredentialStatusDto extends UserCredentialScopeDto {
 
 export interface UserCredentialBindingDto {
   token: string;
-  provider: "easemob_jira";
+  provider: "easemob_jira" | "github_fork";
   expires_at: string;
 }
 
@@ -97,7 +97,7 @@ export async function createUserCredentialBinding(
       body: JSON.stringify(input),
     },
   ));
-  return credentialResponse<UserCredentialBindingDto>(response, "create Jira binding");
+  return credentialResponse<UserCredentialBindingDto>(response, "create user credential binding");
 }
 
 export async function getUserCredentialStatus(
@@ -108,7 +108,7 @@ export async function getUserCredentialStatus(
     `${config.dataServiceUrl}/internal/user-credentials?${credentialScopeQuery(input)}`,
     { headers: credentialInternalHeaders(config, false) },
   ));
-  return credentialResponse<UserCredentialStatusDto>(response, "get Jira binding status");
+  return credentialResponse<UserCredentialStatusDto>(response, "get user credential binding status");
 }
 
 export async function deleteUserCredential(
@@ -119,7 +119,7 @@ export async function deleteUserCredential(
     `${config.dataServiceUrl}/internal/user-credentials?${credentialScopeQuery(input)}`,
     { method: "DELETE", headers: credentialInternalHeaders(config, false) },
   ));
-  await credentialResponse(response, "delete Jira binding");
+  await credentialResponse(response, "delete user credential binding");
 }
 
 function credentialScopeQuery(input: UserCredentialScopeDto): string {

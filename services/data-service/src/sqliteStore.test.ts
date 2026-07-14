@@ -63,6 +63,58 @@ describe("sqlite data store", () => {
     }
   });
 
+  it("persists Bot main project configuration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getBot("qa-bot")).toMatchObject({
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    second.close?.();
+  });
+
+  it("persists repository-only project configuration with derived defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "",
+      project_repository_url: "git@github.com:example/im-test-hub.git",
+      project_default_branch: "",
+      project_directory: "",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getBot("qa-bot")).toMatchObject({
+      project_key: "im-test-hub",
+      project_repository_url: "git@github.com:example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    second.close?.();
+  });
+
   it("persists bot admin and conversation records across store instances", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);

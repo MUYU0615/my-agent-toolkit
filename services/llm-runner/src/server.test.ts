@@ -216,6 +216,98 @@ describe("llm-runner server", () => {
     ]);
   });
 
+  it("executes multiple MCP tool calls before returning the final answer", async () => {
+    const mcpRequests: Request[] = [];
+    const command = [
+      "let input = '';",
+      "process.stdin.on('data', chunk => input += chunk);",
+      "process.stdin.on('end', () => {",
+      "  if (input.includes('project overview')) {",
+      "    process.stdout.write('项目分析完成');",
+      "  } else if (input.includes('README.md')) {",
+      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"project.read\",\"input\":{\"path\":\"README.md\"}}</mcp_tool_call>');",
+      "  } else {",
+      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"project.inspect\",\"input\":{}}</mcp_tool_call>');",
+      "  }",
+      "});",
+    ].join(" ");
+    let invocation = 0;
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: { command: process.execPath, args: ["-e", command], timeout_ms: 1000 },
+      mcp: { service_url: "http://mcp-service:8700", runner_secret: "runner-secret" },
+      fetch: async (input) => {
+        const request = input instanceof Request ? input : new Request(input);
+        mcpRequests.push(request);
+        if (request.url.endsWith("/tools")) {
+          return Response.json({ version: 1, directory_refs: [], tools: [] });
+        }
+        invocation += 1;
+        if (invocation === 1) {
+          return Response.json({ ok: true, result: { files: ["README.md"] } });
+        }
+        if (invocation === 2) {
+          return Response.json({ ok: true, result: { content: "project overview" } });
+        }
+        return Response.json({ ok: true, result: { ignored: true } });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-multi-tool",
+        runtime: "kiro",
+        prompt: "analyze project",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.output).toBe("项目分析完成");
+    expect(mcpRequests.filter((request) => request.url.endsWith("/tools/call"))).toHaveLength(2);
+  });
+
+  it("does not expose a tool call when the MCP tool-call limit is reached", async () => {
+    const command = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => process.stdout.write('<mcp_tool_call>{\"tool\":\"memory.stats\",\"input\":{}}</mcp_tool_call>'));",
+    ].join(" ");
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: { command: process.execPath, args: ["-e", command], timeout_ms: 1000 },
+      mcp: {
+        service_url: "http://mcp-service:8700",
+        runner_secret: "runner-secret",
+        max_tool_rounds: 1,
+      },
+      fetch: async (input) => {
+        const request = input instanceof Request ? input : new Request(input);
+        if (request.url.endsWith("/tools")) {
+          return Response.json({ version: 1, directory_refs: [], tools: [] });
+        }
+        return Response.json({ ok: true, result: {} });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-tool-limit",
+        runtime: "kiro",
+        prompt: "keep calling",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.output).toBe("当前任务需要的工具调用次数过多，已停止继续调用。请缩小问题范围后重试。");
+  });
+
   it("returns not implemented for unavailable runtimes", async () => {
     const server = createLlmRunnerServer();
     const response = await server.fetch(
@@ -422,6 +514,7 @@ describe("llm-runner server", () => {
     const sentinelPath = `/tmp/${secretKey}-value.txt`;
     const relayBotIdPath = `/tmp/${secretKey}-relay-bot-id.txt`;
     const relayUserIdPath = `/tmp/${secretKey}-relay-user-id.txt`;
+    const relayConversationIdPath = `/tmp/${secretKey}-relay-conversation-id.txt`;
     const jiraUsernamePath = `/tmp/${secretKey}-jira-username.txt`;
     const server = createLlmRunnerServer({
       enabled_runtimes: ["kiro"],
@@ -435,6 +528,7 @@ describe("llm-runner server", () => {
             `fs.writeFileSync(${JSON.stringify(sentinelPath)}, value, 'utf8');`,
             `fs.writeFileSync(${JSON.stringify(relayBotIdPath)}, process.env.KIRO_RELAY_BOT_ID || 'missing', 'utf8');`,
             `fs.writeFileSync(${JSON.stringify(relayUserIdPath)}, process.env.KIRO_RELAY_USER_ID || 'missing', 'utf8');`,
+            `fs.writeFileSync(${JSON.stringify(relayConversationIdPath)}, process.env.KIRO_RELAY_CONVERSATION_ID || 'missing', 'utf8');`,
             `fs.writeFileSync(${JSON.stringify(jiraUsernamePath)}, process.env.EASEMOB_JIRA_USERNAME || 'missing', 'utf8');`,
             "process.stdout.write(`secret=${value}`);",
           ].join(" "),
@@ -446,6 +540,7 @@ describe("llm-runner server", () => {
         return {
           [secretKey]: "sk-live-secret",
           KIRO_RELAY_BOT_ID: "spoofed-bot-id",
+          KIRO_RELAY_CONVERSATION_ID: "spoofed-conversation-id",
         };
       }),
       resolveUserEnvVars: vi.fn(async (botId: string, userId: string) => {
@@ -475,6 +570,7 @@ describe("llm-runner server", () => {
     await expect(fs.readFile(sentinelPath, "utf8")).resolves.toBe("sk-live-secret");
     await expect(fs.readFile(relayBotIdPath, "utf8")).resolves.toBe("prd-bot");
     await expect(fs.readFile(relayUserIdPath, "utf8")).resolves.toBe("user-a");
+    await expect(fs.readFile(relayConversationIdPath, "utf8")).resolves.toBe("conv-1");
     await expect(fs.readFile(jiraUsernamePath, "utf8")).resolves.toBe("jira-user-a");
   });
 
@@ -647,8 +743,7 @@ describe("llm-runner server", () => {
       runner_session_id: "kiro:prd-bot:user-a:conv-1",
     });
     expect(lines.slice(1)).toEqual([
-      { type: "chunk", content: "最终" },
-      { type: "chunk", content: "回复" },
+      { type: "chunk", content: "最终回复" },
       { type: "done" },
     ]);
     expect(JSON.stringify(lines)).not.toContain("mcp_tool_call");

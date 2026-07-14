@@ -34,6 +34,14 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return handleJiraCredentialBindingSubmit(request, config);
       }
 
+      if (request.method === "GET" && url.pathname === "/bind/github") {
+        return handleGitHubCredentialBindingPage(url, config);
+      }
+
+      if (request.method === "POST" && url.pathname === "/bind/github") {
+        return handleGitHubCredentialBindingSubmit(request, config);
+      }
+
       const roleAdminPageMatch = url.pathname.match(/^\/admin\/roles\/([^/]+)$/);
       if (request.method === "GET" && roleAdminPageMatch) {
         return handleRoleDetailPage(config, roleAdminPageMatch[1]);
@@ -198,6 +206,10 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
             wecom_secret_configured: Boolean(
               payload.wecom_secret_configured ?? body.wecom_secret,
             ),
+            project_key: payload.project_key ?? body.project_key,
+            project_configured: Boolean(
+              payload.project_repository_url ?? body.project_repository_url,
+            ),
           }),
         });
       }
@@ -250,7 +262,46 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
               wecom_secret_configured: Boolean(
                 payload.wecom_secret_configured ?? body.wecom_secret,
               ),
+              project_key: payload.project_key ?? body.project_key,
+              project_configured: Boolean(payload.project_repository_url),
             }),
+          },
+        );
+      }
+
+      const botProjectEnvMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/project-env$/);
+      if (request.method === "GET" && botProjectEnvMatch) {
+        return proxyGetRequest(
+          `${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botProjectEnvMatch[1])}/project-env`,
+          config,
+        );
+      }
+      if (request.method === "PUT" && botProjectEnvMatch) {
+        return proxyJsonRequest(
+          request,
+          `${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botProjectEnvMatch[1])}/project-env`,
+          config,
+          {
+            action: "bot.project_env.upsert",
+            targetType: "bot",
+            targetId: () => botProjectEnvMatch[1],
+            metadata: (_body, payload) => ({
+              configured: payload.configured,
+              updated_at: payload.updated_at,
+            }),
+          },
+        );
+      }
+      if (request.method === "DELETE" && botProjectEnvMatch) {
+        return proxyJsonRequest(
+          request,
+          `${config.dataServiceUrl}/v1/bots/${encodeURIComponent(botProjectEnvMatch[1])}/project-env`,
+          config,
+          {
+            action: "bot.project_env.delete",
+            targetType: "bot",
+            targetId: () => botProjectEnvMatch[1],
+            metadata: (_body, payload) => ({ configured: payload.configured }),
           },
         );
       }
@@ -1394,6 +1445,66 @@ async function handleJiraCredentialBindingSubmit(
   ));
 }
 
+async function handleGitHubCredentialBindingPage(
+  url: URL,
+  config: ControlApiConfig,
+): Promise<Response> {
+  const token = url.searchParams.get("token") ?? "";
+  if (!token) {
+    return credentialHtmlResponse(renderJiraBindingResult("绑定链接无效", "请回到企微重新发送 /github bind。", false));
+  }
+  const response = await config.fetch(
+    `${config.dataServiceUrl}/v1/credential-bindings/${encodeURIComponent(token)}`,
+  );
+  const payload = await response.json().catch(() => undefined) as
+    | { provider?: string; expires_at?: string; error?: string }
+    | undefined;
+  if (!response.ok || payload?.provider !== "github_fork") {
+    return credentialHtmlResponse(renderJiraBindingResult(
+      "绑定链接已失效",
+      payload?.error ?? "请回到企微重新发送 /github bind。",
+      false,
+    ));
+  }
+  return credentialHtmlResponse(renderGitHubBindingForm(token, payload.expires_at));
+}
+
+async function handleGitHubCredentialBindingSubmit(
+  request: Request,
+  config: ControlApiConfig,
+): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  const token = form.token ?? "";
+  if (!token) {
+    return credentialHtmlResponse(renderJiraBindingResult("绑定失败", "绑定令牌缺失，请重新发起绑定。", false));
+  }
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/v1/credential-bindings/${encodeURIComponent(token)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        access_token: form.access_token ?? "",
+        repository_url: form.repository_url ?? "",
+        branch: form.branch ?? "",
+      }),
+    },
+  ));
+  const payload = await response.json().catch(() => undefined) as { error?: string } | undefined;
+  if (!response.ok) {
+    return credentialHtmlResponse(renderJiraBindingResult(
+      "绑定失败",
+      payload?.error ?? "凭证保存失败，请回到企微重新发起绑定。",
+      false,
+    ));
+  }
+  return credentialHtmlResponse(renderJiraBindingResult(
+    "GitHub fork 绑定成功",
+    "现在可以关闭此页面，回到企微让 Bot 读取你的 fork 项目。",
+    true,
+  ));
+}
+
 function renderJiraBindingForm(token: string, expiresAt?: string): string {
   return renderCredentialPage("绑定 Jira 账号", `
     <p class="lead">账号仅用于当前企微用户在当前 Bot 中访问 Jira，不会显示给管理员。</p>
@@ -1424,6 +1535,27 @@ function renderJiraBindingForm(token: string, expiresAt?: string): string {
     </form>
     <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
     <p class="warning">请勿转发本页面地址。系统不会把密码写入 Prompt、聊天记录或 Git。</p>
+  `);
+}
+
+function renderGitHubBindingForm(token: string, expiresAt?: string): string {
+  return renderCredentialPage("绑定 GitHub fork", `
+    <p class="lead">Token、fork 地址和分支仅用于当前企微用户在当前 Bot 中读取个人 fork，不会显示给管理员或注入 Kiro。</p>
+    <form method="post" action="/bind/github" autocomplete="off">
+      <input type="hidden" name="token" value="${escapeHtmlValue(token)}">
+      <label>GitHub Personal Access Token
+        <input type="password" name="access_token" autocomplete="off" required maxlength="4096">
+      </label>
+      <label>个人 fork Git 地址
+        <input name="repository_url" inputmode="url" placeholder="https://github.com/your-account/im-test-hub.git" autocomplete="off" required maxlength="2048">
+      </label>
+      <label>分支
+        <input name="branch" value="dev" autocomplete="off" required maxlength="256">
+      </label>
+      <button type="submit">加密保存并绑定</button>
+    </form>
+    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
+    <p class="warning">请勿转发本页面地址或在企微对话中发送 Token。Token 只在服务端 Git 操作时临时使用。</p>
   `);
 }
 
@@ -2159,6 +2291,10 @@ function renderChannelWorkbenchPage(): string {
       "memory.search",
       "memory.stats",
       "search.query",
+      "project.ensure",
+      "project.inspect",
+      "project.read",
+      "project.search",
     ];
 
     function setToast(message, isError = false) {
@@ -2482,6 +2618,47 @@ function renderChannelWorkbenchPage(): string {
       '</form>';
     }
 
+    function openProjectModal(detail) {
+      const bot = detail?.bot;
+      if (!bot) {
+        setToast("项目配置尚未加载。", true);
+        return;
+      }
+      modalTitle.textContent = "项目配置 · " + bot.name;
+      modalBody.innerHTML = renderProjectConfig(bot, detail.project_env || {});
+      modalBackdrop.classList.add("open");
+      document.querySelector("#projectForm input[name='project_repository_url']")?.focus();
+    }
+
+    function renderProjectConfig(bot, projectEnv) {
+      return '<div class="form-grid">' +
+        '<form id="projectForm" class="form-grid">' +
+          '<fieldset class="field-group"><legend>主项目</legend>' +
+            '<div class="subtle">只填 Git 仓库地址也可以保存；项目标识和工作目录默认取仓库名，默认分支为 main。</div>' +
+            '<label>Git 仓库地址<input name="project_repository_url" value="' + escapeHtml(bot.project_repository_url || "") + '" placeholder="https://github.com/org/im-test-hub.git"></label>' +
+            '<div class="row-2">' +
+              '<label>项目标识<input name="project_key" value="' + escapeHtml(bot.project_key || "") + '" placeholder="默认取仓库名"></label>' +
+              '<label>工作目录<input name="project_directory" value="' + escapeHtml(bot.project_directory || "") + '" placeholder="默认取项目标识"></label>' +
+            '</div>' +
+            '<label>默认分支<input name="project_default_branch" value="' + escapeHtml(bot.project_default_branch || "main") + '" placeholder="main"></label>' +
+            '<div class="subtle">清空 Git 仓库地址并保存，会移除该 Bot 的主项目配置。普通聊天不会自动克隆仓库。</div>' +
+          '</fieldset>' +
+          '<div class="tools"><button type="submit">保存项目配置</button></div>' +
+        '</form>' +
+        '<fieldset class="field-group"><legend>项目 .env 文件</legend>' +
+          '<div class="subtle">整份文件按 Bot 加密保存，仅供受控测试运行环境使用；不会写入 Kiro 会话工作目录，已保存内容不会在页面回显。</div>' +
+          '<div>' + badge(projectEnv.configured ? "已配置" : "未配置", projectEnv.configured ? "ok" : "warn") +
+            (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(projectEnv.updated_at) + '</span>' : '') + '</div>' +
+          '<form id="projectEnvForm" class="form-grid">' +
+            '<label>.env 文件内容<textarea name="content" required spellcheck="false" autocomplete="off" placeholder="PYTHONPATH=.&#10;APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
+            '<div class="tools"><button type="submit">' + (projectEnv.configured ? "整体替换 .env" : "保存 .env") + '</button>' +
+              (projectEnv.configured ? '<button type="button" class="danger" data-action="delete-project-env">删除 .env</button>' : '') + '</div>' +
+          '</form>' +
+        '</fieldset>' +
+        '<div class="tools"><button type="button" class="secondary" data-action="modal-cancel">关闭</button></div>' +
+      '</div>';
+    }
+
     function openCapabilityModal(detail) {
       const config = detail?.mcp_capabilities?.capability_config;
       if (!config) {
@@ -2569,6 +2746,10 @@ function renderChannelWorkbenchPage(): string {
           openModal(detail.bot);
           return;
         }
+        if (button.dataset.action === "edit-project") {
+          openProjectModal(detail);
+          return;
+        }
         if (button.dataset.action === "manage-bot-capabilities") {
           window.location.href = "/admin/bots/" + encodeURIComponent(botId) + "/capabilities";
           return;
@@ -2606,15 +2787,43 @@ function renderChannelWorkbenchPage(): string {
       }
     });
 
-    modalBody.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-action='modal-cancel']");
-      if (button) closeModal();
+    modalBody.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button) return;
+      if (button.dataset.action === "modal-cancel") {
+        closeModal();
+        return;
+      }
+      if (button.dataset.action !== "delete-project-env" || !state.selectedChannelId) return;
+      const detail = state.details.get(state.selectedChannelId);
+      const botId = detail?.bot?.bot_id;
+      if (!botId || !confirm("确认删除该 Bot 的项目 .env 文件配置？现有会话仓库会在下次 project.ensure 时清理。")) return;
+      try {
+        await requestJson("/v1/bots/" + encodeURIComponent(botId) + "/project-env", {
+          method: "DELETE",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ actor_id: detail.admin?.wecom_user_id || "webui" }),
+        });
+        await loadDetail(state.selectedChannelId);
+        openProjectModal(state.details.get(state.selectedChannelId));
+        setToast("项目 .env 已删除。");
+      } catch (error) {
+        setToast(error.error || "删除失败", true);
+      }
     });
 
     modalBody.addEventListener("submit", async (event) => {
       event.preventDefault();
       if (event.target.id === "capabilityForm") {
         await submitCapabilityForm(event.target);
+        return;
+      }
+      if (event.target.id === "projectForm") {
+        await submitProjectForm(event.target);
+        return;
+      }
+      if (event.target.id === "projectEnvForm") {
+        await submitProjectEnvForm(event.target);
         return;
       }
       if (event.target.id !== "channelForm") return;
@@ -2648,6 +2857,57 @@ function renderChannelWorkbenchPage(): string {
         setToast(error.error || "保存失败", true);
       }
     });
+
+    async function submitProjectForm(formElement) {
+      if (!state.selectedChannelId) return;
+      const detail = state.details.get(state.selectedChannelId);
+      const botId = detail?.bot?.bot_id;
+      if (!botId) return;
+      const form = Object.fromEntries(new FormData(formElement).entries());
+      try {
+        await requestJson("/v1/bots/" + encodeURIComponent(botId), {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            actor_id: detail.admin?.wecom_user_id || "webui",
+            project_key: form.project_key,
+            project_repository_url: form.project_repository_url,
+            project_default_branch: form.project_default_branch,
+            project_directory: form.project_directory,
+          }),
+        });
+        closeModal();
+        await loadDetail(state.selectedChannelId);
+        setToast("项目配置已保存。");
+      } catch (error) {
+        setToast(error.error || "项目配置保存失败", true);
+      }
+    }
+
+    async function submitProjectEnvForm(formElement) {
+      if (!state.selectedChannelId) return;
+      const detail = state.details.get(state.selectedChannelId);
+      const botId = detail?.bot?.bot_id;
+      if (!botId) return;
+      const form = Object.fromEntries(new FormData(formElement).entries());
+      try {
+        await requestJson("/v1/bots/" + encodeURIComponent(botId) + "/project-env", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            actor_id: detail.admin?.wecom_user_id || "webui",
+            content: form.content,
+            updated_by_wecom_user_id: detail.admin?.wecom_user_id || "webui",
+          }),
+        });
+        formElement.reset();
+        await loadDetail(state.selectedChannelId);
+        openProjectModal(state.details.get(state.selectedChannelId));
+        setToast("项目 .env 已加密保存。");
+      } catch (error) {
+        setToast(error.error || "项目 .env 保存失败", true);
+      }
+    }
 
     async function submitCapabilityForm(formElement) {
       if (!state.selectedChannelId) return;

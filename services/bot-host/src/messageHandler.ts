@@ -237,7 +237,7 @@ export async function shouldStreamReply(
   if (parseConversationCommand(input.text)) {
     return false;
   }
-  if (parseJiraCredentialCommand(input.text)) {
+  if (parseJiraCredentialCommand(input.text) || parseGitHubCredentialCommand(input.text)) {
     return false;
   }
 
@@ -262,7 +262,7 @@ export async function shouldDeferStreamingForWizardState(
   if (parseConversationCommand(input.text)) {
     return { failed: false, hasWizardState: false };
   }
-  if (parseJiraCredentialCommand(input.text)) {
+  if (parseJiraCredentialCommand(input.text) || parseGitHubCredentialCommand(input.text)) {
     return { failed: false, hasWizardState: false };
   }
 
@@ -358,6 +358,11 @@ async function processWeComMessage(
     const jiraCredentialCommand = parseJiraCredentialCommand(input.text);
     if (jiraCredentialCommand) {
       return handleJiraCredentialCommand(input, config, jiraCredentialCommand);
+    }
+
+    const githubCredentialCommand = parseGitHubCredentialCommand(input.text);
+    if (githubCredentialCommand) {
+      return handleGitHubCredentialCommand(input, config, githubCredentialCommand);
     }
 
     const conversationCommand = parseConversationCommand(input.text);
@@ -457,6 +462,7 @@ export async function beginWizardGenerationIfReady(
     parseCapabilityCommand(input.text)
     || parseConversationCommand(input.text)
     || parseJiraCredentialCommand(input.text)
+    || parseGitHubCredentialCommand(input.text)
   ) {
     return undefined;
   }
@@ -1681,17 +1687,17 @@ function parseCapabilityCommand(
   return undefined;
 }
 
-type JiraCredentialCommand = "bind" | "status" | "unbind";
+type UserCredentialCommand = "bind" | "status" | "unbind";
 
-function parseJiraCredentialCommand(text: string): JiraCredentialCommand | undefined {
+function parseJiraCredentialCommand(text: string): UserCredentialCommand | undefined {
   const match = text.trim().match(/^\/jira\s+(bind|status|unbind)$/i);
-  return match?.[1].toLowerCase() as JiraCredentialCommand | undefined;
+  return match?.[1].toLowerCase() as UserCredentialCommand | undefined;
 }
 
 async function handleJiraCredentialCommand(
   input: WeComMessageInput,
   config: BotHostConfig,
-  command: JiraCredentialCommand,
+  command: UserCredentialCommand,
 ): Promise<Record<string, unknown>> {
   const scope = {
     bot_id: input.bot_id,
@@ -1711,14 +1717,14 @@ async function handleJiraCredentialCommand(
   if (command === "unbind") {
     await deleteUserCredential(config, scope);
     return {
-      output: "已解除当前 Bot 下的 Jira 账号绑定。历史 Jira Cookie 将不再被复用。",
+      output: "已解除你在当前 Bot 中的 Jira 账号绑定。历史 Jira Cookie 将不再被复用。",
     };
   }
 
   const status = await getUserCredentialStatus(config, scope);
   if (status.is_bound) {
     return {
-      output: "当前 Bot 下的 Jira 账号已经绑定。如需更换账号，请先发送 /jira unbind，再发送 /jira bind。",
+      output: "你在当前 Bot 中的 Jira 账号已绑定。如需更换账号，请先发送 /jira unbind，再发送 /jira bind。",
     };
   }
 
@@ -1737,6 +1743,56 @@ async function handleJiraCredentialCommand(
       "",
       `链接有效期至：${binding.expires_at}`,
       "请勿转发此链接，也不要在企微对话中发送账号或密码。",
+    ].join("\n"),
+  };
+}
+
+function parseGitHubCredentialCommand(text: string): UserCredentialCommand | undefined {
+  const match = text.trim().match(/^\/github\s+(bind|status|unbind)$/i);
+  return match?.[1].toLowerCase() as UserCredentialCommand | undefined;
+}
+
+async function handleGitHubCredentialCommand(
+  input: WeComMessageInput,
+  config: BotHostConfig,
+  command: UserCredentialCommand,
+): Promise<Record<string, unknown>> {
+  const scope = {
+    bot_id: input.bot_id,
+    wecom_user_id: input.wecom_user_id,
+    provider: "github_fork" as const,
+  };
+  if (command === "status") {
+    const status = await getUserCredentialStatus(config, scope);
+    return {
+      output: status.is_bound
+        ? `GitHub fork 已绑定。最近更新时间：${status.updated_at ?? "未知"}。`
+        : "GitHub fork 尚未绑定。请发送 /github bind 开始绑定。",
+    };
+  }
+  if (command === "unbind") {
+    await deleteUserCredential(config, scope);
+    return { output: "已解除你在当前 Bot 中的 GitHub fork 绑定。" };
+  }
+  const status = await getUserCredentialStatus(config, scope);
+  if (status.is_bound) {
+    return {
+      output: "你在当前 Bot 中的 GitHub fork 已绑定。如需更换，请先发送 /github unbind，再发送 /github bind。",
+    };
+  }
+  const publicUrl = config.credentialBindPublicUrl?.replace(/\/+$/, "");
+  if (!publicUrl) {
+    return { output: "GitHub fork 绑定功能尚未配置公开访问地址，请联系管理员。" };
+  }
+  const binding = await createUserCredentialBinding(config, scope);
+  const link = `${publicUrl}/bind/github?token=${encodeURIComponent(binding.token)}`;
+  return {
+    output: [
+      "请打开下面的一次性链接绑定 GitHub Token、个人 fork 地址和分支：",
+      link,
+      "",
+      `链接有效期至：${binding.expires_at}`,
+      "请勿在企微对话中发送 Token。",
     ].join("\n"),
   };
 }
@@ -2019,6 +2075,9 @@ function buildHelpTable(): string {
     "| `/jira bind` | 生成个人 Jira 账号绑定链接 |",
     "| `/jira status` | 查看个人 Jira 绑定状态 |",
     "| `/jira unbind` | 解除个人 Jira 账号绑定 |",
+    "| `/github bind` | 绑定个人 GitHub fork、分支和 Token |",
+    "| `/github status` | 查看个人 GitHub fork 绑定状态 |",
+    "| `/github unbind` | 解除个人 GitHub fork 绑定 |",
     "| `/claim_admin <认领码>` | 认领管理员身份 |",
     "| `/help` | 显示本帮助 |",
   ].join("\n");

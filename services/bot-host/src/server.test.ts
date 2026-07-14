@@ -7735,10 +7735,52 @@ describe("bot-host server", () => {
     });
 
     expect(result.output).toBe(
-      "当前 Bot 下的 Jira 账号已经绑定。如需更换账号，请先发送 /jira unbind，再发送 /jira bind。",
+      "你在当前 Bot 中的 Jira 账号已绑定。如需更换账号，请先发送 /jira unbind，再发送 /jira bind。",
     );
     expect(calls).not.toContain("http://data-service/internal/user-credential-bindings");
     expect(calls.some((url) => url.includes("llm-runner"))).toBe(false);
+  });
+
+  it("describes Jira unbinding as scoped to the current user and bot", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const result = await handleBotMessage({
+      bot_id: "jira-bot",
+      wecom_user_id: "user-a",
+      conversation_id: "wecom-conversation-a",
+      text: "/jira unbind",
+      runtime: "kiro",
+    }, {
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      credentialInternalToken: "internal-token",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push({ url: request.url, method: request.method });
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-a" },
+          });
+        }
+        if (
+          request.method === "DELETE"
+          && request.url.startsWith("http://data-service/internal/user-credentials?")
+        ) {
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+    });
+
+    expect(result.output).toBe(
+      "已解除你在当前 Bot 中的 Jira 账号绑定。历史 Jira Cookie 将不再被复用。",
+    );
+    expect(calls).toContainEqual({
+      url: "http://data-service/internal/user-credentials?bot_id=jira-bot&wecom_user_id=user-a&provider=easemob_jira",
+      method: "DELETE",
+    });
+    expect(calls.some((call) => call.url.includes("llm-runner"))).toBe(false);
   });
 
   it("passes Jira messages to Kiro without hard-coded Jira routing", async () => {

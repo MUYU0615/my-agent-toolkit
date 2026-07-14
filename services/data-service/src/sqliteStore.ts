@@ -26,6 +26,7 @@ import {
   normalizeRuntimeConfigOptions,
   normalizeRuntimeConfigStream,
   optionalText,
+  normalizeBotProjectConfig,
   requireBotConfigDocumentTitle,
   requireBotStatus,
   requireInitializationGenerationInProgress,
@@ -136,6 +137,7 @@ export function createSqliteDataStore(
       const now = new Date().toISOString();
       const wecomSecret = optionalText(input.wecom_secret);
       const wecomBotId = optionalText(input.wecom_bot_id);
+      const project = normalizeBotProjectConfig(input);
       assertUniqueWeComBotId(db, wecomBotId);
       const bot: BotRecord = {
         bot_id: requireText(input.bot_id, "bot_id"),
@@ -145,11 +147,12 @@ export function createSqliteDataStore(
         wecom_bot_id: wecomBotId,
         wecom_secret_configured: Boolean(wecomSecret),
         wecom_connection_status: "unchecked",
+        ...project,
         created_at: now,
         updated_at: now,
       };
       db.prepare(
-        "insert into bots (bot_id, name, runtime, status, wecom_bot_id, wecom_secret, wecom_connection_status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "insert into bots (bot_id, name, runtime, status, wecom_bot_id, wecom_secret, wecom_connection_status, project_key, project_repository_url, project_default_branch, project_directory, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         bot.bot_id,
         bot.name,
@@ -158,6 +161,10 @@ export function createSqliteDataStore(
         bot.wecom_bot_id ?? null,
         wecomSecret ?? null,
         bot.wecom_connection_status,
+        bot.project_key ?? null,
+        bot.project_repository_url ?? null,
+        bot.project_default_branch ?? null,
+        bot.project_directory ?? null,
         bot.created_at,
         bot.updated_at,
       );
@@ -295,6 +302,10 @@ export function createSqliteDataStore(
 
     upsertBotEnvVar(botId, input) {
       return upsertBotEnvVar(db, botId, input);
+    },
+
+    getBotEnvVar(botId, key) {
+      return getBotEnvVar(db, botId, key);
     },
 
     listBotEnvVars(botId) {
@@ -1040,6 +1051,17 @@ function listBotEnvVars(
     order by updated_at desc
   `).all(bot.bot_id).map((row) => mapBotEnvVarMetadataRecord(row))
     .filter((record): record is BotEnvVarMetadataRecord => Boolean(record));
+}
+
+function getBotEnvVar(
+  db: Database.Database,
+  botId: string,
+  key: string,
+): BotEnvVarRecord | undefined {
+  const bot = getRequiredBot(db, botId);
+  return mapBotEnvVarRecord(db.prepare(
+    "select * from bot_env_vars where bot_id = ? and key = ?",
+  ).get(bot.bot_id, requireText(key, "key")));
 }
 
 function deleteBotEnvVar(
@@ -1835,6 +1857,7 @@ function updateBot(
     ? bot.wecom_bot_id
     : optionalText(input.wecom_bot_id);
   assertUniqueWeComBotId(db, wecomBotId, bot.bot_id);
+  const project = normalizeBotProjectConfig(input, bot);
   const updated: BotRecord = {
     ...bot,
     name: input.name === undefined ? bot.name : requireText(input.name, "name"),
@@ -1851,13 +1874,14 @@ function updateBot(
     wecom_connection_status: "unchecked",
     last_wecom_check_at: undefined,
     last_wecom_error: undefined,
+    ...project,
     updated_at: nextIsoTimestamp(bot.updated_at),
   };
   const currentSecret = db
     .prepare("select wecom_secret from bots where bot_id = ?")
     .get(botId) as { wecom_secret?: string | null };
   db.prepare(
-    "update bots set name = ?, runtime = ?, status = ?, wecom_bot_id = ?, wecom_secret = ?, wecom_connection_status = ?, last_wecom_check_at = ?, last_wecom_error = ?, updated_at = ? where bot_id = ?",
+    "update bots set name = ?, runtime = ?, status = ?, wecom_bot_id = ?, wecom_secret = ?, wecom_connection_status = ?, last_wecom_check_at = ?, last_wecom_error = ?, project_key = ?, project_repository_url = ?, project_default_branch = ?, project_directory = ?, updated_at = ? where bot_id = ?",
   ).run(
     updated.name,
     updated.runtime,
@@ -1867,6 +1891,10 @@ function updateBot(
     updated.wecom_connection_status,
     null,
     null,
+    updated.project_key ?? null,
+    updated.project_repository_url ?? null,
+    updated.project_default_branch ?? null,
+    updated.project_directory ?? null,
     updated.updated_at,
     updated.bot_id,
   );
@@ -2374,6 +2402,10 @@ function migrate(db: Database.Database): void {
       wecom_connection_status text not null default 'unchecked',
       last_wecom_check_at text,
       last_wecom_error text,
+      project_key text,
+      project_repository_url text,
+      project_default_branch text,
+      project_directory text,
       created_at text not null,
       updated_at text not null
     );
@@ -2726,6 +2758,10 @@ function migrate(db: Database.Database): void {
   );
   addColumnIfMissing(db, "bots", "last_wecom_check_at", "text");
   addColumnIfMissing(db, "bots", "last_wecom_error", "text");
+  addColumnIfMissing(db, "bots", "project_key", "text");
+  addColumnIfMissing(db, "bots", "project_repository_url", "text");
+  addColumnIfMissing(db, "bots", "project_default_branch", "text");
+  addColumnIfMissing(db, "bots", "project_directory", "text");
   addColumnIfMissing(db, "admin_claims", "code", "text not null default ''");
   addColumnIfMissing(db, "conversations", "conversation_key", "text");
   addColumnIfMissing(db, "conversations", "scope_key", "text");
@@ -3605,6 +3641,18 @@ function mapBotRecord(row: unknown): BotRecord | undefined {
       : {}),
     ...(typeof record.last_wecom_error === "string"
       ? { last_wecom_error: record.last_wecom_error }
+      : {}),
+    ...(typeof record.project_key === "string"
+      ? { project_key: record.project_key }
+      : {}),
+    ...(typeof record.project_repository_url === "string"
+      ? { project_repository_url: record.project_repository_url }
+      : {}),
+    ...(typeof record.project_default_branch === "string"
+      ? { project_default_branch: record.project_default_branch }
+      : {}),
+    ...(typeof record.project_directory === "string"
+      ? { project_directory: record.project_directory }
       : {}),
     created_at: record.created_at as string,
     updated_at: record.updated_at as string,

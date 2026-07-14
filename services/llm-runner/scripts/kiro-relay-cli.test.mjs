@@ -21,6 +21,7 @@ test("kiro relay cli posts stdin to host relay and writes output", async () => {
     assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), {
       bot_id: "prd-bot",
       user_id: "user-a",
+      conversation_id: "conv-1",
       prompt: "hello",
       args: ["chat", "--no-interactive"],
       runtime_env: {},
@@ -42,6 +43,7 @@ test("kiro relay cli posts stdin to host relay and writes output", async () => {
       ...process.env,
       KIRO_RELAY_BOT_ID: "prd-bot",
       KIRO_RELAY_USER_ID: "user-a",
+      KIRO_RELAY_CONVERSATION_ID: "conv-1",
       KIRO_RELAY_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat`,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -72,6 +74,7 @@ test("kiro relay cli forwards streamed chunks to stdout", async () => {
     assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString()), {
       bot_id: "prd-bot",
       user_id: "user-a",
+      conversation_id: "conv-1",
       prompt: "hello",
       args: ["chat", "--resume-id", providerSessionId, "--no-interactive"],
       runtime_env: {},
@@ -95,6 +98,7 @@ test("kiro relay cli forwards streamed chunks to stdout", async () => {
       ...process.env,
       KIRO_RELAY_BOT_ID: "prd-bot",
       KIRO_RELAY_USER_ID: "user-a",
+      KIRO_RELAY_CONVERSATION_ID: "conv-1",
       KIRO_RELAY_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat`,
       KIRO_RELAY_STREAM_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat/stream`,
       KIRO_RELAY_STREAM: "true",
@@ -128,6 +132,7 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
       EASEMOB_JIRA_PASSWORD: "jira-password-a",
     });
     assert.equal(payload.user_id, "user-a");
+    assert.equal(payload.conversation_id, "conv-1");
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ output: "ok", provider_session_id: providerSessionId }));
   });
@@ -141,6 +146,7 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
       ...process.env,
       KIRO_RELAY_BOT_ID: "prd-bot",
       KIRO_RELAY_USER_ID: "user-a",
+      KIRO_RELAY_CONVERSATION_ID: "conv-1",
       KIRO_RELAY_AUTH_TOKEN: "relay-token",
       KIRO_RELAY_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat`,
       EASEMOB_JIRA_USERNAME: "jira-user-a",
@@ -173,4 +179,24 @@ test("kiro relay cli requires an internal bot id", async () => {
 
   assert.equal(code, 1);
   assert.equal(Buffer.concat(stderr).toString(), "KIRO_RELAY_BOT_ID is required");
+});
+
+test("kiro relay cli requires an internal conversation id", async () => {
+  const child = spawn(process.execPath, ["services/llm-runner/scripts/kiro-relay-cli.mjs", "chat"], {
+    env: {
+      ...process.env,
+      KIRO_RELAY_BOT_ID: "prd-bot",
+      KIRO_RELAY_USER_ID: "user-a",
+      KIRO_RELAY_CONVERSATION_ID: "",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  child.stdin.end("hello");
+  const stderr = [];
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  const [code] = await once(child, "close");
+
+  assert.equal(code, 1);
+  assert.equal(Buffer.concat(stderr).toString(), "KIRO_RELAY_CONVERSATION_ID is required");
 });
