@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 const providerSessionId = "f2946a26-3735-4b08-8d05-c928010302d5";
+const compactedSessionId = "5cf91421-e688-4741-a2d5-717f87d09ce8";
 const userId = "user-a";
 const conversationId = "conv-a";
 let relay;
@@ -115,6 +116,71 @@ test("host relay emits a session event for streaming calls", async () => {
   ]);
 });
 
+test("host relay immediately cancels only the matching active Kiro run", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => { process.stdout.write('started'); setInterval(() => {}, 1000); });",
+  ].join(" ");
+  const streamResponse = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-stop",
+      prompt: "long task",
+      args: ["-e", script],
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const cancelResponse = await fetch(`${relayUrl}/v1/kiro/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-stop",
+    }),
+  });
+
+  assert.equal(cancelResponse.status, 200);
+  assert.deepEqual(await cancelResponse.json(), { cancelled: true });
+  const events = (await streamResponse.text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(events, [{ type: "chunk", content: "started" }, {
+    type: "error",
+    error: "kiro runtime cancelled",
+    code: "runtime_cancelled",
+  }]);
+});
+
+test("host relay persists the session id reported after a resumed session compacts", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write('compacted answer');",
+    `  process.stderr.write('Resume with: kiro-cli chat --resume-id ${compactedSessionId}\\n');`,
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["-e", script, "--", "--resume-id", providerSessionId],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    output: "compacted answer",
+    provider_session_id: compactedSessionId,
+  });
+});
+
 test("host relay rejects bare resume", async () => {
   const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
     method: "POST",
@@ -211,6 +277,81 @@ if (process.argv.includes("--list-sessions")) {
     assert.deepEqual(await response.json(), {
       output: "answer-without-resume-hint",
       provider_session_id: providerSessionId,
+    });
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("host relay retries a blank resumed session with its compacted successor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-session-recovery-"));
+  const commandPath = join(directory, "fake-kiro.mjs");
+  const statePath = join(directory, "sessions.json");
+  const fakeKiro = `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const oldSessionId = ${JSON.stringify(providerSessionId)};
+const successorSessionId = ${JSON.stringify(compactedSessionId)};
+const readSessions = () => existsSync(process.env.KIRO_FAKE_STATE)
+  ? JSON.parse(readFileSync(process.env.KIRO_FAKE_STATE, "utf8"))
+  : [{ sessionId: oldSessionId, updatedAt: "2026-07-14T10:00:00.000Z" }];
+if (process.argv.includes("--list-sessions")) {
+  process.stdout.write(JSON.stringify([{ cwd: process.cwd(), sessions: readSessions() }]));
+} else {
+  const resumeIndex = process.argv.indexOf("--resume-id");
+  const resumeId = resumeIndex >= 0 ? process.argv[resumeIndex + 1] : undefined;
+  process.stdin.resume();
+  process.stdin.on("end", () => {
+    if (resumeId === oldSessionId) {
+      writeFileSync(process.env.KIRO_FAKE_STATE, JSON.stringify([
+        { sessionId: oldSessionId, updatedAt: "2026-07-14T10:00:00.000Z" },
+        { sessionId: successorSessionId, updatedAt: "2026-07-14T10:01:00.000Z" },
+      ]));
+      return;
+    }
+    process.stdout.write("recovered answer");
+    process.stderr.write("Resume with: kiro-cli chat --resume-id " + successorSessionId + "\\n");
+  });
+}
+`;
+  await writeFile(commandPath, fakeKiro, "utf8");
+  await chmod(commandPath, 0o755);
+  const port = await reservePort();
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: commandPath,
+      KIRO_FAKE_STATE: statePath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: join(directory, "workspaces"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const response = await fetch(`${isolatedRelayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bot_id: "bot-session-recovery",
+        user_id: userId,
+        conversation_id: conversationId,
+        prompt: "hello",
+        args: ["chat", "--resume-id", providerSessionId, "--no-interactive"],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      output: "recovered answer",
+      provider_session_id: compactedSessionId,
     });
   } finally {
     if (isolatedRelay.exitCode === null) {

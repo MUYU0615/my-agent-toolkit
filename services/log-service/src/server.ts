@@ -68,6 +68,7 @@ function handleListChatEvents(url: URL, store: LogStore): Response {
       created_to: optionalParam(url, "created_to"),
       limit: optionalNumberParam(url, "limit"),
       offset: optionalNumberParam(url, "offset"),
+      order: optionalLogEventOrder(url),
     }));
   } catch (error) {
     return errorResponse(error);
@@ -93,6 +94,7 @@ function handleListAuditEvents(url: URL, store: LogStore): Response {
       action: optionalParam(url, "action"),
       limit: optionalNumberParam(url, "limit"),
       offset: optionalNumberParam(url, "offset"),
+      order: optionalLogEventOrder(url),
     }));
   } catch (error) {
     return errorResponse(error);
@@ -119,6 +121,7 @@ function handleListToolEvents(url: URL, store: LogStore): Response {
       status: optionalToolEventStatus(url, "status"),
       limit: optionalNumberParam(url, "limit"),
       offset: optionalNumberParam(url, "offset"),
+      order: optionalLogEventOrder(url),
     }));
   } catch (error) {
     return errorResponse(error);
@@ -141,6 +144,14 @@ function optionalToolEventStatus(
     return value;
   }
   throw new Error("status must be ok or error");
+}
+
+function optionalLogEventOrder(url: URL): "asc" | "desc" | undefined {
+  const value = url.searchParams.get("order");
+  if (value === null || value === "asc" || value === "desc") {
+    return value ?? undefined;
+  }
+  throw new Error("order must be asc or desc");
 }
 
 function optionalNumberParam(url: URL, name: string): number | undefined {

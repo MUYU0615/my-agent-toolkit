@@ -106,7 +106,7 @@ describe("log-service server", () => {
 
     const filteredResponse = await server.fetch(
       new Request(
-        `http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&created_from=${encodeURIComponent(first.created_at)}&created_to=${encodeURIComponent(second.created_at)}&limit=1&offset=1`,
+        `http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&created_from=${encodeURIComponent(first.created_at)}&created_to=${encodeURIComponent(second.created_at)}&limit=1&offset=1&order=asc`,
       ),
     );
 
@@ -117,6 +117,13 @@ describe("log-service server", () => {
         conversation_id: "conv-1",
         run_id: "run-2",
       },
+    ]);
+
+    const latestResponse = await server.fetch(
+      new Request("http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&limit=1"),
+    );
+    await expect(latestResponse.json()).resolves.toMatchObject([
+      { run_id: "run-2" },
     ]);
 
     const runResponse = await server.fetch(

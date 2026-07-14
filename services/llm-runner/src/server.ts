@@ -50,9 +50,68 @@ export function createLlmRunnerServer(
         return handleChatStream(request, config, sessionLocks);
       }
 
+      if (request.method === "POST" && url.pathname === "/v1/runs/cancel") {
+        return handleRuntimeCancellation(request, config);
+      }
+
       return jsonResponse({ error: "not found" }, 404);
     },
   };
+}
+
+async function handleRuntimeCancellation(
+  request: Request,
+  config: RunnerConfig,
+): Promise<Response> {
+  try {
+    const payload = await request.json() as {
+      bot_id?: unknown;
+      user_id?: unknown;
+      conversation_id?: unknown;
+      runtime?: unknown;
+    };
+    const botId = requireCancellationText(payload.bot_id, "bot_id", 128);
+    const userId = requireCancellationText(payload.user_id, "user_id", 256);
+    const conversationId = requireCancellationText(payload.conversation_id, "conversation_id", 128);
+    if (payload.runtime !== "kiro") {
+      return jsonResponse({ cancelled: false });
+    }
+    if (!config.kiro_relay_cancel_url) {
+      return jsonResponse({ error: "kiro relay cancellation is not configured" }, 503);
+    }
+    const response = await fetchWithConfig(config, new Request(config.kiro_relay_cancel_url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(config.kiro_relay_auth_token
+          ? { authorization: `Bearer ${config.kiro_relay_auth_token}` }
+          : {}),
+      },
+      body: JSON.stringify({
+        bot_id: botId,
+        user_id: userId,
+        conversation_id: conversationId,
+      }),
+    }));
+    const result = await response.json() as { cancelled?: unknown; error?: unknown };
+    if (!response.ok) {
+      return jsonResponse({
+        error: typeof result.error === "string" ? result.error : "kiro relay cancellation failed",
+      }, response.status);
+    }
+    return jsonResponse({ cancelled: result.cancelled === true });
+  } catch (error) {
+    return jsonResponse({
+      error: error instanceof Error ? error.message : "invalid cancellation request",
+    }, 400);
+  }
+}
+
+function requireCancellationText(value: unknown, name: string, maxLength: number): string {
+  if (typeof value !== "string" || value.trim() === "" || value.length > maxLength) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
 }
 
 function healthResponse(service: string): {

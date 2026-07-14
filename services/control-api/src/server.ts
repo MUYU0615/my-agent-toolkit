@@ -1533,7 +1533,7 @@ function renderJiraBindingForm(token: string, expiresAt?: string): string {
       </details>
       <button type="submit">加密保存并绑定</button>
     </form>
-    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
+    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? formatBeijingTime(expiresAt) : "10 分钟内")}</p>
     <p class="warning">请勿转发本页面地址。系统不会把密码写入 Prompt、聊天记录或 Git。</p>
   `);
 }
@@ -1554,7 +1554,7 @@ function renderGitHubBindingForm(token: string, expiresAt?: string): string {
       </label>
       <button type="submit">加密保存并绑定</button>
     </form>
-    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
+    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? formatBeijingTime(expiresAt) : "10 分钟内")}</p>
     <p class="warning">请勿转发本页面地址或在企微对话中发送 Token。Token 只在服务端 Git 操作时临时使用。</p>
   `);
 }
@@ -1626,6 +1626,26 @@ function escapeHtmlValue(value: unknown): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function formatBeijingTime(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function pageShell(title: string, body: string): string {
@@ -1747,7 +1767,7 @@ function renderBotCapabilitiesPage(
     `<table><thead><tr><th>Key</th><th>状态</th><th>展示值</th><th>更新时间</th></tr></thead><tbody>`,
     ...(envItems.length === 0
       ? [`<tr><td colspan="4" class="muted">暂无环境变量</td></tr>`]
-      : envItems.map((item) => `<tr><td><code>${escapeHtmlValue(item.key)}</code></td><td>${escapeHtmlValue(item.is_set ? "已设置" : "未设置")}</td><td>****</td><td>${escapeHtmlValue(item.updated_at)}</td></tr>`)),
+      : envItems.map((item) => `<tr><td><code>${escapeHtmlValue(item.key)}</code></td><td>${escapeHtmlValue(item.is_set ? "已设置" : "未设置")}</td><td>****</td><td>${escapeHtmlValue(formatBeijingTime(item.updated_at))}</td></tr>`)),
     `</tbody></table>`,
     `</section>`,
     `<section class="card stack">`,
@@ -2320,6 +2340,22 @@ function renderChannelWorkbenchPage(): string {
         .replace(/"/g, "&quot;");
     }
 
+    function formatBeijingTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(date);
+    }
+
     function badge(text, kind = "warn") {
       return '<span class="badge ' + kind + '">' + escapeHtml(text) + '</span>';
     }
@@ -2532,7 +2568,7 @@ function renderChannelWorkbenchPage(): string {
     function configDocPreview(label, doc) {
       if (!doc) return '<div class="doc-item"><strong>' + escapeHtml(label) + '</strong><div class="subtle">未生成。</div></div>';
       return '<details class="doc-item" open><summary>' + escapeHtml(label) + '</summary>' +
-        '<div class="subtle">更新时间：' + escapeHtml(doc.updated_at || doc.created_at || "-") + '</div>' +
+        '<div class="subtle">更新时间：' + escapeHtml(formatBeijingTime(doc.updated_at || doc.created_at)) + '</div>' +
         '<pre>' + escapeHtml(doc.content || "") + '</pre></details>';
     }
 
@@ -2648,7 +2684,7 @@ function renderChannelWorkbenchPage(): string {
         '<fieldset class="field-group"><legend>项目 .env 文件</legend>' +
           '<div class="subtle">整份文件按 Bot 加密保存，仅供受控测试运行环境使用；不会写入 Kiro 会话工作目录，已保存内容不会在页面回显。</div>' +
           '<div>' + badge(projectEnv.configured ? "已配置" : "未配置", projectEnv.configured ? "ok" : "warn") +
-            (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(projectEnv.updated_at) + '</span>' : '') + '</div>' +
+            (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(formatBeijingTime(projectEnv.updated_at)) + '</span>' : '') + '</div>' +
           '<form id="projectEnvForm" class="form-grid">' +
             '<label>.env 文件内容<textarea name="content" required spellcheck="false" autocomplete="off" placeholder="PYTHONPATH=.&#10;APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
             '<div class="tools"><button type="submit">' + (projectEnv.configured ? "整体替换 .env" : "保存 .env") + '</button>' +
@@ -2709,7 +2745,7 @@ function renderChannelWorkbenchPage(): string {
         target.innerHTML = '<div class="claim-card"><div><strong>管理员认领码</strong><div class="subtle">复制后发送给企业微信 Bot。</div></div>' +
           '<code>' + escapeHtml(command) + '</code>' +
           '<div class="tools"><button type="button" class="secondary" data-copy="' + escapeHtml(command) + '">复制认领命令</button></div>' +
-          '<div class="subtle">有效期至 ' + escapeHtml(new Date(claim.expires_at).toLocaleString()) + '</div></div>';
+          '<div class="subtle">有效期至 ' + escapeHtml(formatBeijingTime(claim.expires_at)) + '</div></div>';
       }
       return claim;
     }
@@ -2767,7 +2803,7 @@ function renderChannelWorkbenchPage(): string {
             target.innerHTML = '<div class="claim-card"><div><strong>管理员认领码</strong><div class="subtle">复制后发送给企业微信 Bot。</div></div>' +
               '<code>' + escapeHtml(command) + '</code>' +
               '<div class="tools"><button type="button" class="secondary" data-copy="' + escapeHtml(command) + '">复制认领命令</button></div>' +
-              '<div class="subtle">有效期至 ' + escapeHtml(new Date(claim.expires_at).toLocaleString()) + '</div></div>';
+              '<div class="subtle">有效期至 ' + escapeHtml(formatBeijingTime(claim.expires_at)) + '</div></div>';
           }
           setToast("管理员已重置，新的验证码已生成。");
         }

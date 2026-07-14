@@ -41,6 +41,8 @@ export interface BotHostConfig {
   capabilityRunnerUrl?: string;
   logServiceUrl?: string;
   fetch: typeof fetch;
+  /** Per worker state used to suppress the terminal error from a run stopped by /stop. */
+  runtimeCancellationState?: Set<string>;
   credentialBindPublicUrl?: string;
   credentialInternalToken?: string;
 }
@@ -102,7 +104,7 @@ interface InstallSkillIntent {
 }
 
 interface ConversationCommand {
-  kind: "history" | "new" | "open" | "name";
+  kind: "history" | "new" | "open" | "name" | "stop";
   index?: number;
   displayName?: string;
 }
@@ -1074,6 +1076,10 @@ async function streamAllowedWeComMessage(
       continue;
     }
     if (event.type === "error") {
+      if (consumeRuntimeCancellation(config, input, resolvedConversationId)) {
+        await presentationStream.finish();
+        return;
+      }
       const output = formatRuntimeUnavailableMessage(
         typeof event.error === "string" ? event.error : undefined,
       );
@@ -1547,6 +1553,9 @@ function parseConversationCommand(text: string): ConversationCommand | undefined
   if (trimmed === "/new") {
     return { kind: "new" };
   }
+  if (trimmed === "/stop") {
+    return { kind: "stop" };
+  }
   const openMatch = trimmed.match(/^\/open\s+(\d+)$/);
   if (openMatch) {
     return { kind: "open", index: Number(openMatch[1]) };
@@ -2006,6 +2015,20 @@ async function handleConversationCommand(
     purpose: "normal_chat" as const,
   };
 
+  if (command.kind === "stop") {
+    const cancelled = await requestRuntimeCancellation(config, {
+      bot_id: input.bot_id,
+      user_id: input.wecom_user_id,
+      conversation_id: context.conversation.conversation_id,
+      runtime: input.runtime,
+    });
+    if (cancelled) {
+      markRuntimeCancellation(config, input, context.conversation.conversation_id);
+      return { output: "已停止当前任务。" };
+    }
+    return { output: "当前没有正在执行的任务。" };
+  }
+
   if (command.kind === "history") {
     const conversations = await listConversations(config, baseInput);
     return {
@@ -2057,6 +2080,57 @@ async function handleConversationCommand(
   return {
     output: `已将当前会话命名为：${formatConversationLabel(renamed)}。`,
   };
+}
+
+async function requestRuntimeCancellation(
+  config: BotHostConfig,
+  input: {
+    bot_id: string;
+    user_id: string;
+    conversation_id: string;
+    runtime: "mock" | "kiro";
+  },
+): Promise<boolean> {
+  const response = await config.fetch(
+    new Request(`${config.llmRunnerUrl}/v1/runs/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+  if (!response.ok) {
+    throw new Error("runtime cancellation failed");
+  }
+  const payload = await response.json() as { cancelled?: unknown };
+  return payload.cancelled === true;
+}
+
+function runtimeCancellationKey(
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): string {
+  return `${input.bot_id}:${input.wecom_user_id}:${conversationId}`;
+}
+
+function markRuntimeCancellation(
+  config: BotHostConfig,
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): void {
+  config.runtimeCancellationState?.add(runtimeCancellationKey(input, conversationId));
+}
+
+function consumeRuntimeCancellation(
+  config: BotHostConfig,
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): boolean {
+  const key = runtimeCancellationKey(input, conversationId);
+  if (!config.runtimeCancellationState?.has(key)) {
+    return false;
+  }
+  config.runtimeCancellationState.delete(key);
+  return true;
 }
 
 function buildHelpTable(): string {

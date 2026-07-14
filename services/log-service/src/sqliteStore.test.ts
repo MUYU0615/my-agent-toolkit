@@ -88,6 +88,12 @@ describe("sqlite log store", () => {
       created_to: second.created_at,
       limit: 1,
       offset: 1,
+      order: "asc",
+    })).toEqual([second]);
+    expect(store.listChatEvents({
+      bot_id: "prd-bot",
+      conversation_id: "conv-1",
+      limit: 1,
     })).toEqual([second]);
     expect(store.listChatEvents({
       bot_id: "prd-bot",

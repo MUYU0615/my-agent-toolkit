@@ -22,6 +22,8 @@ export interface ChatEventRecord extends RecordChatEventInput {
   created_at: string;
 }
 
+export type LogEventOrder = "asc" | "desc";
+
 export interface ListChatEventsQuery {
   bot_id: string;
   conversation_id?: string;
@@ -30,6 +32,7 @@ export interface ListChatEventsQuery {
   created_to?: string;
   limit?: number;
   offset?: number;
+  order?: LogEventOrder;
 }
 
 export interface NormalizedListChatEventsQuery {
@@ -40,6 +43,7 @@ export interface NormalizedListChatEventsQuery {
   created_to: string | undefined;
   limit: number;
   offset: number;
+  order: LogEventOrder;
 }
 
 export interface RecordAuditEventInput {
@@ -61,6 +65,7 @@ export interface ListAuditEventsQuery {
   action?: string;
   limit?: number;
   offset?: number;
+  order?: LogEventOrder;
 }
 
 export interface NormalizedListAuditEventsQuery {
@@ -69,6 +74,7 @@ export interface NormalizedListAuditEventsQuery {
   action: string | undefined;
   limit: number;
   offset: number;
+  order: LogEventOrder;
 }
 
 export type ToolEventStatus = "ok" | "error";
@@ -100,6 +106,7 @@ export interface ListToolEventsQuery {
   status?: ToolEventStatus;
   limit?: number;
   offset?: number;
+  order?: LogEventOrder;
 }
 
 export interface NormalizedListToolEventsQuery {
@@ -109,6 +116,7 @@ export interface NormalizedListToolEventsQuery {
   status: ToolEventStatus | undefined;
   limit: number;
   offset: number;
+  order: LogEventOrder;
 }
 
 export interface LogStore {
@@ -146,8 +154,10 @@ export function createLogStore(): LogStore {
 
     listChatEvents(query) {
       const normalized = normalizeListChatEventsQuery(query);
-      return events
-        .filter((event) => matchesChatEventQuery(event, normalized))
+      return orderLogEvents(
+        events.filter((event) => matchesChatEventQuery(event, normalized)),
+        normalized.order,
+      )
         .slice(
           normalized.offset,
           normalized.offset + normalized.limit,
@@ -170,8 +180,10 @@ export function createLogStore(): LogStore {
 
     listAuditEvents(query) {
       const normalized = normalizeListAuditEventsQuery(query);
-      return auditEvents
-        .filter((event) => matchesAuditEventQuery(event, normalized))
+      return orderLogEvents(
+        auditEvents.filter((event) => matchesAuditEventQuery(event, normalized)),
+        normalized.order,
+      )
         .slice(
           normalized.offset,
           normalized.offset + normalized.limit,
@@ -200,8 +212,10 @@ export function createLogStore(): LogStore {
 
     listToolEvents(query) {
       const normalized = normalizeListToolEventsQuery(query);
-      return toolEvents
-        .filter((event) => matchesToolEventQuery(event, normalized))
+      return orderLogEvents(
+        toolEvents.filter((event) => matchesToolEventQuery(event, normalized)),
+        normalized.order,
+      )
         .slice(normalized.offset, normalized.offset + normalized.limit);
     },
   };
@@ -219,6 +233,7 @@ export function normalizeListChatEventsQuery(
       created_to: undefined,
       limit: 100,
       offset: 0,
+      order: "desc",
     };
   }
 
@@ -230,6 +245,7 @@ export function normalizeListChatEventsQuery(
     created_to: query.created_to,
     limit: normalizeNonNegativeInteger(query.limit, 100, "limit"),
     offset: normalizeNonNegativeInteger(query.offset, 0, "offset"),
+    order: normalizeLogEventOrder(query.order),
   };
 }
 
@@ -253,6 +269,7 @@ export function normalizeListAuditEventsQuery(
     action: query.action,
     limit: normalizeNonNegativeInteger(query.limit, 100, "limit"),
     offset: normalizeNonNegativeInteger(query.offset, 0, "offset"),
+    order: normalizeLogEventOrder(query.order),
   };
 }
 
@@ -275,6 +292,7 @@ export function normalizeListToolEventsQuery(
     status: query.status === undefined ? undefined : requireToolEventStatus(query.status),
     limit: normalizeNonNegativeInteger(query.limit, 100, "limit"),
     offset: normalizeNonNegativeInteger(query.offset, 0, "offset"),
+    order: normalizeLogEventOrder(query.order),
   };
 }
 
@@ -300,6 +318,24 @@ function normalizeNonNegativeInteger(
     throw new Error(`${field} must be a non-negative integer`);
   }
   return value;
+}
+
+function normalizeLogEventOrder(value: LogEventOrder | undefined): LogEventOrder {
+  if (value === undefined) {
+    return "desc";
+  }
+  if (value === "asc" || value === "desc") {
+    return value;
+  }
+  throw new Error("order must be asc or desc");
+}
+
+function orderLogEvents<T extends { created_at: string }>(
+  records: T[],
+  order: LogEventOrder,
+): T[] {
+  const ordered = [...records].sort((left, right) => left.created_at.localeCompare(right.created_at));
+  return order === "desc" ? ordered.reverse() : ordered;
 }
 
 function requireToolEventStatus(value: unknown): ToolEventStatus {

@@ -19,10 +19,32 @@ const workspaceRoot = initializeWorkspaceRoot(
 const kiroSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const kiroResumeIdPattern = /--resume-id(?:=|\s+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 const newSessionCreationTails = new Map();
+const activeRuns = new Map();
 
 const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url === "/health") {
     writeJson(response, 200, { service: "kiro-host-relay", status: "ok" });
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/v1/kiro/cancel") {
+    try {
+      assertRelayAuthorized(request);
+      const payload = JSON.parse(await readBody(request));
+      const key = runKeyFromPayload(payload);
+      const activeRun = activeRuns.get(key);
+      if (!activeRun) {
+        writeJson(response, 200, { cancelled: false });
+        return;
+      }
+      activeRun.cancelled = true;
+      activeRun.child.kill("SIGTERM");
+      writeJson(response, 200, { cancelled: true });
+    } catch (error) {
+      writeJson(response, error instanceof RelayRequestError ? 400 : 502, {
+        error: error instanceof Error ? error.message : "kiro relay cancellation failed",
+      });
+    }
     return;
   }
 
@@ -43,17 +65,17 @@ const server = createServer(async (request, response) => {
         "cache-control": "no-cache",
       });
       const requestArgs = argsFromPayload(payload);
-      const providerSessionId = await runWithSessionDiscovery(
+      const runtimeResult = await runWithSessionDiscovery(
         requestArgs,
         workspaceDir,
         runtimeEnv,
-        (sessionsBefore) => streamKiro(payload.prompt, requestArgs, (event) => {
+        (effectiveArgs, sessionsBefore) => streamKiro(payload.prompt, effectiveArgs, (event) => {
           response.write(`${JSON.stringify(event)}\n`);
-        }, sessionsBefore, workspaceDir, runtimeEnv),
+        }, sessionsBefore, workspaceDir, runtimeEnv, runKeyFromPayload(payload)),
       );
       response.write(`${JSON.stringify({
         type: "session",
-        provider_session_id: providerSessionId,
+        provider_session_id: runtimeResult.provider_session_id,
       })}\n`);
       response.end(`${JSON.stringify({ type: "done" })}\n`);
     } catch (error) {
@@ -66,6 +88,7 @@ const server = createServer(async (request, response) => {
       response.end(`${JSON.stringify({
         type: "error",
         error: error instanceof Error ? error.message : "kiro relay failed",
+        ...(error instanceof RelayCancelledError ? { code: "runtime_cancelled" } : {}),
       })}\n`);
     }
     return;
@@ -92,18 +115,20 @@ const server = createServer(async (request, response) => {
       requestArgs,
       workspaceDir,
       runtimeEnv,
-      (sessionsBefore) => runKiro(
+      (effectiveArgs, sessionsBefore) => runKiro(
         payload.prompt,
-        requestArgs,
+        effectiveArgs,
         sessionsBefore,
         workspaceDir,
         runtimeEnv,
+        runKeyFromPayload(payload),
       ),
     );
     writeJson(response, 200, result);
   } catch (error) {
-    writeJson(response, error instanceof RelayRequestError ? 400 : 502, {
+    writeJson(response, error instanceof RelayRequestError ? 400 : error instanceof RelayCancelledError ? 409 : 502, {
       error: error instanceof Error ? error.message : "kiro relay failed",
+      ...(error instanceof RelayCancelledError ? { code: "runtime_cancelled" } : {}),
     });
   }
 });
@@ -113,13 +138,14 @@ server.listen(port, host, () => {
   console.log(`kiro workspace root: ${workspaceRoot}`);
 });
 
-function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runtimeEnv = {}) {
+function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runtimeEnv = {}, runKey) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, requestArgs, {
       cwd: workspaceDir,
       stdio: ["pipe", "pipe", "pipe"],
       env: childProcessEnv(runtimeEnv),
     });
+    const activeRun = registerActiveRun(runKey, child);
     const stdout = [];
     const stderr = [];
     let settled = false;
@@ -128,6 +154,7 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
         return;
       }
       settled = true;
+      clearActiveRun(runKey, activeRun);
       child.kill("SIGTERM");
       reject(new Error("kiro runtime timed out"));
     }, timeoutMs);
@@ -139,6 +166,7 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
         return;
       }
       settled = true;
+      clearActiveRun(runKey, activeRun);
       clearTimeout(timeout);
       reject(error);
     });
@@ -148,6 +176,11 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
       }
       settled = true;
       clearTimeout(timeout);
+      clearActiveRun(runKey, activeRun);
+      if (activeRun?.cancelled) {
+        reject(new RelayCancelledError());
+        return;
+      }
       if (code !== 0) {
         reject(new Error(`kiro runtime exited with code ${code ?? "unknown"}: ${redact(Buffer.concat(stderr).toString())}`));
         return;
@@ -186,6 +219,7 @@ function streamKiro(
   sessionsBefore,
   workspaceDir,
   runtimeEnv = {},
+  runKey,
 ) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, requestArgs, {
@@ -193,6 +227,7 @@ function streamKiro(
       stdio: ["pipe", "pipe", "pipe"],
       env: childProcessEnv(runtimeEnv),
     });
+    const activeRun = registerActiveRun(runKey, child);
     const stderr = [];
     const stdout = [];
     let settled = false;
@@ -201,6 +236,7 @@ function streamKiro(
         return;
       }
       settled = true;
+      clearActiveRun(runKey, activeRun);
       child.kill("SIGTERM");
       reject(new Error("kiro runtime timed out"));
     }, timeoutMs);
@@ -218,6 +254,7 @@ function streamKiro(
         return;
       }
       settled = true;
+      clearActiveRun(runKey, activeRun);
       clearTimeout(timeout);
       reject(error);
     });
@@ -227,6 +264,11 @@ function streamKiro(
       }
       settled = true;
       clearTimeout(timeout);
+      clearActiveRun(runKey, activeRun);
+      if (activeRun?.cancelled) {
+        reject(new RelayCancelledError());
+        return;
+      }
       if (code !== 0) {
         reject(new Error(`kiro runtime exited with code ${code ?? "unknown"}: ${redact(Buffer.concat(stderr).toString())}`));
         return;
@@ -244,7 +286,10 @@ function streamKiro(
           reject(new Error("kiro runtime did not report a session id"));
           return;
         }
-        resolve(providerSessionId);
+        resolve({
+          provider_session_id: providerSessionId,
+          has_visible_output: stdout.some((chunk) => stripResumeHint(chunk.toString()).trim()),
+        });
       } catch (error) {
         reject(error);
       }
@@ -268,6 +313,48 @@ function writeJson(response, status, payload) {
 }
 
 class RelayRequestError extends Error {}
+class RelayCancelledError extends Error {
+  constructor() {
+    super("kiro runtime cancelled");
+  }
+}
+
+function runKeyFromPayload(payload) {
+  if (!payload || typeof payload !== "object") {
+    throw new RelayRequestError("request body is required");
+  }
+  if (
+    typeof payload.bot_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.bot_id)
+  ) {
+    throw new RelayRequestError("bot_id must be a safe path segment");
+  }
+  if (typeof payload.user_id !== "string" || payload.user_id.trim() === "" || payload.user_id.length > 256) {
+    throw new RelayRequestError("user_id is required");
+  }
+  if (
+    typeof payload.conversation_id !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.conversation_id)
+  ) {
+    throw new RelayRequestError("conversation_id must be a safe path segment");
+  }
+  return `${payload.bot_id}:${hashUserId(payload.user_id)}:${payload.conversation_id}`;
+}
+
+function registerActiveRun(runKey, child) {
+  if (!runKey) {
+    return undefined;
+  }
+  const activeRun = { child, cancelled: false };
+  activeRuns.set(runKey, activeRun);
+  return activeRun;
+}
+
+function clearActiveRun(runKey, activeRun) {
+  if (runKey && activeRuns.get(runKey) === activeRun) {
+    activeRuns.delete(runKey);
+  }
+}
 
 function assertRelayAuthorized(request) {
   if (!relayAuthToken) {
@@ -469,7 +556,7 @@ function validateRequestArgs(requestArgs) {
   return requestArgs;
 }
 
-function extractProviderSessionId(requestArgs, stdout, stderr) {
+function extractRequestedProviderSessionId(requestArgs) {
   const resumeIdIndex = requestArgs.indexOf("--resume-id");
   if (resumeIdIndex >= 0 && isKiroSessionId(requestArgs[resumeIdIndex + 1])) {
     return requestArgs[resumeIdIndex + 1];
@@ -483,12 +570,41 @@ function extractProviderSessionId(requestArgs, stdout, stderr) {
     }
   }
 
-  return `${stderr}\n${stdout}`.match(kiroResumeIdPattern)?.[1];
+  return undefined;
+}
+
+function extractReportedProviderSessionId(stdout, stderr) {
+  const matches = [...`${stderr}\n${stdout}`.matchAll(
+    new RegExp(kiroResumeIdPattern.source, "ig"),
+  )];
+  return matches.length > 0 ? matches.at(-1)?.[1] : undefined;
+}
+
+function extractProviderSessionId(requestArgs, stdout, stderr) {
+  // Kiro may compact a resumed conversation into a successor session. Its
+  // completion hint is authoritative; the requested id is only a fallback.
+  return extractReportedProviderSessionId(stdout, stderr)
+    ?? extractRequestedProviderSessionId(requestArgs);
 }
 
 async function runWithSessionDiscovery(requestArgs, workspaceDir, runtimeEnv, operation) {
-  if (extractProviderSessionId(requestArgs, "", "")) {
-    return operation(undefined);
+  const requestedSessionId = extractRequestedProviderSessionId(requestArgs);
+  if (requestedSessionId) {
+    const result = await operation(requestArgs, undefined);
+    if (
+      !hasVisibleRuntimeOutput(result)
+      && result?.provider_session_id === requestedSessionId
+    ) {
+      const successorSessionId = await findSuccessorSessionId(
+        requestedSessionId,
+        workspaceDir,
+        sessionUtilityEnv(runtimeEnv),
+      ).catch(() => undefined);
+      if (successorSessionId) {
+        return operation(replaceResumeId(requestArgs, successorSessionId), undefined);
+      }
+    }
+    return result;
   }
 
   return withNewSessionCreationLock(workspaceDir, async () => {
@@ -496,8 +612,29 @@ async function runWithSessionDiscovery(requestArgs, workspaceDir, runtimeEnv, op
       workspaceDir,
       sessionUtilityEnv(runtimeEnv),
     ).catch(() => undefined);
-    return operation(sessionsBefore);
+    return operation(requestArgs, sessionsBefore);
   });
+}
+
+function hasVisibleRuntimeOutput(result) {
+  if (typeof result?.output === "string") {
+    return result.output.trim().length > 0;
+  }
+  return result?.has_visible_output === true;
+}
+
+function replaceResumeId(requestArgs, providerSessionId) {
+  const nextArgs = [...requestArgs];
+  const resumeIdIndex = nextArgs.indexOf("--resume-id");
+  if (resumeIdIndex >= 0) {
+    nextArgs[resumeIdIndex + 1] = providerSessionId;
+    return nextArgs;
+  }
+  const inlineResumeIdIndex = nextArgs.findIndex((item) => item.startsWith("--resume-id="));
+  if (inlineResumeIdIndex >= 0) {
+    nextArgs[inlineResumeIdIndex] = `--resume-id=${providerSessionId}`;
+  }
+  return nextArgs;
 }
 
 async function resolveProviderSessionId(
@@ -527,25 +664,43 @@ async function resolveProviderSessionId(
   return createdSessionIds[0];
 }
 
+async function findSuccessorSessionId(requestedSessionId, workspaceDir, runtimeEnv) {
+  const sessions = await listKiroSessions(workspaceDir, runtimeEnv);
+  const requestedSession = sessions.find((session) => session.sessionId === requestedSessionId);
+  const candidates = sessions
+    .filter((session) => session.sessionId !== requestedSessionId)
+    .filter((session) => !requestedSession || session.updatedAt >= requestedSession.updatedAt)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return candidates[0]?.sessionId;
+}
+
 async function listKiroSessionIds(workspaceDir, runtimeEnv = {}) {
+  const sessions = await listKiroSessions(workspaceDir, runtimeEnv);
+  return new Set(sessions.map((session) => session.sessionId));
+}
+
+async function listKiroSessions(workspaceDir, runtimeEnv = {}) {
   const output = await runKiroUtility(["chat", "--list-sessions", "--format", "json"], workspaceDir, runtimeEnv);
   const groups = JSON.parse(output);
   if (!Array.isArray(groups)) {
     throw new Error("kiro session list returned invalid output");
   }
 
-  const sessionIds = new Set();
+  const sessions = [];
   for (const group of groups) {
     if (!group || group.cwd !== workspaceDir || !Array.isArray(group.sessions)) {
       continue;
     }
     for (const session of group.sessions) {
       if (isKiroSessionId(session?.sessionId)) {
-        sessionIds.add(session.sessionId);
+        sessions.push({
+          sessionId: session.sessionId,
+          updatedAt: typeof session.updatedAt === "string" ? session.updatedAt : "",
+        });
       }
     }
   }
-  return sessionIds;
+  return sessions;
 }
 
 function sessionUtilityEnv(runtimeEnv) {

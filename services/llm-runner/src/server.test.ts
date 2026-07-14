@@ -71,6 +71,46 @@ describe("llm-runner server", () => {
     expect(body.run_id).toMatch(/^run_/);
   });
 
+  it("forwards a Kiro cancellation only for the matching runtime session", async () => {
+    const requests: Request[] = [];
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: {
+        command: process.execPath,
+        args: ["-e", "process.exit(0)"],
+        timeout_ms: 1000,
+      },
+      kiro_relay_cancel_url: "http://kiro-relay/v1/kiro/cancel",
+      kiro_relay_auth_token: "relay-token",
+      fetch: async (input) => {
+        const request = input instanceof Request ? input : new Request(input);
+        requests.push(request);
+        return Response.json({ cancelled: true });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/runs/cancel", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "bot-a",
+        user_id: "user-a",
+        conversation_id: "conv-a",
+        runtime: "kiro",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ cancelled: true });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toBe("http://kiro-relay/v1/kiro/cancel");
+    expect(requests[0].headers.get("authorization")).toBe("Bearer relay-token");
+    await expect(requests[0].json()).resolves.toEqual({
+      bot_id: "bot-a",
+      user_id: "user-a",
+      conversation_id: "conv-a",
+    });
+  });
+
   it("injects MCP tool manifest into runtime prompts when configured", async () => {
     const mcpRequests: Request[] = [];
     const server = createLlmRunnerServer({

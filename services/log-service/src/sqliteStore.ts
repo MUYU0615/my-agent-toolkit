@@ -99,7 +99,7 @@ export function createSqliteLogStore(dbPath: string): LogStore {
               created_at
             from chat_events
             where ${conditions.join(" and ")}
-            order by rowid asc
+            order by created_at ${normalized.order}, rowid ${normalized.order}
             limit ?
             offset ?
           `,
@@ -168,7 +168,7 @@ export function createSqliteLogStore(dbPath: string): LogStore {
               created_at
             from audit_events
             where ${conditions.join(" and ")}
-            order by rowid asc
+            order by created_at ${normalized.order}, rowid ${normalized.order}
             limit ?
             offset ?
           `,
@@ -265,7 +265,7 @@ export function createSqliteLogStore(dbPath: string): LogStore {
             created_at
           from tool_events
           where ${conditions.join(" and ")}
-          order by rowid asc
+          order by created_at ${normalized.order}, rowid ${normalized.order}
           limit ?
           offset ?
         `,

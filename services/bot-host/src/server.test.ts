@@ -5637,6 +5637,54 @@ describe("bot-host server", () => {
     });
   });
 
+  it("routes /stop without starting a stream and confirms immediate cancellation", async () => {
+    const sent: string[] = [];
+    const calls: string[] = [];
+    let messageHandler:
+      | ((message: { conversationId: string; userId: string; text: string }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "prd-bot",
+      runtime: "kiro",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        calls.push(request.url);
+        const wizardResponse = noActiveInitializationSessionResponse(request);
+        if (wizardResponse) {
+          return wizardResponse;
+        }
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-1" },
+          });
+        }
+        if (request.url === "http://llm-runner/v1/runs/cancel") {
+          return Response.json({ cancelled: true });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) { messageHandler = handler; },
+        async sendText(_conversationId, text) { sent.push(text); },
+      },
+    });
+
+    await worker.start();
+    await messageHandler?.({ conversationId: "conversation-a", userId: "user-a", text: "/stop" });
+
+    expect(sent).toEqual(["已停止当前任务。"]);
+    expect(calls).toContain("http://llm-runner/v1/runs/cancel");
+    expect(calls).not.toContain("http://llm-runner/v1/chat/stream");
+  });
+
   it("starts a wecom worker and replies to incoming text messages", async () => {
     const sent: Array<{ conversationId: string; text: string }> = [];
     let messageHandler:

@@ -10,6 +10,8 @@ export interface RunnerConfig {
   resolveBotEnvVars?: BotEnvResolver;
   resolveUserEnvVars?: UserEnvResolver;
   credential_internal_token?: string;
+  kiro_relay_cancel_url?: string;
+  kiro_relay_auth_token?: string;
 }
 
 export type BotEnvResolver = (botId: string) => Promise<Record<string, string>>;
@@ -57,6 +59,16 @@ export function loadRunnerConfig(
       args: parseArgs(env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools"),
       timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 300_000),
     };
+    const relayUrl = env.KIRO_RELAY_URL?.trim();
+    if (relayUrl) {
+      config.kiro_relay_cancel_url = (env.KIRO_RELAY_CANCEL_URL?.trim()
+        ?? relayUrl.replace(/\/v1\/kiro\/chat$/, "/v1/kiro/cancel"))
+        .replace(/\/+$/, "");
+    }
+    const relayAuthToken = env.KIRO_RELAY_AUTH_TOKEN?.trim();
+    if (relayAuthToken) {
+      config.kiro_relay_auth_token = relayAuthToken;
+    }
   }
 
   const mcpServiceUrl = env.MCP_SERVICE_URL?.trim();
