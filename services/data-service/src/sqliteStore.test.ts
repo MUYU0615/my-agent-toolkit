@@ -63,6 +63,58 @@ describe("sqlite data store", () => {
     }
   });
 
+  it("persists Bot main project configuration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getBot("qa-bot")).toMatchObject({
+      project_key: "im-test-hub",
+      project_repository_url: "https://github.com/example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    second.close?.();
+  });
+
+  it("persists repository-only project configuration with derived defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({
+      bot_id: "qa-bot",
+      name: "QA Bot",
+      runtime: "kiro",
+      project_key: "",
+      project_repository_url: "git@github.com:example/im-test-hub.git",
+      project_default_branch: "",
+      project_directory: "",
+    });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getBot("qa-bot")).toMatchObject({
+      project_key: "im-test-hub",
+      project_repository_url: "git@github.com:example/im-test-hub.git",
+      project_default_branch: "main",
+      project_directory: "im-test-hub",
+    });
+    second.close?.();
+  });
+
   it("persists bot admin and conversation records across store instances", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);
@@ -2018,5 +2070,33 @@ describe("sqlite data store", () => {
     ]);
 
     store.close?.();
+  });
+
+  it("persists user credential ciphertext with user isolation across store instances", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const scope = {
+      bot_id: "jira-bot",
+      wecom_user_id: "user-a",
+      provider: "easemob_jira" as const,
+    };
+
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "jira-bot", name: "Jira Bot", runtime: "kiro" });
+    const binding = first.createUserCredentialBinding(scope);
+    first.completeUserCredentialBinding({
+      token: binding.token,
+      payload_ciphertext: "encrypted-payload-a",
+    });
+    expect(() => first.createUserCredentialBinding(scope)).toThrow("already bound");
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getUserCredential(scope)?.payload_ciphertext).toBe("encrypted-payload-a");
+    expect(second.getUserCredential({ ...scope, wecom_user_id: "user-b" })).toBeUndefined();
+    second.deleteUserCredential(scope);
+    expect(second.getUserCredential(scope)).toBeUndefined();
+    second.close?.();
   });
 });

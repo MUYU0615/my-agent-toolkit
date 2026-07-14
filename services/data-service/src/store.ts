@@ -3,6 +3,7 @@ import {
   parseMcpCapabilityConfig,
   type McpCapabilityConfig,
 } from "@my-agent-toolkit/contracts";
+import { createHash, randomBytes } from "node:crypto";
 
 export type BotStatus = "draft" | "initializing" | "ready";
 export type ConversationPurpose = "normal_chat" | "init" | "doc_generation";
@@ -31,6 +32,10 @@ export interface BotRecord {
   wecom_connection_status: WeComConnectionStatus;
   last_wecom_check_at?: string;
   last_wecom_error?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
   created_at: string;
   updated_at: string;
 }
@@ -95,6 +100,10 @@ export interface CreateBotInput {
   runtime: string;
   wecom_bot_id?: string;
   wecom_secret?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
 }
 
 export interface UpdateBotInput {
@@ -103,7 +112,19 @@ export interface UpdateBotInput {
   status?: BotStatus;
   wecom_bot_id?: string;
   wecom_secret?: string;
+  project_key?: string;
+  project_repository_url?: string;
+  project_default_branch?: string;
+  project_directory?: string;
 }
+
+export type BotProjectConfig = Pick<
+  BotRecord,
+  | "project_key"
+  | "project_repository_url"
+  | "project_default_branch"
+  | "project_directory"
+>;
 
 export interface ConversationRecord {
   conversation_id: string;
@@ -237,6 +258,47 @@ export interface BotEnvVarMetadataRecord {
   updated_at: string;
 }
 
+export type UserCredentialProvider = "easemob_jira" | "github_fork";
+
+export interface UserCredentialRecord {
+  bot_id: string;
+  wecom_user_id: string;
+  provider: UserCredentialProvider;
+  payload_ciphertext: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserCredentialMetadataRecord {
+  bot_id: string;
+  wecom_user_id: string;
+  provider: UserCredentialProvider;
+  is_bound: true;
+  updated_at: string;
+}
+
+export interface UserCredentialBindingRecord {
+  token: string;
+  token_hash: string;
+  bot_id: string;
+  wecom_user_id: string;
+  provider: UserCredentialProvider;
+  created_at: string;
+  expires_at: string;
+  consumed_at?: string;
+}
+
+export interface UserCredentialScopeInput {
+  bot_id: string;
+  wecom_user_id: string;
+  provider: UserCredentialProvider;
+}
+
+export interface CompleteUserCredentialBindingInput {
+  token: string;
+  payload_ciphertext: string;
+}
+
 export type BotSkillSourceType = "builtin" | "github" | "url" | "local";
 export type BotCapabilityInstallStatus = "installing" | "installed" | "failed";
 
@@ -316,6 +378,30 @@ export interface AppendBotCapabilityAuditLogInput {
   source_ref?: string;
   result: BotCapabilityAuditResult;
   error_message?: string;
+}
+
+export type McpToolExecutionStatus = "success" | "failed" | "rejected";
+
+export interface McpToolExecutionRecord {
+  execution_id: string;
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
+  tool_name: string;
+  status: McpToolExecutionStatus;
+  duration_ms: number;
+  error_code?: string;
+  created_at: string;
+}
+
+export interface AppendMcpToolExecutionInput {
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
+  tool_name: string;
+  status: McpToolExecutionStatus;
+  duration_ms: number;
+  error_code?: string;
 }
 
 export interface CreatePendingGeneratedDocumentInput {
@@ -753,8 +839,19 @@ export interface DataStore {
     input: UpdateBotRuntimePolicyInput,
   ): BotRuntimePolicyRecord;
   upsertBotEnvVar(botId: string, input: UpsertBotEnvVarInput): BotEnvVarRecord;
+  getBotEnvVar(botId: string, key: string): BotEnvVarRecord | undefined;
   listBotEnvVars(botId: string): BotEnvVarMetadataRecord[];
   deleteBotEnvVar(botId: string, key: string): void;
+  createUserCredentialBinding(input: UserCredentialScopeInput): UserCredentialBindingRecord;
+  getUserCredentialBinding(token: string): UserCredentialBindingRecord | undefined;
+  completeUserCredentialBinding(
+    input: CompleteUserCredentialBindingInput,
+  ): UserCredentialMetadataRecord;
+  getUserCredential(input: UserCredentialScopeInput): UserCredentialRecord | undefined;
+  getUserCredentialMetadata(
+    input: UserCredentialScopeInput,
+  ): UserCredentialMetadataRecord | undefined;
+  deleteUserCredential(input: UserCredentialScopeInput): void;
   upsertBotSkill(botId: string, input: UpsertBotSkillInput): BotSkillRecord;
   listBotSkills(botId: string): BotSkillRecord[];
   deleteBotSkill(botId: string, name: string): void;
@@ -763,6 +860,8 @@ export interface DataStore {
   deleteBotMcp(botId: string, name: string): void;
   appendBotCapabilityAuditLog(input: AppendBotCapabilityAuditLogInput): BotCapabilityAuditLogRecord;
   listBotCapabilityAuditLogs(botId: string): BotCapabilityAuditLogRecord[];
+  appendMcpToolExecution(input: AppendMcpToolExecutionInput): McpToolExecutionRecord;
+  listMcpToolExecutions(botId: string): McpToolExecutionRecord[];
   getAdmin(botId: string): AdminRecord | undefined;
   createAdminClaim(botId: string): AdminClaimRecord;
   claimAdmin(input: ClaimAdminInput): AdminRecord;
@@ -850,9 +949,12 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   const runtimeSessions = new Map<string, RuntimeSessionRecord>();
   const botRuntimePolicies = new Map<string, BotRuntimePolicyRecord>();
   const botEnvVars = new Map<string, BotEnvVarRecord>();
+  const userCredentials = new Map<string, UserCredentialRecord>();
+  const userCredentialBindings = new Map<string, UserCredentialBindingRecord>();
   const botSkills = new Map<string, BotSkillRecord>();
   const botMcps = new Map<string, BotMcpRecord>();
   const botCapabilityAuditLogs = new Map<string, BotCapabilityAuditLogRecord>();
+  const mcpToolExecutions = new Map<string, McpToolExecutionRecord>();
   const globalDocuments = new Map<string, GlobalDocumentRecord>();
   const roles = new Map<string, RoleRecord>();
   const roleDocuments = new Map<string, RoleDocumentRecord>();
@@ -872,6 +974,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       const now = new Date().toISOString();
       const wecomSecret = optionalText(input.wecom_secret);
       const wecomBotId = optionalText(input.wecom_bot_id);
+      const project = normalizeBotProjectConfig(input);
       assertUniqueWeComBotId(bots, wecomBotId);
       const bot: BotRecord = {
         bot_id: requireText(input.bot_id, "bot_id"),
@@ -881,6 +984,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         wecom_bot_id: wecomBotId,
         wecom_secret_configured: Boolean(wecomSecret),
         wecom_connection_status: "unchecked",
+        ...project,
         created_at: now,
         updated_at: now,
       };
@@ -906,6 +1010,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         ? bot.wecom_bot_id
         : optionalText(input.wecom_bot_id);
       assertUniqueWeComBotId(bots, wecomBotId, bot.bot_id);
+      const project = normalizeBotProjectConfig(input, bot);
       const updated: BotRecord = {
         ...bot,
         name: input.name === undefined ? bot.name : requireText(input.name, "name"),
@@ -922,6 +1027,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         wecom_connection_status: "unchecked",
         last_wecom_check_at: undefined,
         last_wecom_error: undefined,
+        ...project,
         updated_at: nextIsoTimestamp(bot.updated_at),
       };
       bots.set(bot.bot_id, updated);
@@ -960,9 +1066,12 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       mcpCapabilityConfigs.clear();
       botRuntimePolicies.clear();
       botEnvVars.clear();
+      userCredentials.clear();
+      userCredentialBindings.clear();
       botSkills.clear();
       botMcps.clear();
       botCapabilityAuditLogs.clear();
+      mcpToolExecutions.clear();
 
       if (playground) {
         globalDocuments.clear();
@@ -1217,6 +1326,15 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       return cloneBotEnvVarRecord(record);
     },
 
+    getBotEnvVar(botId, envKey) {
+      const bot = getRequiredBot(bots, botId);
+      const record = botEnvVars.get(botCapabilityScopedKey(
+        bot.bot_id,
+        requireText(envKey, "key"),
+      ));
+      return record ? cloneBotEnvVarRecord(record) : undefined;
+    },
+
     listBotEnvVars(botId) {
       const bot = getRequiredBot(bots, botId);
       return [...botEnvVars.values()]
@@ -1233,6 +1351,83 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
     deleteBotEnvVar(botId, key) {
       const bot = getRequiredBot(bots, botId);
       botEnvVars.delete(botCapabilityScopedKey(bot.bot_id, requireText(key, "key")));
+    },
+
+    createUserCredentialBinding(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const scope = normalizeUserCredentialScope({ ...input, bot_id: bot.bot_id });
+      if (userCredentials.has(userCredentialScopeKey(scope))) {
+        throw new Error("user credential is already bound; unbind first");
+      }
+      const token = randomCredentialBindingToken();
+      const now = new Date();
+      for (const [tokenHash, existing] of userCredentialBindings.entries()) {
+        if (
+          existing.bot_id === scope.bot_id
+          && existing.wecom_user_id === scope.wecom_user_id
+          && existing.provider === scope.provider
+          && !existing.consumed_at
+        ) {
+          userCredentialBindings.set(tokenHash, {
+            ...existing,
+            consumed_at: now.toISOString(),
+          });
+        }
+      }
+      const record: UserCredentialBindingRecord = {
+        token,
+        token_hash: hashCredentialBindingToken(token),
+        ...scope,
+        created_at: now.toISOString(),
+        expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+      };
+      userCredentialBindings.set(record.token_hash, record);
+      return cloneUserCredentialBindingRecord(record);
+    },
+
+    getUserCredentialBinding(token) {
+      const record = userCredentialBindings.get(hashCredentialBindingToken(token));
+      return isActiveUserCredentialBinding(record)
+        ? cloneUserCredentialBindingRecord(record)
+        : undefined;
+    },
+
+    completeUserCredentialBinding(input) {
+      const tokenHash = hashCredentialBindingToken(input.token);
+      const binding = userCredentialBindings.get(tokenHash);
+      if (!isActiveUserCredentialBinding(binding)) {
+        throw new Error("credential binding link is invalid or expired");
+      }
+      const scopeKey = userCredentialScopeKey(binding);
+      const existing = userCredentials.get(scopeKey);
+      const now = new Date().toISOString();
+      const credential: UserCredentialRecord = {
+        bot_id: binding.bot_id,
+        wecom_user_id: binding.wecom_user_id,
+        provider: binding.provider,
+        payload_ciphertext: requireText(input.payload_ciphertext, "payload_ciphertext"),
+        created_at: existing?.created_at ?? now,
+        updated_at: existing ? nextIsoTimestamp(existing.updated_at) : now,
+      };
+      userCredentials.set(scopeKey, credential);
+      userCredentialBindings.set(tokenHash, { ...binding, consumed_at: now });
+      return userCredentialMetadata(credential);
+    },
+
+    getUserCredential(input) {
+      getRequiredBot(bots, input.bot_id);
+      const record = userCredentials.get(userCredentialScopeKey(normalizeUserCredentialScope(input)));
+      return record ? { ...record } : undefined;
+    },
+
+    getUserCredentialMetadata(input) {
+      const record = this.getUserCredential(input);
+      return record ? userCredentialMetadata(record) : undefined;
+    },
+
+    deleteUserCredential(input) {
+      getRequiredBot(bots, input.bot_id);
+      userCredentials.delete(userCredentialScopeKey(normalizeUserCredentialScope(input)));
     },
 
     upsertBotSkill(botId, input) {
@@ -1338,6 +1533,31 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         .filter((record) => record.bot_id === bot.bot_id)
         .sort(compareCreatedRecordsDesc)
         .map(cloneBotCapabilityAuditLogRecord);
+    },
+
+    appendMcpToolExecution(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const record: McpToolExecutionRecord = {
+        execution_id: `mcp_exec_${crypto.randomUUID()}`,
+        bot_id: bot.bot_id,
+        wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+        conversation_id: requireText(input.conversation_id, "conversation_id"),
+        tool_name: requireText(input.tool_name, "tool_name"),
+        status: requireMcpToolExecutionStatus(input.status),
+        duration_ms: requireMcpToolExecutionDuration(input.duration_ms),
+        error_code: optionalText(input.error_code),
+        created_at: nextCollectionIsoTimestamp(mcpToolExecutions, "created_at"),
+      };
+      mcpToolExecutions.set(record.execution_id, record);
+      return cloneMcpToolExecutionRecord(record);
+    },
+
+    listMcpToolExecutions(botId) {
+      const bot = getRequiredBot(bots, botId);
+      return [...mcpToolExecutions.values()]
+        .filter((record) => record.bot_id === bot.bot_id)
+        .sort(compareCreatedRecordsDesc)
+        .map(cloneMcpToolExecutionRecord);
     },
 
     getAdmin(botId) {
@@ -2833,6 +3053,20 @@ function requireBotCapabilityAuditResult(value: string): BotCapabilityAuditResul
   return value;
 }
 
+function requireMcpToolExecutionStatus(value: string): McpToolExecutionStatus {
+  if (value !== "success" && value !== "failed" && value !== "rejected") {
+    throw new Error("status is invalid");
+  }
+  return value;
+}
+
+function requireMcpToolExecutionDuration(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 3_600_000) {
+    throw new Error("duration_ms is invalid");
+  }
+  return value;
+}
+
 export function defaultBotRuntimePolicy(
   bot: Pick<BotRecord, "bot_id" | "created_at" | "updated_at">,
 ): BotRuntimePolicyRecord {
@@ -2872,6 +3106,10 @@ export function cloneBotMcpRecord(
 export function cloneBotCapabilityAuditLogRecord(
   record: BotCapabilityAuditLogRecord,
 ): BotCapabilityAuditLogRecord {
+  return { ...record };
+}
+
+export function cloneMcpToolExecutionRecord(record: McpToolExecutionRecord): McpToolExecutionRecord {
   return { ...record };
 }
 
@@ -2965,6 +3203,81 @@ export function optionalText(value: string | undefined): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
+}
+
+export function normalizeBotProjectConfig(
+  input: Partial<BotProjectConfig>,
+  existing: Partial<BotProjectConfig> = {},
+): BotProjectConfig {
+  const repositoryUrl = input.project_repository_url === undefined
+    ? existing.project_repository_url
+    : optionalText(input.project_repository_url);
+  if (!repositoryUrl) {
+    return {
+      project_key: undefined,
+      project_repository_url: undefined,
+      project_default_branch: undefined,
+      project_directory: undefined,
+    };
+  }
+
+  validateProjectRepositoryUrl(repositoryUrl);
+  const projectKey = requireSafeProjectSegment(
+    input.project_key === undefined
+      ? existing.project_key ?? projectKeyFromRepositoryUrl(repositoryUrl)
+      : optionalText(input.project_key) ?? projectKeyFromRepositoryUrl(repositoryUrl),
+    "project_key",
+  );
+  const projectDirectory = requireSafeProjectSegment(
+    input.project_directory === undefined
+      ? existing.project_directory ?? projectKey
+      : optionalText(input.project_directory) ?? projectKey,
+    "project_directory",
+  );
+  const defaultBranch = requireText(
+    input.project_default_branch === undefined
+      ? existing.project_default_branch ?? "main"
+      : optionalText(input.project_default_branch) ?? "main",
+    "project_default_branch",
+  );
+  if (defaultBranch.startsWith("-") || defaultBranch.length > 255) {
+    throw new Error("project_default_branch is invalid");
+  }
+  return {
+    project_key: projectKey,
+    project_repository_url: repositoryUrl,
+    project_default_branch: defaultBranch,
+    project_directory: projectDirectory,
+  };
+}
+
+function projectKeyFromRepositoryUrl(repositoryUrl: string): string {
+  const path = /^https:\/\//i.test(repositoryUrl)
+    ? new URL(repositoryUrl).pathname
+    : repositoryUrl.replace(/^ssh:\/\//, "").replace(/^[^:]+:/, "");
+  return path.replace(/\/+$/, "").split("/").at(-1)?.replace(/\.git$/i, "") ?? "";
+}
+
+function requireSafeProjectSegment(value: string | undefined, field: string): string {
+  const segment = requireText(value ?? "", field);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(segment)) {
+    throw new Error(`${field} must be a safe path segment`);
+  }
+  return segment;
+}
+
+function validateProjectRepositoryUrl(value: string): void {
+  if (/^https:\/\//i.test(value)) {
+    const url = new URL(value);
+    if (url.username || url.password) {
+      throw new Error("project_repository_url must not contain credentials");
+    }
+    return;
+  }
+  if (/^(?:ssh:\/\/[^\s]+|git@[^\s:]+:[^\s]+)$/.test(value)) {
+    return;
+  }
+  throw new Error("project_repository_url must be an HTTPS or SSH Git URL");
 }
 
 export function buildWeComConnectionTestResult(
@@ -3211,6 +3524,66 @@ export function hashClaimCode(code: string): string {
     hash = Math.imul(hash, 16777619);
   }
   return `fnv1a:${(hash >>> 0).toString(16)}`;
+}
+
+export function hashCredentialBindingToken(token: string): string {
+  return createHash("sha256")
+    .update(requireText(token, "token"), "utf8")
+    .digest("hex");
+}
+
+export function requireUserCredentialProvider(value: string): UserCredentialProvider {
+  if (value !== "easemob_jira" && value !== "github_fork") {
+    throw new Error("unsupported credential provider");
+  }
+  return value;
+}
+
+function randomCredentialBindingToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+function normalizeUserCredentialScope(
+  input: UserCredentialScopeInput,
+): UserCredentialScopeInput {
+  return {
+    bot_id: requireText(input.bot_id, "bot_id"),
+    wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+    provider: requireUserCredentialProvider(input.provider),
+  };
+}
+
+function userCredentialScopeKey(input: UserCredentialScopeInput): string {
+  const scope = normalizeUserCredentialScope(input);
+  return [scope.bot_id, scope.wecom_user_id, scope.provider].join(":");
+}
+
+function isActiveUserCredentialBinding(
+  record: UserCredentialBindingRecord | undefined,
+): record is UserCredentialBindingRecord {
+  return Boolean(
+    record
+    && !record.consumed_at
+    && new Date(record.expires_at).getTime() >= Date.now(),
+  );
+}
+
+function cloneUserCredentialBindingRecord(
+  record: UserCredentialBindingRecord,
+): UserCredentialBindingRecord {
+  return { ...record };
+}
+
+function userCredentialMetadata(
+  record: UserCredentialRecord,
+): UserCredentialMetadataRecord {
+  return {
+    bot_id: record.bot_id,
+    wecom_user_id: record.wecom_user_id,
+    provider: record.provider,
+    is_bound: true,
+    updated_at: record.updated_at,
+  };
 }
 
 export function nextIsoTimestamp(previous: string): string {

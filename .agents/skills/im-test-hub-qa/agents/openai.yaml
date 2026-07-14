@@ -1,0 +1,4 @@
+interface:
+  display_name: "IM Test Hub QA"
+  short_description: "为 im-test-hub 设计、生成、执行并报告自动化测试"
+  default_prompt: "使用 $im-test-hub-qa 根据需求或已确认 Case 在 im-test-hub 中生成自动化测试、执行验证并汇总报告。"

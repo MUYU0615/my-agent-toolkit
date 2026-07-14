@@ -13,6 +13,104 @@ describe("capability-runner server", () => {
     await expect(response.json()).resolves.toEqual({ ok: true });
   });
 
+  it("returns the installable skill catalog", async () => {
+    const listSkills = vi.fn().mockReturnValue([
+      {
+        name: "jira-test",
+        description: "Analyze Jira for QA",
+        source_type: "builtin",
+        source_ref: "jira-test",
+      },
+    ]);
+    const server = createCapabilityRunnerServer({ listSkills });
+
+    const response = await server.fetch(
+      new Request("http://localhost/internal/skills/catalog"),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      items: [expect.objectContaining({ name: "jira-test" })],
+    });
+    expect(listSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it("prepares a configured project with trusted workspace identifiers", async () => {
+    const ensureProject = vi.fn().mockResolvedValue({
+      project_key: "im-test-hub",
+      path: "projects/im-test-hub",
+      branch: "main",
+      reused: false,
+    });
+    const server = createCapabilityRunnerServer({
+      ensureProject,
+      projectRunnerToken: "runner-secret",
+    });
+
+    const response = await server.fetch(new Request(
+      "http://localhost/internal/bots/qa-bot/projects/ensure",
+      {
+        method: "POST",
+        headers: { "x-project-runner-token": "runner-secret" },
+        body: JSON.stringify({
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          project_key: "im-test-hub",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ path: "projects/im-test-hub" });
+    expect(ensureProject).toHaveBeenCalledWith({
+      botId: "qa-bot",
+      userId: "user-a",
+      conversationId: "conv-1",
+      projectKey: "im-test-hub",
+    });
+  });
+
+  it("rejects project preparation without the internal runner token", async () => {
+    const ensureProject = vi.fn();
+    const server = createCapabilityRunnerServer({
+      ensureProject,
+      projectRunnerToken: "runner-secret",
+    });
+
+    const response = await server.fetch(new Request(
+      "http://localhost/internal/bots/qa-bot/projects/ensure",
+      { method: "POST", body: "{}" },
+    ));
+
+    expect(response.status).toBe(401);
+    expect(ensureProject).not.toHaveBeenCalled();
+  });
+
+  it("serves project inspection for the current user binding", async () => {
+    const inspectProject = vi.fn().mockResolvedValue({ base_commit: "a".repeat(40) });
+    const server = createCapabilityRunnerServer({
+      inspectProject,
+      projectRunnerToken: "runner-secret",
+    });
+
+    const response = await server.fetch(new Request(
+      "http://localhost/internal/bots/qa-bot/projects/inspect",
+      {
+        method: "POST",
+        headers: { "x-project-runner-token": "runner-secret" },
+        body: JSON.stringify({ user_id: "user-a", project_key: "im-test-hub" }),
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ base_commit: "a".repeat(40) });
+    expect(inspectProject).toHaveBeenCalledWith({
+      botId: "qa-bot",
+      userId: "user-a",
+      projectKey: "im-test-hub",
+    });
+  });
+
   it("dispatches bot skill install requests with structured payload", async () => {
     const dispatch = vi.fn().mockResolvedValue(undefined);
     const server = createCapabilityRunnerServer({ dispatch });

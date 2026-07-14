@@ -32,6 +32,8 @@ export function createWeComWorkerApp() {
     llmRunnerUrl: process.env.LLM_RUNNER_URL ?? "http://llm-runner:8200",
     capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
     logServiceUrl: process.env.LOG_SERVICE_URL,
+    credentialBindPublicUrl: process.env.CREDENTIAL_BIND_PUBLIC_URL,
+    credentialInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN,
     fetch,
   };
 

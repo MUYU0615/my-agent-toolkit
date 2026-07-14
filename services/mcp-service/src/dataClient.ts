@@ -18,6 +18,38 @@ export interface DataServiceClient {
   getMcpCapabilityConfig(botId: string): Promise<McpCapabilityConfig>;
 }
 
+export interface McpToolExecutionAuditInput {
+  bot_id: string;
+  wecom_user_id: string;
+  conversation_id: string;
+  tool_name: string;
+  status: "success" | "failed" | "rejected";
+  duration_ms: number;
+  error_code?: string;
+}
+
+export function createMcpToolExecutionAuditWriter(options: {
+  baseUrl: string;
+  internalToken: string;
+  fetch?: typeof fetch;
+}): (input: McpToolExecutionAuditInput) => Promise<void> {
+  const baseUrl = options.baseUrl.replace(/\/+$/, "");
+  const fetchImpl = options.fetch ?? fetch;
+  return async (input) => {
+    const response = await fetchImpl(`${baseUrl}/internal/mcp-tool-executions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${options.internalToken}`,
+      },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) {
+      throw new Error(`mcp tool execution audit failed: ${response.status}`);
+    }
+  };
+}
+
 export interface CreateMemoryInput {
   scope: McpScope;
   owner_id: string;

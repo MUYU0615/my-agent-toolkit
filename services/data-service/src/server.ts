@@ -7,13 +7,24 @@ import {
   type RoleQuestionOption,
   type UpdateBusinessDocumentInput,
 } from "./store.js";
+import type { CredentialVault, UserCredentialPayload } from "./credentialVault.js";
+import { timingSafeEqual } from "node:crypto";
+
+const PROJECT_DOTENV_ENV_KEY = "__PROJECT_DOTENV_FILE__";
+const MAX_PROJECT_DOTENV_BYTES = 256 * 1024;
 
 export interface DataServiceServer {
   fetch(request: Request): Promise<Response>;
 }
 
+export interface DataServiceServerConfig {
+  credentialVault?: CredentialVault;
+  credentialInternalToken?: string;
+}
+
 export function createDataServiceServer(
   store: DataStore = createDataStore(),
+  config: DataServiceServerConfig = {},
 ): DataServiceServer {
   return {
     async fetch(request: Request): Promise<Response> {
@@ -21,6 +32,79 @@ export function createDataServiceServer(
 
       if (request.method === "GET" && url.pathname === "/health") {
         return jsonResponse(healthResponse("data-service"));
+      }
+
+      if (
+        request.method === "POST"
+        && url.pathname === "/internal/user-credential-bindings"
+      ) {
+        return handleCreateUserCredentialBinding(request, store, config);
+      }
+
+      const publicCredentialBindingMatch = url.pathname.match(
+        /^\/v1\/credential-bindings\/([^/]+)$/,
+      );
+      if (request.method === "GET" && publicCredentialBindingMatch) {
+        return handleGetUserCredentialBinding(store, publicCredentialBindingMatch[1]);
+      }
+      if (request.method === "POST" && publicCredentialBindingMatch) {
+        return handleCompleteUserCredentialBinding(
+          request,
+          store,
+          config,
+          publicCredentialBindingMatch[1],
+        );
+      }
+
+      if (
+        url.pathname === "/internal/user-credentials"
+        && (request.method === "GET" || request.method === "DELETE")
+      ) {
+        return handleUserCredential(request, url, store, config);
+      }
+
+      if (
+        request.method === "GET"
+        && url.pathname === "/internal/user-credentials/runtime-env"
+      ) {
+        return handleGetUserCredentialRuntimeEnv(request, url, store, config);
+      }
+
+      if (
+        request.method === "GET"
+        && url.pathname === "/internal/user-credentials/project-git"
+      ) {
+        return handleGetUserCredentialProjectGit(request, url, store, config);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/mcp-tool-executions") {
+        return handleAppendMcpToolExecution(request, store, config);
+      }
+
+      const internalProjectEnvMatch = url.pathname.match(
+        /^\/internal\/bots\/([^/]+)\/project-env$/,
+      );
+      if (request.method === "GET" && internalProjectEnvMatch) {
+        return withDecodedBotId(internalProjectEnvMatch[1], (botId) =>
+          handleGetInternalBotProjectEnv(request, store, config, botId),
+        );
+      }
+
+      const projectEnvMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/project-env$/);
+      if (request.method === "GET" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handleGetBotProjectEnvMetadata(store, botId),
+        );
+      }
+      if (request.method === "PUT" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handlePutBotProjectEnv(request, store, config, botId),
+        );
+      }
+      if (request.method === "DELETE" && projectEnvMatch) {
+        return withDecodedBotId(projectEnvMatch[1], (botId) =>
+          handleDeleteBotProjectEnv(store, botId),
+        );
       }
 
       if (request.method === "POST" && url.pathname === "/v1/bots") {
@@ -993,10 +1077,111 @@ function handleListBotEnvVars(
   botId: string,
 ): Response {
   try {
-    return jsonResponse({ items: store.listBotEnvVars(botId) });
+    return jsonResponse({
+      items: store.listBotEnvVars(botId)
+        .filter((item) => item.key !== PROJECT_DOTENV_ENV_KEY),
+    });
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function handleGetBotProjectEnvMetadata(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse({
+      configured: Boolean(record),
+      ...(record ? { updated_at: record.updated_at } : {}),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handlePutBotProjectEnv(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  botId: string,
+): Promise<Response> {
+  try {
+    if (!config.credentialVault) {
+      return jsonResponse({ error: "credential vault is not configured" }, 503);
+    }
+    const body = await request.json() as {
+      content?: unknown;
+      updated_by_wecom_user_id?: unknown;
+    };
+    const content = requireProjectDotenvContent(body.content);
+    const record = store.upsertBotEnvVar(botId, {
+      key: PROJECT_DOTENV_ENV_KEY,
+      value_ciphertext: config.credentialVault.encryptText(content),
+      updated_by_wecom_user_id: requireText(
+        body.updated_by_wecom_user_id,
+        "updated_by_wecom_user_id",
+      ),
+    });
+    return jsonResponse({
+      configured: true,
+      updated_at: record.updated_at,
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteBotProjectEnv(
+  store: DataStore,
+  botId: string,
+): Response {
+  try {
+    store.deleteBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse({ configured: false });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetInternalBotProjectEnv(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  botId: string,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "credential vault is not configured" }, 503);
+  }
+  try {
+    const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
+    return jsonResponse(record
+      ? {
+          configured: true,
+          content: config.credentialVault.decryptText(record.value_ciphertext),
+        }
+      : { configured: false });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function requireProjectDotenvContent(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error("project .env content is required");
+  }
+  if (value.includes("\0")) {
+    throw new Error("project .env content contains an invalid character");
+  }
+  if (Buffer.byteLength(value, "utf8") > MAX_PROJECT_DOTENV_BYTES) {
+    throw new Error("project .env content is too large");
+  }
+  return value;
 }
 
 async function handleUpsertBotEnvVar(
@@ -1838,6 +2023,294 @@ async function handleVerifyAdminClaim(
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+async function handleCreateUserCredentialBinding(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Promise<Response> {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    const binding = store.createUserCredentialBinding({
+      bot_id: requireText(body.bot_id, "bot_id"),
+      wecom_user_id: requireText(body.wecom_user_id, "wecom_user_id"),
+      provider: requireCredentialProvider(body.provider),
+    });
+    return jsonResponse({
+      token: binding.token,
+      provider: binding.provider,
+      expires_at: binding.expires_at,
+    }, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetUserCredentialBinding(
+  store: DataStore,
+  encodedToken: string,
+): Response {
+  try {
+    const binding = store.getUserCredentialBinding(decodeURIComponent(encodedToken));
+    if (!binding) {
+      return jsonResponse({ error: "credential binding link is invalid or expired" }, 404);
+    }
+    return jsonResponse({
+      provider: binding.provider,
+      expires_at: binding.expires_at,
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCompleteUserCredentialBinding(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  encodedToken: string,
+): Promise<Response> {
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "user credential vault is not configured" }, 503);
+  }
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    const binding = store.getUserCredentialBinding(decodeURIComponent(encodedToken));
+    if (!binding) {
+      return jsonResponse({ error: "credential binding link is invalid or expired" }, 404);
+    }
+    const payload = normalizeCredentialPayload(binding.provider, body);
+    const metadata = store.completeUserCredentialBinding({
+      token: decodeURIComponent(encodedToken),
+      payload_ciphertext: config.credentialVault.encrypt(payload),
+    });
+    return jsonResponse({
+      provider: metadata.provider,
+      is_bound: metadata.is_bound,
+      updated_at: metadata.updated_at,
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleUserCredential(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  try {
+    const scope = credentialScopeFromUrl(url);
+    if (request.method === "DELETE") {
+      store.deleteUserCredential(scope);
+      return jsonResponse({ deleted: true });
+    }
+    const metadata = store.getUserCredentialMetadata(scope);
+    return jsonResponse(metadata ?? {
+      ...scope,
+      is_bound: false,
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetUserCredentialRuntimeEnv(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "user credential vault is not configured" }, 503);
+  }
+  try {
+    const credential = store.getUserCredential(credentialScopeFromUrl(url));
+    if (!credential) {
+      return jsonResponse({ env: {} });
+    }
+    const payload = config.credentialVault.decrypt(credential.payload_ciphertext);
+    if (payload.provider === "github_fork") {
+      return jsonResponse({ env: {} });
+    }
+    return jsonResponse({
+      env: {
+        MY_AGENT_JIRA_CREDENTIAL_VERSION: credential.updated_at,
+        EASEMOB_JIRA_USERNAME: payload.username,
+        EASEMOB_JIRA_PASSWORD: payload.password,
+        ...(payload.redirect_username
+          ? { EASEMOB_JIRA_REDIRECT_USERNAME: payload.redirect_username }
+          : {}),
+        ...(payload.redirect_password
+          ? { EASEMOB_JIRA_REDIRECT_PASSWORD: payload.redirect_password }
+          : {}),
+      },
+    });
+  } catch (error) {
+    return jsonResponse({
+      error: error instanceof Error ? error.message : "credential lookup failed",
+    }, 500);
+  }
+}
+
+function handleGetUserCredentialProjectGit(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "user credential vault is not configured" }, 503);
+  }
+  try {
+    const scope = credentialScopeFromUrl(url);
+    if (scope.provider !== "github_fork") {
+      return jsonResponse({ error: "github fork credential is required" }, 400);
+    }
+    const projectKey = requireText(url.searchParams.get("project_key"), "project_key");
+    const credential = store.getUserCredential(scope);
+    if (!credential) {
+      return jsonResponse({ error: "GitHub fork is not bound for the current WeCom user and Bot. Send /github bind first." }, 404);
+    }
+    const payload = config.credentialVault.decrypt(credential.payload_ciphertext);
+    if (payload.provider !== "github_fork") {
+      return jsonResponse({ error: "GitHub fork credential is invalid" }, 500);
+    }
+    return jsonResponse({
+      project_key: projectKey,
+      repository_url: payload.repository_url,
+      branch: payload.branch,
+      access_token: payload.access_token,
+      credential_version: credential.updated_at,
+    });
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "GitHub credential lookup failed" }, 500);
+  }
+}
+
+async function handleAppendMcpToolExecution(
+  request: Request,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Promise<Response> {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  try {
+    const body = await request.json() as Record<string, unknown>;
+    return jsonResponse(store.appendMcpToolExecution({
+      bot_id: requireText(body.bot_id, "bot_id"),
+      wecom_user_id: requireText(body.wecom_user_id, "wecom_user_id"),
+      conversation_id: requireText(body.conversation_id, "conversation_id"),
+      tool_name: requireText(body.tool_name, "tool_name"),
+      status: requireText(body.status, "status") as "success" | "failed" | "rejected",
+      duration_ms: Number(body.duration_ms),
+      ...(typeof body.error_code === "string" && body.error_code.trim()
+        ? { error_code: body.error_code.trim() }
+        : {}),
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function credentialScopeFromUrl(url: URL) {
+  return {
+    bot_id: requireText(url.searchParams.get("bot_id"), "bot_id"),
+    wecom_user_id: requireText(
+      url.searchParams.get("wecom_user_id"),
+      "wecom_user_id",
+    ),
+    provider: requireCredentialProvider(url.searchParams.get("provider")),
+  };
+}
+
+function requireCredentialProvider(value: unknown): "easemob_jira" | "github_fork" {
+  if (value !== "easemob_jira" && value !== "github_fork") {
+    throw new Error("unsupported credential provider");
+  }
+  return value;
+}
+
+function normalizeCredentialPayload(
+  provider: "easemob_jira" | "github_fork",
+  body: Record<string, unknown>,
+): UserCredentialPayload {
+  if (provider === "github_fork") {
+    return {
+      provider,
+      access_token: requireSecret(body.access_token, "access_token"),
+      repository_url: requireSecret(body.repository_url, "repository_url"),
+      branch: requireSecret(body.branch, "branch"),
+    };
+  }
+  const username = requireSecret(body.username, "username");
+  const password = requireSecret(body.password, "password");
+  const redirectUsername = optionalSecret(body.redirect_username);
+  const redirectPassword = optionalSecret(body.redirect_password);
+  if (Boolean(redirectUsername) !== Boolean(redirectPassword)) {
+    throw new Error("redirect username and password must be provided together");
+  }
+  return {
+    provider,
+    username,
+    password,
+    ...(redirectUsername ? { redirect_username: redirectUsername } : {}),
+    ...(redirectPassword ? { redirect_password: redirectPassword } : {}),
+  };
+}
+
+function internalCredentialAccessError(
+  request: Request,
+  config: DataServiceServerConfig,
+): Response | undefined {
+  const expected = config.credentialInternalToken?.trim();
+  if (!expected) {
+    return jsonResponse({ error: "user credential internal token is not configured" }, 503);
+  }
+  const authorization = request.headers.get("authorization") ?? "";
+  const actual = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
+  if (
+    expectedBuffer.length !== actualBuffer.length
+    || !timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+  return undefined;
+}
+
+function requireSecret(value: unknown, fieldName: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`${fieldName} is required`);
+  }
+  return value;
+}
+
+function optionalSecret(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 function optionalSearchParam(url: URL, name: string): string | undefined {

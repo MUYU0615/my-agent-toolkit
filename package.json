@@ -10,8 +10,8 @@
     "dev:status": "./scripts/dev-status.sh",
     "dev:relay": "./scripts/dev-kiro-relay-watch.sh",
     "test": "vitest run",
-    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service",
-    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service"
+    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner",
+    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner"
   },
   "workspaces": [
     "packages/*",

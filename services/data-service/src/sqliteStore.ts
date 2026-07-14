@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { randomBytes } from "node:crypto";
 import {
   buildDefaultMcpCapabilityConfig,
   parseMcpCapabilityConfig,
@@ -8,6 +9,7 @@ import {
   ADMIN_CLAIM_TTL_MS,
   buildWeComConnectionTestResult,
   cloneBotCapabilityAuditLogRecord,
+  cloneMcpToolExecutionRecord,
   cloneBotEnvVarRecord,
   cloneBotMcpRecord,
   cloneBotRuntimePolicyRecord,
@@ -17,6 +19,7 @@ import {
   configDocumentOrder,
   defaultRuntimeConfig,
   hashClaimCode,
+  hashCredentialBindingToken,
   initializationSessionKey,
   isBotConfigDocumentTitle,
   nextIsoTimestamp,
@@ -24,12 +27,14 @@ import {
   normalizeRuntimeConfigOptions,
   normalizeRuntimeConfigStream,
   optionalText,
+  normalizeBotProjectConfig,
   requireBotConfigDocumentTitle,
   requireBotStatus,
   requireInitializationGenerationInProgress,
   requireInitializationPhase,
   requireInitializationSessionStatus,
   requireText,
+  requireUserCredentialProvider,
   type AdminClaimRecord,
   type AdminRecord,
   type AssetRecord,
@@ -96,6 +101,11 @@ import {
   type OpenConversationInput,
   type RenameConversationInput,
   type UpsertBotEnvVarInput,
+  type CompleteUserCredentialBindingInput,
+  type UserCredentialBindingRecord,
+  type UserCredentialMetadataRecord,
+  type UserCredentialRecord,
+  type UserCredentialScopeInput,
   type UpsertBotMcpInput,
   type UpsertBotSkillInput,
   type UpsertRuntimeConfigInput,
@@ -112,6 +122,9 @@ import {
   type UpdateBotInput,
   type WeComRuntimeBotConfig,
   type AppendBotCapabilityAuditLogInput,
+  type AppendMcpToolExecutionInput,
+  type McpToolExecutionRecord,
+  type McpToolExecutionStatus,
   seedDefaultRoleConfig as seedDefaultRoleConfigInMemory,
 } from "./store.js";
 
@@ -128,6 +141,7 @@ export function createSqliteDataStore(
       const now = new Date().toISOString();
       const wecomSecret = optionalText(input.wecom_secret);
       const wecomBotId = optionalText(input.wecom_bot_id);
+      const project = normalizeBotProjectConfig(input);
       assertUniqueWeComBotId(db, wecomBotId);
       const bot: BotRecord = {
         bot_id: requireText(input.bot_id, "bot_id"),
@@ -137,11 +151,12 @@ export function createSqliteDataStore(
         wecom_bot_id: wecomBotId,
         wecom_secret_configured: Boolean(wecomSecret),
         wecom_connection_status: "unchecked",
+        ...project,
         created_at: now,
         updated_at: now,
       };
       db.prepare(
-        "insert into bots (bot_id, name, runtime, status, wecom_bot_id, wecom_secret, wecom_connection_status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "insert into bots (bot_id, name, runtime, status, wecom_bot_id, wecom_secret, wecom_connection_status, project_key, project_repository_url, project_default_branch, project_directory, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         bot.bot_id,
         bot.name,
@@ -150,6 +165,10 @@ export function createSqliteDataStore(
         bot.wecom_bot_id ?? null,
         wecomSecret ?? null,
         bot.wecom_connection_status,
+        bot.project_key ?? null,
+        bot.project_repository_url ?? null,
+        bot.project_default_branch ?? null,
+        bot.project_directory ?? null,
         bot.created_at,
         bot.updated_at,
       );
@@ -289,12 +308,41 @@ export function createSqliteDataStore(
       return upsertBotEnvVar(db, botId, input);
     },
 
+    getBotEnvVar(botId, key) {
+      return getBotEnvVar(db, botId, key);
+    },
+
     listBotEnvVars(botId) {
       return listBotEnvVars(db, botId);
     },
 
     deleteBotEnvVar(botId, key) {
       deleteBotEnvVar(db, botId, key);
+    },
+
+    createUserCredentialBinding(input) {
+      return createUserCredentialBinding(db, input);
+    },
+
+    getUserCredentialBinding(token) {
+      return getUserCredentialBinding(db, token);
+    },
+
+    completeUserCredentialBinding(input) {
+      return completeUserCredentialBinding(db, input);
+    },
+
+    getUserCredential(input) {
+      return getUserCredential(db, input);
+    },
+
+    getUserCredentialMetadata(input) {
+      const record = getUserCredential(db, input);
+      return record ? userCredentialMetadata(record) : undefined;
+    },
+
+    deleteUserCredential(input) {
+      deleteUserCredential(db, input);
     },
 
     upsertBotSkill(botId, input) {
@@ -327,6 +375,14 @@ export function createSqliteDataStore(
 
     listBotCapabilityAuditLogs(botId) {
       return listBotCapabilityAuditLogs(db, botId);
+    },
+
+    appendMcpToolExecution(input) {
+      return appendMcpToolExecution(db, input);
+    },
+
+    listMcpToolExecutions(botId) {
+      return listMcpToolExecutions(db, botId);
     },
 
     getAdmin(botId) {
@@ -696,9 +752,12 @@ function resetToStandardRoleConfigInSqlite(
     db.prepare("delete from bot_mcp_capability_configs").run();
     db.prepare("delete from bot_runtime_policies").run();
     db.prepare("delete from bot_env_vars").run();
+    db.prepare("delete from user_credential_bindings").run();
+    db.prepare("delete from user_credentials").run();
     db.prepare("delete from bot_skills").run();
     db.prepare("delete from bot_mcps").run();
     db.prepare("delete from bot_capability_audit_logs").run();
+    db.prepare("delete from mcp_tool_executions").run();
     db.prepare("delete from business_document_versions").run();
     db.prepare("delete from business_documents").run();
     db.prepare("delete from bot_config_document_versions").run();
@@ -1007,6 +1066,17 @@ function listBotEnvVars(
     .filter((record): record is BotEnvVarMetadataRecord => Boolean(record));
 }
 
+function getBotEnvVar(
+  db: Database.Database,
+  botId: string,
+  key: string,
+): BotEnvVarRecord | undefined {
+  const bot = getRequiredBot(db, botId);
+  return mapBotEnvVarRecord(db.prepare(
+    "select * from bot_env_vars where bot_id = ? and key = ?",
+  ).get(bot.bot_id, requireText(key, "key")));
+}
+
 function deleteBotEnvVar(
   db: Database.Database,
   botId: string,
@@ -1017,6 +1087,156 @@ function deleteBotEnvVar(
     bot.bot_id,
     requireText(key, "key"),
   );
+}
+
+function createUserCredentialBinding(
+  db: Database.Database,
+  input: UserCredentialScopeInput,
+): UserCredentialBindingRecord {
+  const bot = getRequiredBot(db, input.bot_id);
+  const wecomUserId = requireText(input.wecom_user_id, "wecom_user_id");
+  const provider = requireUserCredentialProvider(input.provider);
+  if (getUserCredential(db, {
+    bot_id: bot.bot_id,
+    wecom_user_id: wecomUserId,
+    provider,
+  })) {
+    throw new Error("user credential is already bound; unbind first");
+  }
+  const token = randomBytes(32).toString("base64url");
+  const tokenHash = hashCredentialBindingToken(token);
+  const now = new Date();
+  db.prepare(`
+    update user_credential_bindings
+    set consumed_at = ?
+    where bot_id = ? and wecom_user_id = ? and provider = ? and consumed_at is null
+  `).run(now.toISOString(), bot.bot_id, wecomUserId, provider);
+  const record: UserCredentialBindingRecord = {
+    token,
+    token_hash: tokenHash,
+    bot_id: bot.bot_id,
+    wecom_user_id: wecomUserId,
+    provider,
+    created_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+  };
+  db.prepare(`
+    insert into user_credential_bindings (
+      token_hash, bot_id, wecom_user_id, provider, created_at, expires_at, consumed_at
+    ) values (?, ?, ?, ?, ?, ?, null)
+  `).run(
+    record.token_hash,
+    record.bot_id,
+    record.wecom_user_id,
+    record.provider,
+    record.created_at,
+    record.expires_at,
+  );
+  return record;
+}
+
+function getUserCredentialBinding(
+  db: Database.Database,
+  token: string,
+): UserCredentialBindingRecord | undefined {
+  const record = mapUserCredentialBindingRecord(
+    db.prepare("select * from user_credential_bindings where token_hash = ?")
+      .get(hashCredentialBindingToken(token)),
+    token,
+  );
+  if (
+    !record
+    || record.consumed_at
+    || new Date(record.expires_at).getTime() < Date.now()
+  ) {
+    return undefined;
+  }
+  return record;
+}
+
+function completeUserCredentialBinding(
+  db: Database.Database,
+  input: CompleteUserCredentialBindingInput,
+): UserCredentialMetadataRecord {
+  const transaction = db.transaction(() => {
+    const binding = getUserCredentialBinding(db, input.token);
+    if (!binding) {
+      throw new Error("credential binding link is invalid or expired");
+    }
+    const existing = getUserCredential(db, binding);
+    const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+    const createdAt = existing?.created_at ?? now;
+    db.prepare(`
+      insert into user_credentials (
+        bot_id, wecom_user_id, provider, payload_ciphertext, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?)
+      on conflict(bot_id, wecom_user_id, provider) do update set
+        payload_ciphertext = excluded.payload_ciphertext,
+        updated_at = excluded.updated_at
+    `).run(
+      binding.bot_id,
+      binding.wecom_user_id,
+      binding.provider,
+      requireText(input.payload_ciphertext, "payload_ciphertext"),
+      createdAt,
+      now,
+    );
+    db.prepare(`
+      update user_credential_bindings
+      set consumed_at = ?
+      where token_hash = ? and consumed_at is null
+    `).run(now, binding.token_hash);
+    return {
+      bot_id: binding.bot_id,
+      wecom_user_id: binding.wecom_user_id,
+      provider: binding.provider,
+      is_bound: true as const,
+      updated_at: now,
+    };
+  });
+  return transaction();
+}
+
+function getUserCredential(
+  db: Database.Database,
+  input: UserCredentialScopeInput,
+): UserCredentialRecord | undefined {
+  getRequiredBot(db, input.bot_id);
+  return mapUserCredentialRecord(db.prepare(`
+    select * from user_credentials
+    where bot_id = ? and wecom_user_id = ? and provider = ?
+  `).get(
+    requireText(input.bot_id, "bot_id"),
+    requireText(input.wecom_user_id, "wecom_user_id"),
+    requireUserCredentialProvider(input.provider),
+  ));
+}
+
+function deleteUserCredential(
+  db: Database.Database,
+  input: UserCredentialScopeInput,
+): void {
+  getRequiredBot(db, input.bot_id);
+  db.prepare(`
+    delete from user_credentials
+    where bot_id = ? and wecom_user_id = ? and provider = ?
+  `).run(
+    requireText(input.bot_id, "bot_id"),
+    requireText(input.wecom_user_id, "wecom_user_id"),
+    requireUserCredentialProvider(input.provider),
+  );
+}
+
+function userCredentialMetadata(
+  record: UserCredentialRecord,
+): UserCredentialMetadataRecord {
+  return {
+    bot_id: record.bot_id,
+    wecom_user_id: record.wecom_user_id,
+    provider: record.provider,
+    is_bound: true,
+    updated_at: record.updated_at,
+  };
 }
 
 function upsertBotSkill(
@@ -1223,6 +1443,44 @@ function listBotCapabilityAuditLogs(
   `).all(bot.bot_id).map(mapBotCapabilityAuditLogRecord)
     .filter((record): record is BotCapabilityAuditLogRecord => Boolean(record))
     .map(cloneBotCapabilityAuditLogRecord);
+}
+
+function appendMcpToolExecution(
+  db: Database.Database,
+  input: AppendMcpToolExecutionInput,
+): McpToolExecutionRecord {
+  const bot = getRequiredBot(db, input.bot_id);
+  const record: McpToolExecutionRecord = {
+    execution_id: `mcp_exec_${crypto.randomUUID()}`,
+    bot_id: bot.bot_id,
+    wecom_user_id: requireText(input.wecom_user_id, "wecom_user_id"),
+    conversation_id: requireText(input.conversation_id, "conversation_id"),
+    tool_name: requireText(input.tool_name, "tool_name"),
+    status: requireMcpToolExecutionStatus(input.status),
+    duration_ms: requireMcpToolExecutionDuration(input.duration_ms),
+    error_code: optionalText(input.error_code),
+    created_at: nextTableIsoTimestamp(db, "mcp_tool_executions", "created_at"),
+  };
+  db.prepare(`
+    insert into mcp_tool_executions (
+      execution_id, bot_id, wecom_user_id, conversation_id, tool_name,
+      status, duration_ms, error_code, created_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    record.execution_id, record.bot_id, record.wecom_user_id, record.conversation_id,
+    record.tool_name, record.status, record.duration_ms, record.error_code ?? null,
+    record.created_at,
+  );
+  return cloneMcpToolExecutionRecord(record);
+}
+
+function listMcpToolExecutions(db: Database.Database, botId: string): McpToolExecutionRecord[] {
+  const bot = getRequiredBot(db, botId);
+  return db.prepare("select * from mcp_tool_executions where bot_id = ? order by created_at desc")
+    .all(bot.bot_id)
+    .map(mapMcpToolExecutionRecord)
+    .filter((record): record is McpToolExecutionRecord => Boolean(record))
+    .map(cloneMcpToolExecutionRecord);
 }
 
 function upsertGlobalDocument(
@@ -1650,6 +1908,7 @@ function updateBot(
     ? bot.wecom_bot_id
     : optionalText(input.wecom_bot_id);
   assertUniqueWeComBotId(db, wecomBotId, bot.bot_id);
+  const project = normalizeBotProjectConfig(input, bot);
   const updated: BotRecord = {
     ...bot,
     name: input.name === undefined ? bot.name : requireText(input.name, "name"),
@@ -1666,13 +1925,14 @@ function updateBot(
     wecom_connection_status: "unchecked",
     last_wecom_check_at: undefined,
     last_wecom_error: undefined,
+    ...project,
     updated_at: nextIsoTimestamp(bot.updated_at),
   };
   const currentSecret = db
     .prepare("select wecom_secret from bots where bot_id = ?")
     .get(botId) as { wecom_secret?: string | null };
   db.prepare(
-    "update bots set name = ?, runtime = ?, status = ?, wecom_bot_id = ?, wecom_secret = ?, wecom_connection_status = ?, last_wecom_check_at = ?, last_wecom_error = ?, updated_at = ? where bot_id = ?",
+    "update bots set name = ?, runtime = ?, status = ?, wecom_bot_id = ?, wecom_secret = ?, wecom_connection_status = ?, last_wecom_check_at = ?, last_wecom_error = ?, project_key = ?, project_repository_url = ?, project_default_branch = ?, project_directory = ?, updated_at = ? where bot_id = ?",
   ).run(
     updated.name,
     updated.runtime,
@@ -1682,6 +1942,10 @@ function updateBot(
     updated.wecom_connection_status,
     null,
     null,
+    updated.project_key ?? null,
+    updated.project_repository_url ?? null,
+    updated.project_default_branch ?? null,
+    updated.project_directory ?? null,
     updated.updated_at,
     updated.bot_id,
   );
@@ -2189,6 +2453,10 @@ function migrate(db: Database.Database): void {
       wecom_connection_status text not null default 'unchecked',
       last_wecom_check_at text,
       last_wecom_error text,
+      project_key text,
+      project_repository_url text,
+      project_default_branch text,
+      project_directory text,
       created_at text not null,
       updated_at text not null
     );
@@ -2297,6 +2565,26 @@ function migrate(db: Database.Database): void {
       primary key (bot_id, key)
     );
 
+    create table if not exists user_credentials (
+      bot_id text not null,
+      wecom_user_id text not null,
+      provider text not null,
+      payload_ciphertext text not null,
+      created_at text not null,
+      updated_at text not null,
+      primary key (bot_id, wecom_user_id, provider)
+    );
+
+    create table if not exists user_credential_bindings (
+      token_hash text primary key,
+      bot_id text not null,
+      wecom_user_id text not null,
+      provider text not null,
+      created_at text not null,
+      expires_at text not null,
+      consumed_at text
+    );
+
     create table if not exists bot_skills (
       skill_id text primary key,
       bot_id text not null,
@@ -2335,6 +2623,20 @@ function migrate(db: Database.Database): void {
       error_message text,
       created_at text not null
     );
+
+    create table if not exists mcp_tool_executions (
+      execution_id text primary key,
+      bot_id text not null,
+      wecom_user_id text not null,
+      conversation_id text not null,
+      tool_name text not null,
+      status text not null,
+      duration_ms integer not null,
+      error_code text,
+      created_at text not null
+    );
+    create index if not exists idx_mcp_tool_executions_bot_created
+      on mcp_tool_executions (bot_id, created_at desc);
 
     create table if not exists global_documents (
       document_id text primary key,
@@ -2521,6 +2823,10 @@ function migrate(db: Database.Database): void {
   );
   addColumnIfMissing(db, "bots", "last_wecom_check_at", "text");
   addColumnIfMissing(db, "bots", "last_wecom_error", "text");
+  addColumnIfMissing(db, "bots", "project_key", "text");
+  addColumnIfMissing(db, "bots", "project_repository_url", "text");
+  addColumnIfMissing(db, "bots", "project_default_branch", "text");
+  addColumnIfMissing(db, "bots", "project_directory", "text");
   addColumnIfMissing(db, "admin_claims", "code", "text not null default ''");
   addColumnIfMissing(db, "conversations", "conversation_key", "text");
   addColumnIfMissing(db, "conversations", "scope_key", "text");
@@ -2590,6 +2896,12 @@ function migrate(db: Database.Database): void {
   addColumnIfMissing(db, "initialization_sessions", "selected_role_id", "text");
   db.prepare(
     "create unique index if not exists idx_bots_wecom_bot_id_unique on bots (wecom_bot_id) where wecom_bot_id is not null",
+  ).run();
+  db.prepare(
+    "create index if not exists idx_user_credentials_scope on user_credentials(bot_id, wecom_user_id, provider)",
+  ).run();
+  db.prepare(
+    "create index if not exists idx_user_credential_bindings_expiry on user_credential_bindings(expires_at)",
   ).run();
   migrateBotConfigDocuments(db);
 }
@@ -3395,6 +3707,18 @@ function mapBotRecord(row: unknown): BotRecord | undefined {
     ...(typeof record.last_wecom_error === "string"
       ? { last_wecom_error: record.last_wecom_error }
       : {}),
+    ...(typeof record.project_key === "string"
+      ? { project_key: record.project_key }
+      : {}),
+    ...(typeof record.project_repository_url === "string"
+      ? { project_repository_url: record.project_repository_url }
+      : {}),
+    ...(typeof record.project_default_branch === "string"
+      ? { project_default_branch: record.project_default_branch }
+      : {}),
+    ...(typeof record.project_directory === "string"
+      ? { project_directory: record.project_directory }
+      : {}),
     created_at: record.created_at as string,
     updated_at: record.updated_at as string,
   };
@@ -3521,6 +3845,46 @@ function mapBotEnvVarMetadataRecord(row: unknown): BotEnvVarMetadataRecord | und
   };
 }
 
+function mapUserCredentialRecord(row: unknown): UserCredentialRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: requireText(record.bot_id as string, "bot_id"),
+    wecom_user_id: requireText(record.wecom_user_id as string, "wecom_user_id"),
+    provider: requireUserCredentialProvider(record.provider as string),
+    payload_ciphertext: requireText(
+      record.payload_ciphertext as string,
+      "payload_ciphertext",
+    ),
+    created_at: requireText(record.created_at as string, "created_at"),
+    updated_at: requireText(record.updated_at as string, "updated_at"),
+  };
+}
+
+function mapUserCredentialBindingRecord(
+  row: unknown,
+  token: string,
+): UserCredentialBindingRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    token: requireText(token, "token"),
+    token_hash: requireText(record.token_hash as string, "token_hash"),
+    bot_id: requireText(record.bot_id as string, "bot_id"),
+    wecom_user_id: requireText(record.wecom_user_id as string, "wecom_user_id"),
+    provider: requireUserCredentialProvider(record.provider as string),
+    created_at: requireText(record.created_at as string, "created_at"),
+    expires_at: requireText(record.expires_at as string, "expires_at"),
+    ...(typeof record.consumed_at === "string"
+      ? { consumed_at: record.consumed_at }
+      : {}),
+  };
+}
+
 function mapBotSkillRecord(row: unknown): BotSkillRecord | undefined {
   if (!row || typeof row !== "object") {
     return undefined;
@@ -3572,6 +3936,24 @@ function mapBotCapabilityAuditLogRecord(row: unknown): BotCapabilityAuditLogReco
     ...(typeof record.source_ref === "string" ? { source_ref: record.source_ref } : {}),
     result: requireBotCapabilityAuditResult(record.result as string),
     ...(typeof record.error_message === "string" ? { error_message: record.error_message } : {}),
+    created_at: record.created_at as string,
+  };
+}
+
+function mapMcpToolExecutionRecord(row: unknown): McpToolExecutionRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    execution_id: record.execution_id as string,
+    bot_id: record.bot_id as string,
+    wecom_user_id: record.wecom_user_id as string,
+    conversation_id: record.conversation_id as string,
+    tool_name: record.tool_name as string,
+    status: requireMcpToolExecutionStatus(record.status as string),
+    duration_ms: requireMcpToolExecutionDuration(Number(record.duration_ms)),
+    ...(typeof record.error_code === "string" ? { error_code: record.error_code } : {}),
     created_at: record.created_at as string,
   };
 }
@@ -3914,9 +4296,23 @@ function requireBotCapabilityAuditResult(value: string): BotCapabilityAuditResul
   return value;
 }
 
+function requireMcpToolExecutionStatus(value: string): McpToolExecutionStatus {
+  if (value !== "success" && value !== "failed" && value !== "rejected") {
+    throw new Error("status is invalid");
+  }
+  return value;
+}
+
+function requireMcpToolExecutionDuration(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 3_600_000) {
+    throw new Error("duration_ms is invalid");
+  }
+  return value;
+}
+
 function nextTableIsoTimestamp(
   db: Database.Database,
-  table: "bot_skills" | "bot_mcps" | "bot_capability_audit_logs",
+  table: "bot_skills" | "bot_mcps" | "bot_capability_audit_logs" | "mcp_tool_executions",
   field: "installed_at" | "created_at",
 ): string {
   const row = db.prepare(`select max(${field}) as latest from ${table}`).get() as {

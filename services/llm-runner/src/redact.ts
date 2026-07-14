@@ -7,8 +7,24 @@ const secretPatterns = [
 
 const pathPattern = /(?:\/[A-Za-z0-9._-]+){2,}/g;
 
-export function redactText(value: string): string {
+export function redactText(value: string, exactSecrets: string[] = []): string {
+  return redactValue(value, exactSecrets).trim();
+}
+
+export function redactStreamText(
+  value: string,
+  exactSecrets: string[] = [],
+): string {
+  return redactValue(value, exactSecrets);
+}
+
+function redactValue(value: string, exactSecrets: string[]): string {
   let redacted = value;
+  for (const secret of [...new Set(exactSecrets)].sort((a, b) => b.length - a.length)) {
+    if (secret.length > 0) {
+      redacted = redacted.split(secret).join("[REDACTED]");
+    }
+  }
   for (const pattern of secretPatterns) {
     redacted = redacted.replace(pattern, (match) => {
       const [key] = match.split("=");
@@ -16,5 +32,5 @@ export function redactText(value: string): string {
     });
   }
 
-  return redacted.replace(pathPattern, "[PATH]").trim();
+  return redacted.replace(pathPattern, "[PATH]");
 }

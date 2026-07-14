@@ -179,6 +179,7 @@ export function buildMcpPromptSection(manifest: McpToolManifest): string {
   const toolLines = manifest.tools.map((tool) => [
     `- ${tool.name} [${tool.category}]: ${tool.description}`,
     `  required: ${tool.input_schema.required.length > 0 ? tool.input_schema.required.join(", ") : "none"}`,
+    `  input fields: ${Object.keys(tool.input_schema.properties).length > 0 ? Object.keys(tool.input_schema.properties).join(", ") : "none"}`,
     `  reads: ${tool.permissions.reads.length > 0 ? tool.permissions.reads.join(", ") : "none"}`,
     `  writes: ${tool.permissions.writes.length > 0 ? tool.permissions.writes.join(", ") : "none"}`,
   ].join("\n"));
@@ -186,6 +187,10 @@ export function buildMcpPromptSection(manifest: McpToolManifest): string {
   return [
     "<mcp_tools>",
     "Use these MCP tools only through the runner-provided MCP channel. Do not invent tool names or directory refs.",
+    "When a tool is needed, reply with exactly one MCP call block and no prose.",
+    "Its literal form is &lt;mcp_tool_call&gt;{\"tool\":\"tool.name\",\"input\":{}}&lt;/mcp_tool_call&gt;; output real angle brackets, not the escaped entities.",
+    "Wait for the runner's MCP tool result block before deciding whether another tool is needed or writing the user-facing answer.",
+    "Do not invoke native Kiro CLI tools (including dummy, Read, shell, or web tools) to replace an MCP tool.",
     `Allowed directory refs: ${manifest.directory_refs.length > 0 ? manifest.directory_refs.join(", ") : "none"}`,
     ...toolLines,
     "</mcp_tools>",

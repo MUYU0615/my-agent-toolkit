@@ -1,25 +1,45 @@
 # 更新日志
 
+## 2026-07-14
+
+### 专项测试能力
+
+- 新增 `im-test-hub-qa` Skill，支持识别现有测试能力、复用既有 Case，并辅助生成、修改 SDK 与 REST 自动化测试
+
+### 用户级代码访问
+
+- 新增 `/github bind`、`/github status`、`/github unbind`；用户可绑定个人 fork、目标分支与 GitHub Token，凭证加密保存并按 Bot、企微用户隔离
+- `project.inspect`、`project.read`、`project.search` 改为基于当前用户绑定的 fork 读取项目结构、源码与已有测试，不再依赖 WebUI 项目仓库配置
+- 新增 `project.ensure`：仅在生成代码或执行测试时，为当前会话准备独立的可写项目副本
+
+### MCP 工具编排
+
+- MCP Runner 支持受控的多轮工具调用与结果回灌，同一 Kiro 会话可完成“检索项目 → 读取源码 → 分析总结”等连续任务
+- 补充工具调用协议、参数字段说明与调用上限；过滤内部工具标记和调用轨迹，企微仅展示最终回复
+- 新增 `mcp_tool_executions` 审计记录，保存工具名、调用用户与会话、状态、耗时和错误码，不保存工具参数、结果或凭证
+
+
+
 ## 2026-07-13
 
-### llm-runner / Kiro 会话隔离
+### Jira 测试能力
 
-- 保留平台 `runner_session_id` 作为 bot、企微用户和 conversation 的业务会话键
-- 从 Kiro CLI 获取真实 UUID，并持久化到 `runtime_sessions.provider_session_id`
-- 兼容 Kiro CLI 2.12.1 非交互模式不输出 session 提示的行为：新会话在全局创建锁内通过 `--list-sessions --format json` 前后差分识别 UUID
-- 后续请求统一使用 `kiro-cli chat --resume-id <SESSION_ID>` 精确恢复会话
-- runner 和宿主机 relay 双层拒绝裸 `--resume`，避免同工作目录下恢复到其他用户的最近会话
-- 普通与流式 relay 协议新增内部 session 元数据传递，不向企微回复暴露运行时标记
-- 新增相同 `runner_session_id` 的执行锁，防止并发首轮请求创建多个 Kiro 会话
-- 已有但缺少 `provider_session_id` 的记录按新会话处理，并在首次成功调用后补齐映射，无需 SQLite 迁移
+- 新增 `/jira bind`、`/jira status`、`/jira unbind`，Jira 凭证加密保存并按 Bot、企微用户隔离
+- Jira 登录会话按用户隔离和复用，重新绑定时不复用旧账号状态
+- 新增 `easemob-jira-testcase` Skill，支持分析 Jira 并直接返回可人工审核的 Markdown 测试用例草稿
+- 清理 Kiro 命令、Tool、Traceback 和批量文件读取轨迹，企微仅展示助手正文
 
-### Bot 会话稳定编号
+### Bot 能力管理
 
-- `conversations` 新增 scope 内稳定递增的 `sequence_no`，现有数据按创建时间自动回填
-- `/new` 返回实际新会话编号，不再固定显示“会话 1”
-- `/history` 按稳定编号倒序展示，当前状态切换后编号不再变化
-- `/open N` 按 `sequence_no=N` 精确选择会话，不再依赖动态列表下标
-- 切换或创建会话时不再批量覆盖其他会话的 `updated_at`
+- WebUI 新增 Bot 的 Env、Skill 和 MCP 管理入口
+- 支持从内置目录安装、删除 Skill，并在 `/skill` 中查看当前 Bot 已安装技能
+- Skill、运行环境和工作目录按 Bot 隔离，首个内置 Skill 为 `easemob-jira-testcase`
+
+### Kiro 会话与开发体验
+
+- 持久化 Kiro 真实 Session ID，并使用 `--resume-id` 按 Bot、用户和会话精确恢复
+- 修复 `/new`、`/history`、`/open N` 的会话编号和切换逻辑
+- 完善本地 Docker 热更新、Relay 凭证配置和 Jira 长任务超时设置
 
 ## 2026-06-15
 

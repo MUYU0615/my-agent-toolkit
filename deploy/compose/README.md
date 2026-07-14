@@ -8,8 +8,44 @@
 
 ## 启动基础服务
 
+使用开发脚本时，会自动生成仅供本机使用且已被 Git 忽略的
+`deploy/compose/.env.credentials`。Kiro Relay 和 Docker 服务必须读取同一份文件：
+
 ```bash
-docker compose -f deploy/compose/docker-compose.yml up -d
+npm run dev:relay
+npm run dev:up
+```
+
+文件包含用户凭证加密主密钥、内部服务 Token、Relay Token 和绑定页公开地址。不要提交或复制其中的真实值到聊天记录。
+
+普通用户在企微中使用：
+
+```text
+/jira bind
+/jira status
+/jira unbind
+```
+
+`/jira bind` 返回 10 分钟有效的一次性页面。绑定完成后，用户可直接发送 `HIM-22356` 等 Jira 编号。账号密码以 AES-256-GCM 密文存入 `data-service.db`；运行时仅注入当前 Bot、当前企微用户的 Kiro 子进程。
+
+本机默认绑定地址为 `http://localhost:8600`，适合在同一台电脑的企微客户端中验证。手机或远程用户必须将 `CREDENTIAL_BIND_PUBLIC_URL` 配置为用户可访问的 HTTPS 域名。
+
+服务器部署应复制示例文件并自行生成密钥：
+
+```bash
+cp deploy/compose/.env.credentials.example deploy/compose/.env.credentials
+chmod 600 deploy/compose/.env.credentials
+docker compose --env-file deploy/compose/.env.credentials \
+  -f deploy/compose/docker-compose.yml --profile wecom up -d
+```
+
+宿主机 Kiro Relay 必须设置与 Compose 相同的 `KIRO_RELAY_AUTH_TOKEN`。`USER_CREDENTIALS_MASTER_KEY` 只提供给 `data-service`，不要提供给 Kiro Relay。
+
+后续直接使用 Compose 命令时也必须始终带上同一个 env 文件，避免服务在缺少主密钥或内部 Token 的情况下启动：
+
+```bash
+docker compose --env-file deploy/compose/.env.credentials \
+  -f deploy/compose/docker-compose.yml up -d
 ```
 
 控制台页面：

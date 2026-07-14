@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { createDataServiceServer } from "./server.js";
 import { createSqliteDataStore, seedDefaultRoleConfig } from "./sqliteStore.js";
 import { createWeComSdkVerifier } from "./wecomVerifier.js";
+import { createCredentialVault } from "./credentialVault.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8300", 10);
 const wecomVerifier = createWeComSdkVerifier();
@@ -11,7 +12,15 @@ const store = process.env.DATA_SERVICE_DB_PATH
 if (store) {
   seedDefaultRoleConfig(store);
 }
-const app = createDataServiceServer(store);
+const credentialMasterKey = process.env.USER_CREDENTIALS_MASTER_KEY?.trim();
+const app = createDataServiceServer(store, {
+  ...(credentialMasterKey
+    ? { credentialVault: createCredentialVault(credentialMasterKey) }
+    : {}),
+  ...(process.env.USER_CREDENTIALS_INTERNAL_TOKEN?.trim()
+    ? { credentialInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN.trim() }
+    : {}),
+});
 
 const server = createServer(async (req, res) => {
   const url = `http://${req.headers.host ?? `localhost:${port}`}${req.url ?? "/"}`;

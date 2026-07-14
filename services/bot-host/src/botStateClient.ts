@@ -68,6 +68,100 @@ export interface BotCapabilityAuditLogDto {
   created_at: string;
 }
 
+export interface UserCredentialScopeDto {
+  bot_id: string;
+  wecom_user_id: string;
+  provider: "easemob_jira" | "github_fork";
+}
+
+export interface UserCredentialStatusDto extends UserCredentialScopeDto {
+  is_bound: boolean;
+  updated_at?: string;
+}
+
+export interface UserCredentialBindingDto {
+  token: string;
+  provider: "easemob_jira" | "github_fork";
+  expires_at: string;
+}
+
+export async function createUserCredentialBinding(
+  config: BotHostConfig,
+  input: UserCredentialScopeDto,
+): Promise<UserCredentialBindingDto> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-credential-bindings`,
+    {
+      method: "POST",
+      headers: credentialInternalHeaders(config),
+      body: JSON.stringify(input),
+    },
+  ));
+  return credentialResponse<UserCredentialBindingDto>(response, "create user credential binding");
+}
+
+export async function getUserCredentialStatus(
+  config: BotHostConfig,
+  input: UserCredentialScopeDto,
+): Promise<UserCredentialStatusDto> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-credentials?${credentialScopeQuery(input)}`,
+    { headers: credentialInternalHeaders(config, false) },
+  ));
+  return credentialResponse<UserCredentialStatusDto>(response, "get user credential binding status");
+}
+
+export async function deleteUserCredential(
+  config: BotHostConfig,
+  input: UserCredentialScopeDto,
+): Promise<void> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-credentials?${credentialScopeQuery(input)}`,
+    { method: "DELETE", headers: credentialInternalHeaders(config, false) },
+  ));
+  await credentialResponse(response, "delete user credential binding");
+}
+
+function credentialScopeQuery(input: UserCredentialScopeDto): string {
+  return new URLSearchParams({
+    bot_id: input.bot_id,
+    wecom_user_id: input.wecom_user_id,
+    provider: input.provider,
+  }).toString();
+}
+
+function credentialInternalHeaders(
+  config: BotHostConfig,
+  includeContentType = true,
+): HeadersInit {
+  const token = config.credentialInternalToken?.trim();
+  if (!token) {
+    throw new Error("Jira credential service is not configured");
+  }
+  return {
+    ...(includeContentType ? { "content-type": "application/json" } : {}),
+    authorization: `Bearer ${token}`,
+  };
+}
+
+async function credentialResponse<T = unknown>(
+  response: Response,
+  action: string,
+): Promise<T> {
+  const payload = await response.json().catch(() => undefined) as
+    | T
+    | { error?: string }
+    | undefined;
+  if (!response.ok) {
+    throw new Error(
+      payload && typeof payload === "object" && "error" in payload && payload.error
+        ? payload.error
+        : `${action} failed`,
+    );
+  }
+  return payload as T;
+}
+
 export interface ConversationDto {
   conversation_id: string;
   sequence_no: number;

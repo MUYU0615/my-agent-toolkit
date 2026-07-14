@@ -1,0 +1,4 @@
+interface:
+  display_name: "Easemob Jira Testcase"
+  short_description: "从 Jira 自动生成中文测试用例"
+  default_prompt: "Use $easemob-jira-testcase to pull a Jira issue, assess readiness, and return a complete Chinese Markdown testcase draft for human review when ready."

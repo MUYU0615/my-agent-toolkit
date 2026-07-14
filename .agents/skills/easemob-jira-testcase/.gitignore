@@ -1,0 +1,6 @@
+scripts/.venv/
+scripts/output/
+.jira-cookies.json
+scripts/.jira-cookies.json
+__pycache__/
+*.pyc

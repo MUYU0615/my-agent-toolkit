@@ -3,6 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CREDENTIAL_ENV_FILE="$($ROOT_DIR/scripts/dev-user-credentials-init.sh)"
+set -a
+source "$CREDENTIAL_ENV_FILE"
+set +a
 COMPOSE_FILE="$ROOT_DIR/deploy/compose/docker-compose.yml"
 BUILD_SHA="${BUILD_SHA:-$(git -C "$ROOT_DIR" rev-parse HEAD)}"
 BUILD_TIME="${BUILD_TIME:-$(date -u +"%Y-%m-%dT%H:%M:%SZ")}"

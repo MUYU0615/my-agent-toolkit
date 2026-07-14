@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import type { ChatRequest, RuntimeName } from "@my-agent-toolkit/contracts";
-import { redactText } from "./redact.js";
+import { redactStreamText, redactText } from "./redact.js";
 
 export interface RuntimeResult {
   runner_session_id: string;
@@ -101,6 +101,7 @@ function runProcess(
   input: string,
 ): Promise<{ output: string; provider_session_id?: string }> {
   return new Promise((resolve, reject) => {
+    const exactSecrets = credentialSecretValues(config.env);
     const args = argsForRunnerSession(config.args, config.provider_session_id);
     const child = spawn(config.command, args, {
       env: { ...process.env, ...config.env },
@@ -139,7 +140,7 @@ function runProcess(
           "runtime_spawn_error",
           502,
           "runtime failed to start",
-          redactText(error.message),
+          redactText(error.message, exactSecrets),
         ),
       );
     });
@@ -158,7 +159,7 @@ function runProcess(
             502,
             `runtime exited with code ${code ?? "unknown"}`,
             runtimeStderr.diagnostics
-              ? redactText(runtimeStderr.diagnostics)
+              ? redactText(runtimeStderr.diagnostics, exactSecrets)
               : undefined,
           ),
         );
@@ -166,7 +167,7 @@ function runProcess(
       }
 
       resolve({
-        output: Buffer.concat(stdout).toString(),
+        output: redactText(Buffer.concat(stdout).toString(), exactSecrets),
         ...(runtimeStderr.provider_session_id ?? config.provider_session_id
           ? { provider_session_id: runtimeStderr.provider_session_id ?? config.provider_session_id }
           : {}),
@@ -185,6 +186,7 @@ function streamProcess(
   const providerSessionId = new Promise<string | undefined>((resolve) => {
     resolveProviderSessionId = resolve;
   });
+  const exactSecrets = credentialSecretValues(config.env);
   const stream = new ReadableStream<string>({
     start(controller) {
       const args = argsForRunnerSession(config.args, config.provider_session_id);
@@ -210,7 +212,7 @@ function streamProcess(
       }, config.timeout_ms);
 
       child.stdout.on("data", (chunk: Buffer) => {
-        controller.enqueue(chunk.toString());
+        controller.enqueue(redactStreamText(chunk.toString(), exactSecrets));
       });
       child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
       child.on("error", (error) => {
@@ -219,7 +221,7 @@ function streamProcess(
             "runtime_spawn_error",
             502,
             "runtime failed to start",
-            redactText(error.message),
+            redactText(error.message, exactSecrets),
           ),
         );
       });
@@ -238,7 +240,7 @@ function streamProcess(
               502,
               `runtime exited with code ${code ?? "unknown"}`,
               runtimeStderr.diagnostics
-                ? redactText(runtimeStderr.diagnostics)
+                ? redactText(runtimeStderr.diagnostics, exactSecrets)
                 : undefined,
             ),
           );
@@ -257,6 +259,15 @@ function streamProcess(
     provider_session_id: providerSessionId,
     stream,
   };
+}
+
+function credentialSecretValues(env: Record<string, string> | undefined): string[] {
+  if (!env) {
+    return [];
+  }
+  return Object.entries(env)
+    .filter(([key, value]) => key.startsWith("EASEMOB_JIRA_") && value.length > 0)
+    .map(([, value]) => value);
 }
 
 function argsForRunnerSession(args: string[], providerSessionId?: string): string[] {

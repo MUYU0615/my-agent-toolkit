@@ -579,9 +579,9 @@ describe("bot-host server", () => {
             "你是一个熟悉团队上下文的助手，沟通风格简洁直接。",
             "</memory>",
             "",
-            "<message>",
+            "<user-message>",
             "hello",
-            "</message>",
+            "</user-message>",
           ].join("\n"),
         },
       },
@@ -966,9 +966,9 @@ describe("bot-host server", () => {
       "Earlier discussion.",
       "</memory>",
       "",
-      "<message>",
+      "<user-message>",
       "hello",
-      "</message>",
+      "</user-message>",
     ].join("\n"));
   });
 
@@ -1038,7 +1038,7 @@ describe("bot-host server", () => {
     const payload = await response.json() as { output: string };
     expect(payload.output).toBe("LLM 运行器没有生成有效回复，请稍后重试或检查 runtime 配置。");
     expect(payload.output).not.toContain("<memory>");
-    expect(payload.output).not.toContain("<message>");
+    expect(payload.output).not.toContain("<user-message>");
     expect(payload.output).not.toContain("你是产品经理");
     expect(payload.output).not.toContain("我需要一个语音转文字的api");
   });
@@ -4618,7 +4618,7 @@ describe("bot-host server", () => {
     expect(response.status).toBe(200);
     expect(prompts[0]).toContain("[bot/prd-bot v1] 用户记忆");
     expect(prompts[0]).toContain("PRD 生成前必须确认 Console。");
-    expect(prompts[0]).toContain("<message>\n开始写 PRD\n</message>");
+    expect(prompts[0]).toContain("<user-message>\n开始写 PRD\n</user-message>");
   });
 
   it("marks bot ready when initializing admin sends mark_ready command", async () => {
@@ -5053,6 +5053,14 @@ describe("bot-host server", () => {
               source_ref: "https://github.com/acme/repo-analyzer",
               status: "installed",
             },
+            {
+              bot_id: "prd-bot",
+              name: "broken-skill",
+              source_type: "builtin",
+              source_ref: "broken-skill",
+              status: "failed",
+              last_error: "invalid package",
+            },
           ]);
         }
 
@@ -5107,6 +5115,19 @@ describe("bot-host server", () => {
     await expect(skillResponse.json()).resolves.toMatchObject({
       output: expect.stringContaining("当前 bot 已安装的 Skills"),
     });
+    const skillPayload = await server.fetch(
+      new Request("http://localhost/v1/messages/wecom", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "prd-bot",
+          wecom_user_id: "user-a",
+          text: "/skill",
+          runtime: "mock",
+        }),
+      }),
+    ).then((response) => response.json());
+    expect(skillPayload.output).toContain("repo-analyzer");
+    expect(skillPayload.output).not.toContain("broken-skill");
 
     const naturalSkillResponse = await server.fetch(
       new Request("http://localhost/v1/messages/wecom", {
@@ -6106,7 +6127,7 @@ describe("bot-host server", () => {
     });
   });
 
-  it("presentation-streams a single upstream chunk without per-character wecom updates", async () => {
+  it("hides Kiro tool diagnostics from a streamed WeCom reply", async () => {
     const sent: Array<{ text: string; finish: boolean }> = [];
     let messageHandler:
       | ((message: {
@@ -6155,7 +6176,18 @@ describe("bot-host server", () => {
           expect(body).toMatchObject({ runtime: "kiro" });
           return new Response([
             JSON.stringify({ type: "run", run_id: "run-1" }),
-            JSON.stringify({ type: "chunk", content: "\u001b[m> \u001b[0m这是一个需要被拆开展示的完整回答。" }),
+            JSON.stringify({
+              type: "chunk",
+              content: [
+                "\u001b[m> \u001b[0mI will run the following command: [PATH] --root HIM-22356 (using tool: shell)",
+                "Purpose: Run easemob-jira-testcase for HIM-22356",
+                "Traceback (most recent call last):",
+                'File "[PATH]", line 117, in load_config',
+                "jira_login_probe.LoginError: Jira credentials are not bound for the current WeCom user and Bot.",
+                "- Completed in 2.945s",
+                "Jira 凭证未绑定，请发送 /jira bind 后重试。",
+              ].join("\n"),
+            }),
             JSON.stringify({ type: "done" }),
           ].join("\n") + "\n", {
             headers: { "content-type": "application/x-ndjson" },
@@ -6192,7 +6224,7 @@ describe("bot-host server", () => {
     expect(sent.slice(1, -1).map((item) => item.text)).toEqual([]);
     expect(sent.slice(1, -1).every((item) => item.finish === false)).toBe(true);
     expect(sent.at(-1)).toEqual({
-      text: "这是一个需要被拆开展示的完整回答。",
+      text: "Jira 凭证未绑定，请发送 /jira bind 后重试。",
       finish: true,
     });
   });
@@ -6832,7 +6864,7 @@ describe("bot-host server", () => {
           expect((body as { prompt: string }).prompt).toContain("<memory>");
           expect((body as { prompt: string }).prompt).toContain("[bot/prd-bot v1] soul");
           expect((body as { prompt: string }).prompt).toContain("[bot/prd-bot v1] agents.md");
-          expect((body as { prompt: string }).prompt).toContain("<message>\n我需要一个语音转文字的api\n</message>");
+          expect((body as { prompt: string }).prompt).toContain("<user-message>\n我需要一个语音转文字的api\n</user-message>");
           return new Response([
             JSON.stringify({ type: "run", run_id: "run-chat", runner_session_id: "kiro:prd-bot:admin-a:conv-chat-admin-a" }),
             JSON.stringify({ type: "chunk", content: "先确认定位：" }),
@@ -7608,5 +7640,281 @@ describe("bot-host server", () => {
       },
     ]);
     expect(disconnected).toEqual(["wecom-bot-a"]);
+  });
+
+  it("creates a user-scoped Jira binding link without invoking the llm", async () => {
+    const calls: Array<{ url: string; authorization: string | null }> = [];
+    const result = await handleBotMessage({
+      bot_id: "jira-bot",
+      wecom_user_id: "user-a",
+      conversation_id: "wecom-conversation-a",
+      text: "/jira bind",
+      runtime: "kiro",
+    }, {
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      credentialBindPublicUrl: "https://bot.example.com",
+      credentialInternalToken: "internal-token",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push({
+          url: request.url,
+          authorization: request.headers.get("authorization"),
+        });
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            is_admin: false,
+            conversation: { conversation_id: "conv-a" },
+          });
+        }
+        if (request.url.startsWith("http://data-service/internal/user-credentials?")) {
+          return Response.json({
+            bot_id: "jira-bot",
+            wecom_user_id: "user-a",
+            provider: "easemob_jira",
+            is_bound: false,
+          });
+        }
+        if (request.url === "http://data-service/internal/user-credential-bindings") {
+          return Response.json({
+            token: "one-time-token",
+            provider: "easemob_jira",
+            expires_at: "2026-07-13T18:00:00.000Z",
+          }, { status: 201 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+
+    expect(result.output).toContain(
+      "https://bot.example.com/bind/jira?token=one-time-token",
+    );
+    expect(calls).toContainEqual({
+      url: "http://data-service/internal/user-credential-bindings",
+      authorization: "Bearer internal-token",
+    });
+    expect(calls.some((call) => call.url.includes("llm-runner"))).toBe(false);
+  });
+
+  it("does not create another Jira binding link for an already-bound user", async () => {
+    const calls: string[] = [];
+    const result = await handleBotMessage({
+      bot_id: "jira-bot",
+      wecom_user_id: "user-a",
+      conversation_id: "wecom-conversation-a",
+      text: "/jira bind",
+      runtime: "kiro",
+    }, {
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      credentialBindPublicUrl: "https://bot.example.com",
+      credentialInternalToken: "internal-token",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push(request.url);
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-a" },
+          });
+        }
+        if (request.url.startsWith("http://data-service/internal/user-credentials?")) {
+          return Response.json({
+            bot_id: "jira-bot",
+            wecom_user_id: "user-a",
+            provider: "easemob_jira",
+            is_bound: true,
+            updated_at: "2026-07-13T18:00:00.000Z",
+          });
+        }
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+    });
+
+    expect(result.output).toBe(
+      "你在当前 Bot 中的 Jira 账号已绑定。如需更换账号，请先发送 /jira unbind，再发送 /jira bind。",
+    );
+    expect(calls).not.toContain("http://data-service/internal/user-credential-bindings");
+    expect(calls.some((url) => url.includes("llm-runner"))).toBe(false);
+  });
+
+  it("describes Jira unbinding as scoped to the current user and bot", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    const result = await handleBotMessage({
+      bot_id: "jira-bot",
+      wecom_user_id: "user-a",
+      conversation_id: "wecom-conversation-a",
+      text: "/jira unbind",
+      runtime: "kiro",
+    }, {
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      credentialInternalToken: "internal-token",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push({ url: request.url, method: request.method });
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-a" },
+          });
+        }
+        if (
+          request.method === "DELETE"
+          && request.url.startsWith("http://data-service/internal/user-credentials?")
+        ) {
+          return new Response(null, { status: 204 });
+        }
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+    });
+
+    expect(result.output).toBe(
+      "已解除你在当前 Bot 中的 Jira 账号绑定。历史 Jira Cookie 将不再被复用。",
+    );
+    expect(calls).toContainEqual({
+      url: "http://data-service/internal/user-credentials?bot_id=jira-bot&wecom_user_id=user-a&provider=easemob_jira",
+      method: "DELETE",
+    });
+    expect(calls.some((call) => call.url.includes("llm-runner"))).toBe(false);
+  });
+
+  it("passes Jira messages to Kiro without hard-coded Jira routing", async () => {
+    const calls: string[] = [];
+    let llmPrompt = "";
+    const result = await handleBotMessage({
+      bot_id: "jira-bot",
+      wecom_user_id: "user-b",
+      conversation_id: "wecom-conversation-b",
+      text: "HIM-22356，帮我判断是否可以提测",
+      runtime: "kiro",
+    }, {
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push(request.url);
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-b" },
+          });
+        }
+        if (request.url.startsWith("http://data-service/internal/initialization-sessions/active?")) {
+          return Response.json(null);
+        }
+        if (
+          request.url.includes("/config-documents")
+          || request.url.includes("/memory-documents/current")
+        ) {
+          return Response.json(request.url.includes("/config-documents")
+            ? [{ title: "soul", content: "You are a QA bot." }]
+            : []);
+        }
+        if (request.url === "http://llm-runner/v1/chat") {
+          const body = await request.json() as { prompt: string };
+          llmPrompt = body.prompt;
+          return Response.json({ run_id: "run-jira", output: "Jira analysis" });
+        }
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+    });
+
+    expect(result.output).toBe("Jira analysis");
+    expect(calls).toContain("http://llm-runner/v1/chat");
+    expect(calls.some((url) => url.includes("/internal/user-credentials"))).toBe(false);
+    expect(llmPrompt).not.toContain("runtime-guidance");
+    expect(llmPrompt).not.toContain("easemob-jira-testcase");
+    expect(llmPrompt).toContain("<memory>\n[bot-config/jira-bot] soul\nYou are a QA bot.\n</memory>");
+    expect(llmPrompt).toContain(
+      "<user-message>\nHIM-22356，帮我判断是否可以提测\n</user-message>",
+    );
+    expect(llmPrompt.indexOf("<memory>")).toBeLessThan(
+      llmPrompt.indexOf("<user-message>"),
+    );
+  });
+
+  it("lets the selected Kiro Skill return the Jira bind instruction", async () => {
+    const calls: string[] = [];
+    const sent: Array<{ text: string; finish: boolean }> = [];
+    let messageHandler:
+      | ((message: {
+        conversationId: string;
+        userId: string;
+        text: string;
+      }) => Promise<void>)
+      | undefined;
+    const worker = createBotHostWorker({
+      botId: "jira-bot",
+      runtime: "kiro",
+      dataServiceUrl: "http://data-service",
+      llmRunnerUrl: "http://llm-runner",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        calls.push(request.url);
+        const noActiveInitializationSession = noActiveInitializationSessionResponse(request);
+        if (noActiveInitializationSession) {
+          return noActiveInitializationSession;
+        }
+        if (request.url === "http://data-service/v1/message-context/resolve") {
+          return Response.json({
+            allowed: true,
+            reason: "ready",
+            conversation: { conversation_id: "conv-b" },
+          });
+        }
+        if (
+          request.url.includes("/config-documents")
+          || request.url.includes("/memory-documents/current")
+        ) {
+          return Response.json([]);
+        }
+        if (request.url === "http://llm-runner/v1/chat/stream") {
+          return new Response([
+            JSON.stringify({ type: "run", run_id: "run-jira" }),
+            JSON.stringify({
+              type: "chunk",
+              content: "Jira 账号尚未绑定，请先发送 /jira bind，绑定完成后重新发送 Jira 编号。",
+            }),
+            JSON.stringify({ type: "done" }),
+          ].join("\n") + "\n", {
+            headers: { "content-type": "application/x-ndjson" },
+          });
+        }
+        return Response.json({ error: `unexpected ${request.url}` }, { status: 500 });
+      },
+      wecomClient: {
+        async connect() {},
+        disconnect() {},
+        onMessage(handler) {
+          messageHandler = handler;
+        },
+        async sendText(_conversationId, text, options) {
+          sent.push({ text, finish: options?.finish ?? true });
+        },
+      },
+    });
+
+    await worker.start();
+    await messageHandler?.({
+      conversationId: "wecom-conversation-b",
+      userId: "user-b",
+      text: "HIM-22356",
+    });
+
+    expect(sent).toEqual([
+      { text: "正在思考...", finish: false },
+      {
+        text: "Jira 账号尚未绑定，请先发送 /jira bind，绑定完成后重新发送 Jira 编号。",
+        finish: true,
+      },
+    ]);
+    expect(calls).toContain("http://llm-runner/v1/chat/stream");
+    expect(calls.some((url) => url.includes("/internal/user-credentials"))).toBe(false);
   });
 });

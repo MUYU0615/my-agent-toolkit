@@ -6,6 +6,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASE_COMPOSE="$ROOT_DIR/deploy/compose/docker-compose.yml"
 DEV_COMPOSE="$ROOT_DIR/deploy/compose/docker-compose.dev.yml"
 DEV_WECOM="${DEV_WECOM:-1}"
+CREDENTIAL_ENV_FILE="$($ROOT_DIR/scripts/dev-user-credentials-init.sh)"
+set -a
+source "$CREDENTIAL_ENV_FILE"
+set +a
 
 compose_args=(-f "$BASE_COMPOSE" -f "$DEV_COMPOSE")
 if [[ "$DEV_WECOM" == "1" ]]; then

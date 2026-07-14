@@ -3,14 +3,23 @@ import {
   createMcpServiceServer,
   parseAllowedDirectoryRefs,
 } from "./server.js";
+import { createMcpToolExecutionAuditWriter } from "./dataClient.js";
 
 const port = Number.parseInt(process.env.PORT ?? "8700", 10);
 const runnerSecret = process.env.MCP_RUNNER_SECRET ?? "";
+const internalToken = process.env.USER_CREDENTIALS_INTERNAL_TOKEN?.trim();
 const app = createMcpServiceServer({
   runnerSecret,
   dataServiceUrl: process.env.DATA_SERVICE_URL,
   memoryBackendUrl: process.env.MEMORY_BACKEND_URL,
+  capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
   allowedDirectoryRefs: parseAllowedDirectoryRefs(process.env.MCP_ALLOWED_DIRECTORY_REFS ?? ""),
+  ...(internalToken
+    ? { auditToolExecution: createMcpToolExecutionAuditWriter({
+      baseUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
+      internalToken,
+    }) }
+    : {}),
 });
 
 const server = createServer(async (req, res) => {

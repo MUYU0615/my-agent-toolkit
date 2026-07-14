@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -8,10 +9,14 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 const providerSessionId = "f2946a26-3735-4b08-8d05-c928010302d5";
+const userId = "user-a";
+const conversationId = "conv-a";
 let relay;
 let relayUrl;
+let workspaceRoot;
 
 before(async () => {
+  workspaceRoot = await mkdtemp(join(tmpdir(), "kiro-relay-workspaces-"));
   const port = await reservePort();
   relayUrl = `http://127.0.0.1:${port}`;
   relay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
@@ -21,6 +26,7 @@ before(async () => {
       KIRO_HOST_RELAY_HOST: "127.0.0.1",
       KIRO_HOST_RELAY_PORT: String(port),
       KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: workspaceRoot,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -48,6 +54,9 @@ after(async () => {
     relay.kill("SIGTERM");
     await once(relay, "close");
   }
+  if (workspaceRoot) {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test("host relay returns the Kiro session id from the process exit hint", async () => {
@@ -61,7 +70,13 @@ test("host relay returns the Kiro session id from the process exit hint", async 
   const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "hello", args: ["-e", script] }),
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["-e", script],
+    }),
   });
 
   assert.equal(response.status, 200);
@@ -82,7 +97,13 @@ test("host relay emits a session event for streaming calls", async () => {
   const response = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "hello", args: ["-e", script] }),
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["-e", script],
+    }),
   });
 
   assert.equal(response.status, 200);
@@ -98,7 +119,13 @@ test("host relay rejects bare resume", async () => {
   const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "hello", args: ["chat", "--resume"] }),
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["chat", "--resume"],
+    }),
   });
 
   assert.equal(response.status, 502);
@@ -112,6 +139,9 @@ test("host relay fails closed when a new Kiro session id is unavailable", async 
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
       prompt: "hello",
       args: ["-e", "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('answer'))"],
     }),
@@ -157,6 +187,7 @@ if (process.argv.includes("--list-sessions")) {
       KIRO_HOST_RELAY_HOST: "127.0.0.1",
       KIRO_HOST_RELAY_PORT: String(port),
       KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: join(directory, "workspaces"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -168,6 +199,9 @@ if (process.argv.includes("--list-sessions")) {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        bot_id: "bot-session-list",
+        user_id: userId,
+        conversation_id: conversationId,
         prompt: "hello",
         args: ["chat", "--no-interactive"],
       }),
@@ -178,6 +212,187 @@ if (process.argv.includes("--list-sessions")) {
       output: "answer-without-resume-hint",
       provider_session_id: providerSessionId,
     });
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("host relay uses bot KIRO_HOME and a user-conversation working directory", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write(JSON.stringify({ cwd: process.cwd(), kiroHome: process.env.KIRO_HOME }));",
+    `  process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-workspace",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["-e", script],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const root = await realpath(workspaceRoot);
+  const botRoot = join(root, "bot-workspace");
+  const userHash = createHash("sha256").update(userId).digest("hex").slice(0, 32);
+  const conversationRoot = join(
+    botRoot,
+    "users",
+    userHash,
+    "conversations",
+    conversationId,
+  );
+  assert.deepEqual(JSON.parse(payload.output), {
+    cwd: conversationRoot,
+    kiroHome: join(botRoot, ".kiro"),
+  });
+  await access(join(botRoot, ".kiro", "agents"));
+  await access(join(botRoot, ".kiro", "skills"));
+  await access(join(conversationRoot, "projects"));
+  await access(join(conversationRoot, "artifacts"));
+  await assert.rejects(access(join(conversationRoot, ".kiro", "skills")));
+});
+
+test("host relay isolates working directories by user and conversation", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write(process.cwd());",
+    `  process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+    "});",
+  ].join(" ");
+  const invoke = async (nextUserId, nextConversationId) => {
+    const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bot_id: "bot-isolation",
+        user_id: nextUserId,
+        conversation_id: nextConversationId,
+        prompt: "hello",
+        args: ["-e", script],
+      }),
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).output;
+  };
+
+  const first = await invoke("user-a", "conv-1");
+  const second = await invoke("user-b", "conv-1");
+  const third = await invoke("user-a", "conv-2");
+  assert.notEqual(first, second);
+  assert.notEqual(first, third);
+  assert.notEqual(second, third);
+});
+
+test("host relay rejects bot ids that can escape the configured workspace root", async () => {
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ bot_id: "../outside", prompt: "hello", args: ["chat"] }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "bot_id must be a safe path segment",
+  });
+});
+
+test("host relay rejects conversation ids that can escape the user workspace", async () => {
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "../outside",
+      prompt: "hello",
+      args: ["chat"],
+    }),
+  });
+
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), {
+    error: "conversation_id must be a safe path segment",
+  });
+});
+
+test("host relay injects Jira credentials and computes a user-private cookie path", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-credentials-"));
+  const port = await reservePort();
+  const authToken = "relay-test-token";
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: process.execPath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_RELAY_AUTH_TOKEN: authToken,
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: join(directory, "workspaces"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const script = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => {",
+      "process.stdout.write(JSON.stringify({",
+      "username: process.env.EASEMOB_JIRA_USERNAME,",
+      "password: process.env.EASEMOB_JIRA_PASSWORD,",
+      "cookie: process.env.EASEMOB_JIRA_COOKIE_FILE,",
+      "runtime: process.env.MY_AGENT_RUNTIME,",
+      "noColor: process.env.NO_COLOR,",
+      "kiroLogNoColor: process.env.KIRO_LOG_NO_COLOR,",
+      "relayToken: process.env.KIRO_RELAY_AUTH_TOKEN",
+      "}));",
+      `process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+      "});",
+    ].join(" ");
+    const response = await fetch(`${isolatedRelayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        bot_id: "jira-bot",
+        user_id: "user-a",
+        conversation_id: "conv-jira",
+        prompt: "hello",
+        args: ["-e", script],
+        runtime_env: {
+          EASEMOB_JIRA_USERNAME: "jira-user-a",
+          EASEMOB_JIRA_PASSWORD: "jira-password-a",
+          MY_AGENT_JIRA_CREDENTIAL_VERSION: "2026-07-13T18:00:00.000Z",
+        },
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    const output = JSON.parse(payload.output);
+    assert.equal(output.username, "jira-user-a");
+    assert.equal(output.password, "jira-password-a");
+    assert.equal(output.runtime, "wecom");
+    assert.equal(output.noColor, "1");
+    assert.equal(output.kiroLogNoColor, "1");
+    assert.equal(output.relayToken, undefined);
+    assert.match(output.cookie, /jira-bot\/\.runtime\/users\/[0-9a-f]{32}\/jira\/[0-9a-f]{16}\/cookies\.json$/);
   } finally {
     if (isolatedRelay.exitCode === null) {
       isolatedRelay.kill("SIGTERM");

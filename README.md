@@ -231,6 +231,24 @@ npm run dev:up
 npm run dev:logs
 ```
 
+宿主机 Relay 默认把每个 Bot 的 Kiro 工作目录放在：
+
+```text
+~/Documents/KiroBotWorkspaces/<bot_id>/
+```
+
+其中只保存本机 Kiro 必须直接访问的工作区内容，例如
+`.kiro/agents/`、`.kiro/skills/` 和后续由 Kiro 操作的项目文件。SQLite、
+日志和其他平台状态继续保存在 Docker named volume 中。可以在启动 Relay
+时覆盖默认位置：
+
+```bash
+KIRO_WORKSPACE_ROOT="$HOME/Documents/KiroBotWorkspaces" npm run dev:relay
+```
+
+Relay 会校验 `bot_id`，并在对应 Bot 目录内同时执行聊天命令和
+`--list-sessions`，不会再从 `my-agent-toolkit` 项目根目录启动 Kiro。
+
 常用命令：
 
 ```bash
@@ -241,7 +259,7 @@ npm run dev:down
 DEV_WECOM=0 npm run dev:up
 ```
 
-热更新覆盖 `control-api`、`bot-api`、`wecom-worker`、`data-service`、`log-service`、`llm-runner`、`capability-runner` 和共享 `contracts`。修改依赖、`package-lock.json`、Dockerfile 或 Compose 后仍需重新执行 `npm run dev:up` 构建镜像。SQLite 数据继续保存在原有 Docker named volume 中，停止开发环境时不要添加 `-v`。
+热更新覆盖 `control-api`、`bot-api`、`wecom-worker`、`data-service`、`log-service`、`llm-runner`、`capability-runner` 和共享 `contracts`。修改依赖、`package-lock.json`、Dockerfile 或 Compose 后仍需重新执行 `npm run dev:up` 构建镜像。SQLite 和 Capability Runner 的内部数据继续保存在 Docker named volume 中，停止开发环境时不要添加 `-v`。
 
 生产式完整重建仍使用：
 
@@ -285,6 +303,16 @@ docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-
 - env 只在运行时由 `llm-runner` 临时注入到实际执行进程。
 - WebUI 中 env 只展示 key、是否已设置、更新时间，真实值始终掩码为 `****`。
 - skill / MCP 的安装和删除只影响当前 bot 的独立 workspace，不影响其他 bot。
+
+当前 Skill 安装流程：
+
+1. 将可分发的 Skill 包放在项目 `.agents/skills/<skill-name>/`，包内必须有带 `name` 和 `description` frontmatter 的 `SKILL.md`。
+2. 打开 WebUI 的 Bot 能力页，在 Skills 区域选择内置 Skill 并安装。
+3. `capability-runner` 把 Skill 原子复制到 `~/Documents/KiroBotWorkspaces/<bot_id>/.kiro/skills/<skill-name>/`。
+4. 安装状态同步写入 `data-service.db` 的 `bot_skills`；页面会展示状态和失败原因。
+5. 在企业微信中发送 `/skill`，只会看到当前 Bot 已成功安装的技能。
+
+Compose 使用 `${HOME}/Documents/KiroBotWorkspaces` 作为宿主机挂载源，因此本机和服务器无需修改项目代码；服务器只需确保运行 Docker 的用户有对应的 `HOME/Documents/KiroBotWorkspaces` 目录及读写权限。
 
 ## 技能列表
 

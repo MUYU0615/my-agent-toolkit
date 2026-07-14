@@ -35,6 +35,15 @@ describe("loadRunnerConfig", () => {
     });
   });
 
+  it("uses a five-minute Kiro timeout by default", () => {
+    const config = loadRunnerConfig({
+      LLM_RUNNER_ENABLED_RUNTIMES: "kiro",
+      KIRO_COMMAND: "/usr/local/bin/kiro-cli",
+    });
+
+    expect(config.kiro?.timeout_ms).toBe(300_000);
+  });
+
   it("loads optional MCP service config from env", () => {
     const config = loadRunnerConfig({
       LLM_RUNNER_ENABLED_RUNTIMES: "mock",
@@ -45,6 +54,7 @@ describe("loadRunnerConfig", () => {
     expect(config.mcp).toEqual({
       service_url: "http://mcp-service:8700",
       runner_secret: "runner-secret",
+      max_tool_rounds: 4,
     });
   });
 });
