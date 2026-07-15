@@ -167,6 +167,7 @@ function collectRuntimeEnv(env) {
     "EASEMOB_JIRA_REDIRECT_USERNAME",
     "EASEMOB_JIRA_REDIRECT_PASSWORD",
     "MY_AGENT_JIRA_CREDENTIAL_VERSION",
+    "MY_AGENT_PROJECT_DOTENV_B64",
   ]) {
     if (typeof env[key] === "string" && env[key].length > 0) {
       result[key] = env[key];

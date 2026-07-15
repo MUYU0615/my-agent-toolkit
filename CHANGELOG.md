@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2026-07-15
+
+### 新增功能
+
+- 新增 Bot 测试环境配置
+- 新增基于用户 GitHub fork 的项目查看、修改和测试执行能力
+- 新增企业微信测试结果报告
+
 ## 2026-07-14
 
 ### 专项测试能力
@@ -9,7 +17,6 @@
 ### 用户级代码访问
 
 - 新增 `/github bind`、`/github status`、`/github unbind`；用户可绑定个人 fork、目标分支与 GitHub Token，凭证加密保存并按 Bot、企微用户隔离
-- `project.inspect`、`project.read`、`project.search` 改为基于当前用户绑定的 fork 读取项目结构、源码与已有测试，不再依赖 WebUI 项目仓库配置
 - 新增 `project.ensure`：仅在生成代码或执行测试时，为当前会话准备独立的可写项目副本
 
 ### MCP 工具编排

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -542,6 +542,105 @@ test("host relay injects Jira credentials and computes a user-private cookie pat
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("host relay materializes the managed project .env and forwards project variables", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-project-env-"));
+  const port = await reservePort();
+  const authToken = "relay-project-env-token";
+  const workspacesRoot = join(directory, "workspaces");
+  const botId = "project-bot";
+  const testUserId = "user-project";
+  const testConversationId = "conv-project";
+  const projectName = "im-test-hub";
+  const userHash = createHash("sha256").update(testUserId, "utf8").digest("hex").slice(0, 32);
+  const workspaceDir = join(
+    workspacesRoot,
+    botId,
+    "users",
+    userHash,
+    "conversations",
+    testConversationId,
+  );
+  const projectRoot = join(workspaceDir, "projects", projectName);
+  await mkdir(projectRoot, { recursive: true });
+  const projectDotenv = [
+    `IM_TEST_HUB_PYTHON=${process.execPath}`,
+    "IM_TEST_HUB_API_SECRET=relay-project-secret",
+    "",
+  ].join("\n");
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: process.execPath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_RELAY_AUTH_TOKEN: authToken,
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: workspacesRoot,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const script = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => { process.stdout.write(JSON.stringify({",
+      "python: process.env.IM_TEST_HUB_PYTHON,",
+      "secret: process.env.IM_TEST_HUB_API_SECRET,",
+      "payload: process.env.MY_AGENT_PROJECT_DOTENV_B64",
+      "}));",
+      `process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+      "});",
+    ].join(" ");
+    const response = await fetch(`${isolatedRelayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        bot_id: botId,
+        user_id: testUserId,
+        conversation_id: testConversationId,
+        prompt: "run tests",
+        args: ["-e", script],
+        runtime_env: {
+          MY_AGENT_PROJECT_DOTENV_B64: Buffer.from(projectDotenv, "utf8").toString("base64"),
+        },
+      }),
+    });
+
+    const payload = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    const runtimeOutput = JSON.parse(payload.output);
+    const botRoot = await realpath(join(workspacesRoot, botId));
+    assert.equal(runtimeOutput.secret, "relay-project-secret");
+    assert.match(runtimeOutput.python, new RegExp(`^${escapeRegExp(join(botRoot, ".runtime", "python-launchers"))}`));
+    assert.doesNotMatch(runtimeOutput.python, new RegExp(escapeRegExp(process.execPath)));
+    const materializedDotenv = await readFile(join(projectRoot, ".env"), "utf8");
+    assert.match(materializedDotenv, /^IM_TEST_HUB_PYTHON=.*\.runtime\/python-launchers\//m);
+    assert.doesNotMatch(materializedDotenv, new RegExp(escapeRegExp(process.execPath)));
+    assert.match(materializedDotenv, /IM_TEST_HUB_API_SECRET=relay-project-secret/);
+    assert.equal((await stat(runtimeOutput.python)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(projectRoot, ".env"))).mode & 0o777, 0o600);
+    assert.equal(
+      await readFile(join(workspaceDir, ".runtime", `${projectName}.dotenv-managed`), "utf8"),
+      "managed\n",
+    );
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 async function reservePort() {
   const server = createServer();

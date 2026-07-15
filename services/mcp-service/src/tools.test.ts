@@ -22,9 +22,6 @@ describe("document MCP tools", () => {
     const deps = createNoopDeps();
     deps.projectClient = {
       ensure,
-      inspect: vi.fn(),
-      read: vi.fn(),
-      search: vi.fn(),
     };
 
     const result = await callMcpTool(context, deps, {
@@ -37,44 +34,6 @@ describe("document MCP tools", () => {
       result: { path: "projects/im-test-hub" },
     });
     expect(ensure).toHaveBeenCalledWith(context, "im-test-hub");
-  });
-
-  it("queries the shared project baseline without preparing a user workspace", async () => {
-    const inspect = vi.fn().mockResolvedValue({ entries: [] });
-    const read = vi.fn().mockResolvedValue({ content: "# README" });
-    const search = vi.fn().mockResolvedValue({ results: [] });
-    const deps = createNoopDeps();
-    deps.projectClient = {
-      ensure: vi.fn(),
-      inspect,
-      read,
-      search,
-    };
-
-    await expect(callMcpTool(context, deps, {
-      tool: "project.inspect",
-      input: { project_key: "im-test-hub" },
-    })).resolves.toEqual({ ok: true, result: { entries: [] } });
-    await expect(callMcpTool(context, deps, {
-      tool: "project.read",
-      input: { project_key: "im-test-hub", path: "README.md", start_line: 2 },
-    })).resolves.toEqual({ ok: true, result: { content: "# README" } });
-    await expect(callMcpTool(context, deps, {
-      tool: "project.search",
-      input: { project_key: "im-test-hub", query: "SDK", path: "tests" },
-    })).resolves.toEqual({ ok: true, result: { results: [] } });
-
-    expect(inspect).toHaveBeenCalledWith(context, "im-test-hub");
-    expect(read).toHaveBeenCalledWith(context, {
-      projectKey: "im-test-hub",
-      path: "README.md",
-      startLine: 2,
-    });
-    expect(search).toHaveBeenCalledWith(context, {
-      projectKey: "im-test-hub",
-      query: "SDK",
-      path: "tests",
-    });
   });
 
   it("creates bot scoped documents through data-service", async () => {
@@ -1022,9 +981,6 @@ describe("MCP tool discovery", () => {
       "memory.stats",
       "search.query",
       "project.ensure",
-      "project.inspect",
-      "project.read",
-      "project.search",
     ]);
     expect(manifest.tools.find((tool) => tool.name === "document.create")).toMatchObject({
       category: "document",

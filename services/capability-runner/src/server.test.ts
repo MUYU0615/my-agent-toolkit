@@ -86,31 +86,6 @@ describe("capability-runner server", () => {
     expect(ensureProject).not.toHaveBeenCalled();
   });
 
-  it("serves project inspection for the current user binding", async () => {
-    const inspectProject = vi.fn().mockResolvedValue({ base_commit: "a".repeat(40) });
-    const server = createCapabilityRunnerServer({
-      inspectProject,
-      projectRunnerToken: "runner-secret",
-    });
-
-    const response = await server.fetch(new Request(
-      "http://localhost/internal/bots/qa-bot/projects/inspect",
-      {
-        method: "POST",
-        headers: { "x-project-runner-token": "runner-secret" },
-        body: JSON.stringify({ user_id: "user-a", project_key: "im-test-hub" }),
-      },
-    ));
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ base_commit: "a".repeat(40) });
-    expect(inspectProject).toHaveBeenCalledWith({
-      botId: "qa-bot",
-      userId: "user-a",
-      projectKey: "im-test-hub",
-    });
-  });
-
   it("dispatches bot skill install requests with structured payload", async () => {
     const dispatch = vi.fn().mockResolvedValue(undefined);
     const server = createCapabilityRunnerServer({ dispatch });

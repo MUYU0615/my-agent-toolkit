@@ -5,8 +5,6 @@ import {
   lstatSync,
   mkdirSync,
   realpathSync,
-  readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
 } from "node:fs";
@@ -25,23 +23,6 @@ export interface EnsureProjectResult {
   branch: string;
   base_commit: string;
   reused: boolean;
-}
-
-export interface InspectProjectInput {
-  botId: string;
-  userId?: string;
-  projectKey: string;
-}
-
-export interface ReadProjectInput extends InspectProjectInput {
-  path: string;
-  startLine?: number;
-  endLine?: number;
-}
-
-export interface SearchProjectInput extends InspectProjectInput {
-  query: string;
-  path?: string;
 }
 
 interface UserProjectBinding {
@@ -76,9 +57,6 @@ export interface CreateProjectManagerOptions {
 
 export interface ProjectManager {
   ensure(input: EnsureProjectInput): Promise<EnsureProjectResult>;
-  inspect(input: InspectProjectInput): Promise<Record<string, unknown>>;
-  read(input: ReadProjectInput): Promise<Record<string, unknown>>;
-  search(input: SearchProjectInput): Promise<Record<string, unknown>>;
 }
 
 export function createProjectManager(options: CreateProjectManagerOptions): ProjectManager {
@@ -142,17 +120,6 @@ export function createProjectManager(options: CreateProjectManagerOptions): Proj
     return operation;
   }
 
-  async function configuredBaseline(input: InspectProjectInput): Promise<{
-    binding: UserProjectBinding;
-    baseline: PreparedBaseline;
-  }> {
-    const botId = requireSafeSegment(input.botId, "bot_id");
-    const userId = requireText(input.userId, "user_id");
-    const projectKey = requireSafeSegment(input.projectKey, "project_key");
-    const binding = await loadUserProjectBinding(fetchImpl, options, botId, userId, projectKey);
-    return { binding, baseline: await prepareBaseline({ botId, userId, binding }) };
-  }
-
   return {
     async ensure(input) {
       const botId = requireSafeSegment(input.botId, "bot_id");
@@ -204,57 +171,6 @@ export function createProjectManager(options: CreateProjectManagerOptions): Proj
       })().finally(() => pending.delete(destination));
       pending.set(destination, operation);
       return operation;
-    },
-    async inspect(input) {
-      const { binding, baseline } = await configuredBaseline(input);
-      return {
-        project_key: binding.project_key,
-        branch: binding.project_default_branch,
-        base_commit: baseline.commit,
-        entries: readdirSync(baseline.path, { withFileTypes: true })
-          .filter((entry) => !isExcludedProjectEntry(entry.name))
-          .sort((left, right) => left.name.localeCompare(right.name))
-          .map((entry) => ({ path: entry.name, type: entry.isDirectory() ? "directory" : "file" })),
-      };
-    },
-    async read(input) {
-      const { binding, baseline } = await configuredBaseline(input);
-      const filePath = resolveReadableProjectPath(baseline.path, input.path, false);
-      const content = readFileSync(filePath, "utf8");
-      const lines = content.split(/\r?\n/);
-      const startLine = input.startLine === undefined ? 1 : requirePositiveInteger(input.startLine, "start_line");
-      const endLine = input.endLine === undefined
-        ? Math.min(lines.length, startLine + 399)
-        : requirePositiveInteger(input.endLine, "end_line");
-      if (endLine < startLine || endLine - startLine > 399) {
-        throw new Error("line range must contain at most 400 lines");
-      }
-      return {
-        project_key: binding.project_key,
-        branch: binding.project_default_branch,
-        base_commit: baseline.commit,
-        path: normalizeReadablePath(input.path),
-        start_line: startLine,
-        end_line: Math.min(endLine, lines.length),
-        content: lines.slice(startLine - 1, endLine).join("\n"),
-      };
-    },
-    async search(input) {
-      const { binding, baseline } = await configuredBaseline(input);
-      const query = requireText(input.query, "query");
-      if (query.length > 200) {
-        throw new Error("query must be at most 200 characters");
-      }
-      const root = input.path
-        ? resolveReadableProjectPath(baseline.path, input.path, true)
-        : baseline.path;
-      return {
-        project_key: binding.project_key,
-        branch: binding.project_default_branch,
-        base_commit: baseline.commit,
-        query,
-        results: searchProjectFiles(baseline.path, root, query),
-      };
     },
   };
 }
@@ -517,76 +433,4 @@ function runGit(args: string[], accessToken?: string): Promise<string> {
       reject(new Error(stderr.trim() || `git exited with code ${code ?? "unknown"}`));
     });
   });
-}
-
-function resolveReadableProjectPath(projectRoot: string, value: string, allowDirectory: boolean): string {
-  const relativePath = normalizeReadablePath(value);
-  const destination = resolve(projectRoot, relativePath);
-  assertPathInside(projectRoot, destination);
-  if (!existsSync(destination)) {
-    throw new Error(`project path does not exist: ${relativePath}`);
-  }
-  const stat = lstatSync(destination);
-  if (stat.isSymbolicLink() || (!stat.isFile() && (!allowDirectory || !stat.isDirectory()))) {
-    throw new Error("project path is not readable");
-  }
-  return destination;
-}
-
-function normalizeReadablePath(value: string): string {
-  const path = requireText(value, "path").replace(/\\/g, "/");
-  if (path.startsWith("/") || path.split("/").some((segment) => segment === "" || segment === "." || segment === ".." || isExcludedProjectEntry(segment))) {
-    throw new Error("project path is not allowed");
-  }
-  return path;
-}
-
-function isExcludedProjectEntry(name: string): boolean {
-  return [".git", ".env", ".venv", "node_modules", "output", "tmp", "log", "logs"].includes(name)
-    || name.endsWith(".pem")
-    || name.endsWith(".key");
-}
-
-function searchProjectFiles(projectRoot: string, startPath: string, query: string): Array<Record<string, unknown>> {
-  const matches: Array<Record<string, unknown>> = [];
-  const normalizedQuery = query.toLocaleLowerCase();
-  let scannedBytes = 0;
-  const stack = [startPath];
-  while (stack.length > 0 && matches.length < 80 && scannedBytes < 8 * 1024 * 1024) {
-    const current = stack.pop();
-    if (!current) {
-      continue;
-    }
-    const stat = lstatSync(current);
-    if (stat.isDirectory()) {
-      for (const entry of readdirSync(current, { withFileTypes: true })) {
-        if (!isExcludedProjectEntry(entry.name)) {
-          stack.push(join(current, entry.name));
-        }
-      }
-      continue;
-    }
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 512 * 1024) {
-      continue;
-    }
-    const content = readFileSync(current, "utf8");
-    scannedBytes += Buffer.byteLength(content, "utf8");
-    if (content.includes("\0")) {
-      continue;
-    }
-    const path = relative(projectRoot, current).replace(/\\/g, "/");
-    content.split(/\r?\n/).forEach((line, index) => {
-      if (matches.length < 80 && line.toLocaleLowerCase().includes(normalizedQuery)) {
-        matches.push({ path, line: index + 1, text: line.slice(0, 500) });
-      }
-    });
-  }
-  return matches;
-}
-
-function requirePositiveInteger(value: number, field: string): number {
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`${field} must be a positive integer`);
-  }
-  return value;
 }

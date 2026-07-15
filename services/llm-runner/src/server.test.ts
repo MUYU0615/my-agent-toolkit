@@ -264,10 +264,10 @@ describe("llm-runner server", () => {
       "process.stdin.on('end', () => {",
       "  if (input.includes('project overview')) {",
       "    process.stdout.write('项目分析完成');",
-      "  } else if (input.includes('README.md')) {",
-      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"project.read\",\"input\":{\"path\":\"README.md\"}}</mcp_tool_call>');",
+      "  } else if (input.includes('phase-one')) {",
+      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"memory.stats\",\"input\":{}}</mcp_tool_call>');",
       "  } else {",
-      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"project.inspect\",\"input\":{}}</mcp_tool_call>');",
+      "    process.stdout.write('<mcp_tool_call>{\"tool\":\"memory.search\",\"input\":{\"query\":\"project\",\"scopes\":[\"session\"],\"owner_ids\":[\"conv-multi-tool\"]}}</mcp_tool_call>');",
       "  }",
       "});",
     ].join(" ");
@@ -284,7 +284,7 @@ describe("llm-runner server", () => {
         }
         invocation += 1;
         if (invocation === 1) {
-          return Response.json({ ok: true, result: { files: ["README.md"] } });
+          return Response.json({ ok: true, result: { phase: "phase-one" } });
         }
         if (invocation === 2) {
           return Response.json({ ok: true, result: { content: "project overview" } });
@@ -612,6 +612,80 @@ describe("llm-runner server", () => {
     await expect(fs.readFile(relayUserIdPath, "utf8")).resolves.toBe("user-a");
     await expect(fs.readFile(relayConversationIdPath, "utf8")).resolves.toBe("conv-1");
     await expect(fs.readFile(jiraUsernamePath, "utf8")).resolves.toBe("jira-user-a");
+  });
+
+  it("injects the managed project .env into cli runtime execution", async () => {
+    const capturedPath = `/tmp/project-env-${crypto.randomUUID()}.json`;
+    const projectDotenv = [
+      "IM_TEST_HUB_PYTHON=/opt/im-test-hub/.venv/bin/python",
+      "IM_TEST_HUB_API_SECRET=project-secret-value",
+      "export IM_TEST_HUB_TARGET=staging",
+      "",
+    ].join("\n");
+    const fetchStub = vi.fn(async (input: RequestInfo | URL) => {
+      const request = input instanceof Request ? input : new Request(input);
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/internal/bots/prd-bot/project-env") {
+        expect(request.headers.get("authorization")).toBe("Bearer internal-token");
+        return new Response(JSON.stringify({ configured: true, content: projectDotenv }), { status: 200 });
+      }
+      if (request.method === "GET" && url.pathname === "/internal/user-credentials/runtime-env") {
+        return new Response(JSON.stringify({ env: {} }), { status: 200 });
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/internal/runtime-sessions/")) {
+        return new Response(JSON.stringify({ error: "runtime session not found" }), { status: 404 });
+      }
+      if (request.method === "PUT" && url.pathname === "/internal/runtime-sessions") {
+        return new Response(await request.text(), { status: 200 });
+      }
+      return new Response(JSON.stringify({ error: "unexpected request" }), { status: 500 });
+    });
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      data_service_url: "http://data-service:8300",
+      credential_internal_token: "internal-token",
+      kiro: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(capturedPath)}, JSON.stringify({`,
+            "python: process.env.IM_TEST_HUB_PYTHON,",
+            "secret: process.env.IM_TEST_HUB_API_SECRET,",
+            "target: process.env.IM_TEST_HUB_TARGET,",
+            "dotenv: process.env.MY_AGENT_PROJECT_DOTENV_B64,",
+            "}), 'utf8');",
+            "process.stdout.write(process.env.IM_TEST_HUB_API_SECRET);",
+            `process.stderr.write(${JSON.stringify(`${runtimeMetadata}\n`)});`,
+          ].join(" "),
+        ],
+        timeout_ms: 1000,
+      },
+      fetch: fetchStub,
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-project-env",
+        runtime: "kiro",
+        prompt: "run the configured test",
+      }),
+    }));
+
+    const body = await response.json();
+    expect(response.status, JSON.stringify(body)).toBe(200);
+    expect(body.output).toBe("[REDACTED]");
+    const captured = JSON.parse(await fs.readFile(capturedPath, "utf8"));
+    expect(captured).toEqual({
+      python: "/opt/im-test-hub/.venv/bin/python",
+      secret: "project-secret-value",
+      target: "staging",
+      dotenv: Buffer.from(projectDotenv, "utf8").toString("base64"),
+    });
   });
 
   it("streams enabled kiro runtime output as ndjson chunks", async () => {

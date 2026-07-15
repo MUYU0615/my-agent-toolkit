@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
@@ -58,7 +58,7 @@ const server = createServer(async (request, response) => {
       }
       const runtimeWorkspace = resolveRuntimeWorkspace(payload);
       const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
-      const runtimeEnv = prepareRuntimeEnv(payload, botRoot, kiroHome);
+      const runtimeEnv = prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome);
 
       response.writeHead(200, {
         "content-type": "application/x-ndjson",
@@ -108,7 +108,7 @@ const server = createServer(async (request, response) => {
     }
     const runtimeWorkspace = resolveRuntimeWorkspace(payload);
     const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
-    const runtimeEnv = prepareRuntimeEnv(payload, botRoot, kiroHome);
+    const runtimeEnv = prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome);
 
     const requestArgs = argsFromPayload(payload);
     const result = await runWithSessionDiscovery(
@@ -367,7 +367,7 @@ function assertRelayAuthorized(request) {
   }
 }
 
-function prepareRuntimeEnv(payload, botRoot, kiroHome) {
+function prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome) {
   if (
     payload.runtime_env !== undefined
     && (!payload.runtime_env || typeof payload.runtime_env !== "object" || Array.isArray(payload.runtime_env))
@@ -386,6 +386,16 @@ function prepareRuntimeEnv(payload, botRoot, kiroHome) {
   }
   result.MY_AGENT_RUNTIME = "wecom";
   result.KIRO_HOME = kiroHome;
+  const projectDotenv = result.MY_AGENT_PROJECT_DOTENV_B64;
+  delete result.MY_AGENT_PROJECT_DOTENV_B64;
+  if (projectDotenv) {
+    const managedProjectEnv = materializeProjectDotenv(botRoot, workspaceDir, projectDotenv);
+    for (const [key, value] of Object.entries(managedProjectEnv)) {
+      if (value && isAllowedRuntimeEnvKey(key) && result[key] === undefined) {
+        result[key] = value;
+      }
+    }
+  }
   if (result.EASEMOB_JIRA_USERNAME || result.EASEMOB_JIRA_PASSWORD) {
     if (!result.EASEMOB_JIRA_USERNAME || !result.EASEMOB_JIRA_PASSWORD) {
       throw new RelayRequestError("Jira username and password must be provided together");
@@ -410,13 +420,109 @@ function prepareRuntimeEnv(payload, botRoot, kiroHome) {
 }
 
 function isAllowedRuntimeEnvKey(key) {
-  return [
+  if ([
     "EASEMOB_JIRA_USERNAME",
     "EASEMOB_JIRA_PASSWORD",
     "EASEMOB_JIRA_REDIRECT_USERNAME",
     "EASEMOB_JIRA_REDIRECT_PASSWORD",
     "MY_AGENT_JIRA_CREDENTIAL_VERSION",
-  ].includes(key);
+    "MY_AGENT_PROJECT_DOTENV_B64",
+  ].includes(key)) return true;
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) return false;
+  return ![
+    "PATH", "HOME", "SHELL", "NODE_OPTIONS", "KIRO_HOME", "KIRO_RELAY_AUTH_TOKEN",
+    "USER_CREDENTIALS_MASTER_KEY", "USER_CREDENTIALS_INTERNAL_TOKEN",
+  ].includes(key) && !key.startsWith("LD_") && !key.startsWith("DYLD_");
+}
+
+function materializeProjectDotenv(botRoot, workspaceDir, encodedContent) {
+  let content;
+  try {
+    content = Buffer.from(encodedContent, "base64").toString("utf8");
+  } catch {
+    throw new RelayRequestError("project .env payload is invalid");
+  }
+  if (!content || Buffer.byteLength(content, "utf8") > 256 * 1024) {
+    throw new RelayRequestError("project .env payload is invalid");
+  }
+  const configuredEnv = parseProjectDotenv(content);
+  const configuredPython = configuredEnv.IM_TEST_HUB_PYTHON;
+  if (configuredPython) {
+    const managedPython = createManagedPythonLauncher(botRoot, configuredPython);
+    content = replaceDotenvAssignment(content, "IM_TEST_HUB_PYTHON", managedPython);
+  }
+  const projectsRoot = join(workspaceDir, "projects");
+  const runtimePath = join(workspaceDir, ".runtime");
+  ensureSafeDirectory(runtimePath);
+  const runtimeRoot = realpathSync(runtimePath);
+  for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.name)) continue;
+    const projectRoot = realpathSync(join(projectsRoot, entry.name));
+    if (!isPathInside(projectsRoot, projectRoot)) throw new RelayRequestError("project workspace is unsafe");
+    const dotenvPath = join(projectRoot, ".env");
+    const markerPath = join(runtimeRoot, `${entry.name}.dotenv-managed`);
+    if (existsSync(dotenvPath) && !existsSync(markerPath)) {
+      throw new RelayRequestError("project contains an unmanaged .env file");
+    }
+    writeFileSync(dotenvPath, content, { mode: 0o600 });
+    writeFileSync(markerPath, "managed\n", { mode: 0o600 });
+  }
+  return parseProjectDotenv(content);
+}
+
+function createManagedPythonLauncher(botRoot, interpreterPath) {
+  if (!isAbsolute(interpreterPath) || !existsSync(interpreterPath)) {
+    throw new RelayRequestError("IM_TEST_HUB_PYTHON must be an existing absolute path");
+  }
+  const runtimeRoot = join(botRoot, ".runtime");
+  const launchersRoot = join(runtimeRoot, "python-launchers");
+  const launcherRoot = join(
+    launchersRoot,
+    createHash("sha256").update(interpreterPath, "utf8").digest("hex").slice(0, 24),
+  );
+  for (const directory of [runtimeRoot, launchersRoot, launcherRoot]) {
+    ensurePrivateDirectory(directory);
+  }
+  const launcherPath = join(launcherRoot, "python");
+  writeFileSync(
+    launcherPath,
+    `#!/bin/sh\nexec ${shellQuote(interpreterPath)} "$@"\n`,
+    { mode: 0o700 },
+  );
+  chmodSync(launcherPath, 0o700);
+  return launcherPath;
+}
+
+function replaceDotenvAssignment(content, key, value) {
+  const assignment = new RegExp(`^(\\s*(?:export\\s+)?${key}=).*$`);
+  let replaced = false;
+  const result = content.split(/\r?\n/).map((line) => {
+    if (!assignment.test(line)) return line;
+    replaced = true;
+    return line.replace(assignment, `$1${value}`);
+  }).join("\n");
+  if (!replaced) throw new RelayRequestError(`${key} is missing from project .env`);
+  return result;
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function parseProjectDotenv(content) {
+  const env = {};
+  for (const [index, line] of content.split(/\r?\n/).entries()) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) throw new RelayRequestError(`project .env line ${index + 1} is invalid`);
+    let value = match[2].trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    env[match[1]] = value;
+  }
+  return env;
 }
 
 function ensurePrivateDirectory(directory) {

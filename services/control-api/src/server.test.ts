@@ -97,7 +97,7 @@ describe("control-api server", () => {
     expect(html).not.toContain("写入 Memory 文档");
   });
 
-  it("renders separate project and project dotenv configuration controls", async () => {
+  it("renders a focused encrypted test environment editor", async () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
@@ -107,12 +107,14 @@ describe("control-api server", () => {
     const html = await (await server.fetch(new Request("http://localhost/"))).text();
 
     expect(html).toContain('data-action="edit-project"');
-    expect(html).toContain("项目配置");
-    expect(html).toContain("项目 .env 文件");
-    expect(html).toContain("整份文件按 Bot 加密保存");
-    expect(html).toContain('id="projectForm"');
+    expect(html).toContain("测试环境");
+    expect(html).toContain("Python 解释器");
+    expect(html).toContain("环境变量（.env）");
     expect(html).toContain('id="projectEnvForm"');
-    expect(html).toContain("只填 Git 仓库地址也可以保存");
+    expect(html).toContain("/github bind");
+    expect(html).not.toContain('id="projectForm"');
+    expect(html).not.toContain("Git 仓库地址");
+    expect(html).toContain('requestJson("/v1/bots/" + botId + "/project-env")');
   });
 
   it("proxies project dotenv management without auditing its content", async () => {

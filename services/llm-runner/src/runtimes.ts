@@ -266,7 +266,12 @@ function credentialSecretValues(env: Record<string, string> | undefined): string
     return [];
   }
   return Object.entries(env)
-    .filter(([key, value]) => key.startsWith("EASEMOB_JIRA_") && value.length > 0)
+    .filter(([key, value]) => value.length >= 6 && (
+      key === "EASEMOB_JIRA_PASSWORD"
+      || key === "EASEMOB_JIRA_REDIRECT_PASSWORD"
+      || key === "MY_AGENT_PROJECT_DOTENV_B64"
+      || /(?:^|_)(?:SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL)(?:_|$)/.test(key)
+    ))
     .map(([, value]) => value);
 }
 

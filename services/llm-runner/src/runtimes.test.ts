@@ -141,6 +141,22 @@ describe("runtime adapters", () => {
     } satisfies Partial<RuntimeExecutionError>);
   });
 
+  it("does not let short secret-like values corrupt ANSI output or list numbering", async () => {
+    const output = "\u001b[1m## 执行计划\u001b[0m\n1. tests/e2e/imm/test_switch_fixtures.py";
+    await expect(runCliRuntime(
+      {
+        command: process.execPath,
+        args: ["-e", `process.stdout.write(${JSON.stringify(output)})`],
+        timeout_ms: 1000,
+        env: {
+          IMM_API_SECRET: "1",
+          LONG_API_TOKEN: "sensitive-token-value",
+        },
+      },
+      { ...request, runtime: "kiro" },
+    )).resolves.toMatchObject({ output });
+  });
+
   it("returns a stable timeout error when CLI runtime exceeds timeout", async () => {
     await expect(
       runCliRuntime(

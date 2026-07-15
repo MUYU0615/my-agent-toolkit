@@ -130,6 +130,7 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
     assert.deepEqual(payload.runtime_env, {
       EASEMOB_JIRA_USERNAME: "jira-user-a",
       EASEMOB_JIRA_PASSWORD: "jira-password-a",
+      MY_AGENT_PROJECT_DOTENV_B64: "cHJvamVjdC1lbnY=",
     });
     assert.equal(payload.user_id, "user-a");
     assert.equal(payload.conversation_id, "conv-1");
@@ -151,6 +152,7 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
       KIRO_RELAY_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat`,
       EASEMOB_JIRA_USERNAME: "jira-user-a",
       EASEMOB_JIRA_PASSWORD: "jira-password-a",
+      MY_AGENT_PROJECT_DOTENV_B64: "cHJvamVjdC1lbnY=",
       SHOULD_NOT_BE_FORWARDED: "private-value",
     },
     stdio: ["pipe", "pipe", "pipe"],

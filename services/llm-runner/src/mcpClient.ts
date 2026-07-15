@@ -191,6 +191,8 @@ export function buildMcpPromptSection(manifest: McpToolManifest): string {
     "Its literal form is &lt;mcp_tool_call&gt;{\"tool\":\"tool.name\",\"input\":{}}&lt;/mcp_tool_call&gt;; output real angle brackets, not the escaped entities.",
     "Wait for the runner's MCP tool result block before deciding whether another tool is needed or writing the user-facing answer.",
     "Do not invoke native Kiro CLI tools (including dummy, Read, shell, or web tools) to replace an MCP tool.",
+    "project.ensure is the only authorized repository boundary. When repository files are needed, call it before any native file or shell operation and work only in the relative path it returns.",
+    "If project.ensure is unavailable, disabled, or fails, stop repository work and report that error. Never scan the current directory, parent directories, HOME, or Documents; never infer a repository path from an interpreter or environment variable; and never use another checkout as a fallback.",
     `Allowed directory refs: ${manifest.directory_refs.length > 0 ? manifest.directory_refs.join(", ") : "none"}`,
     ...toolLines,
     "</mcp_tools>",

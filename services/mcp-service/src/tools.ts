@@ -173,35 +173,6 @@ export function listMcpTools(options: {
       { project_key: stringProperty() },
       { writes: [], reads: [] },
     ),
-    toolDescriptor(
-      "project.inspect",
-      "project",
-      "Read the current WeCom user's bound GitHub fork overview without creating a conversation workspace.",
-      ["project_key"],
-      { project_key: stringProperty() },
-      { writes: [], reads: [] },
-    ),
-    toolDescriptor(
-      "project.read",
-      "project",
-      "Read a safe text file from the current WeCom user's bound GitHub fork without creating a conversation workspace.",
-      ["project_key", "path"],
-      {
-        project_key: stringProperty(),
-        path: stringProperty(),
-        start_line: integerProperty({ minimum: 1 }),
-        end_line: integerProperty({ minimum: 1 }),
-      },
-      { writes: [], reads: [] },
-    ),
-    toolDescriptor(
-      "project.search",
-      "project",
-      "Search safe source files in the current WeCom user's bound GitHub fork without creating a conversation workspace.",
-      ["project_key", "query"],
-      { project_key: stringProperty(), query: stringProperty(), path: stringProperty() },
-      { writes: [], reads: [] },
-    ),
   ].filter((tool) => !enabledTools || enabledTools.has(tool.name));
   return {
     version: 1,
@@ -468,30 +439,6 @@ export async function callMcpTool(
         ok: true,
         result: await deps.projectClient.ensure(context, input.project_key),
       };
-    }
-
-    if (call.tool === "project.inspect") {
-      const input = parseProjectEnsureInput(call.input);
-      if (!deps.projectClient) {
-        throw new StorageUnavailableError("project manager is unavailable");
-      }
-      return { ok: true, result: await deps.projectClient.inspect(context, input.project_key) };
-    }
-
-    if (call.tool === "project.read") {
-      const input = parseProjectReadInput(call.input);
-      if (!deps.projectClient) {
-        throw new StorageUnavailableError("project manager is unavailable");
-      }
-      return { ok: true, result: await deps.projectClient.read(context, input) };
-    }
-
-    if (call.tool === "project.search") {
-      const input = parseProjectSearchInput(call.input);
-      if (!deps.projectClient) {
-        throw new StorageUnavailableError("project manager is unavailable");
-      }
-      return { ok: true, result: await deps.projectClient.search(context, input) };
     }
 
     return toolError("validation_error", `unsupported MCP tool: ${call.tool}`);
@@ -959,34 +906,6 @@ function parseProjectEnsureInput(value: unknown): ProjectEnsureInput {
   const record = requireRecord(value, "project ensure input");
   return {
     project_key: readRequiredString(record, "project_key"),
-  };
-}
-
-function parseProjectReadInput(value: unknown): {
-  projectKey: string;
-  path: string;
-  startLine?: number;
-  endLine?: number;
-} {
-  const record = requireRecord(value, "project read input");
-  return {
-    projectKey: readRequiredString(record, "project_key"),
-    path: readRequiredString(record, "path"),
-    ...(record.start_line === undefined ? {} : { startLine: parsePositiveInteger(record.start_line, "start_line") }),
-    ...(record.end_line === undefined ? {} : { endLine: parsePositiveInteger(record.end_line, "end_line") }),
-  };
-}
-
-function parseProjectSearchInput(value: unknown): {
-  projectKey: string;
-  query: string;
-  path?: string;
-} {
-  const record = requireRecord(value, "project search input");
-  return {
-    projectKey: readRequiredString(record, "project_key"),
-    query: readRequiredString(record, "query"),
-    ...(record.path === undefined ? {} : { path: readRequiredString(record, "path") }),
   };
 }
 

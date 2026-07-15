@@ -10,9 +10,9 @@ Use this skill as the Bot-facing entrypoint for real `im-test-hub` project work.
 ## Establish The Project Context
 
 1. Decide whether repository files are actually required. Ordinary questions, Jira readiness analysis, and testcase Markdown review do not require repository access.
-2. In a managed WeCom Bot conversation, require the current user to bind a personal GitHub fork with `/github bind` before any repository work. Answer repository overview, existing Case discovery, and test-scope recommendation through the read-only MCP tools `project.inspect`, `project.search`, and `project.read` with `project_key: "im-test-hub"`. These tools query only that user's bound fork and must not create a conversation workspace.
-3. Only when code generation, modification, `collect-only`, real execution, or repository-local report analysis requires a writable checkout, call `project.ensure` once with `{"project_key":"im-test-hub"}`. Use the returned relative `path` as `<IM_TEST_HUB_ROOT>`. Do not run `git clone` yourself and do not ask the user for a local path.
-4. If a project tool reports that the GitHub fork is not bound, tell the current user to send `/github bind`; do not ask for a Token in chat and do not fall back to another user's checkout. If a required `project.*` tool itself is unavailable, tell the Bot administrator to enable it in WebUI.
+2. In a managed WeCom Bot conversation, require the current user to bind a personal GitHub fork with `/github bind` before any repository work.
+3. Call `project.ensure` once with `{"project_key":"im-test-hub"}` whenever repository files are required, including project overview, Case discovery, code changes, execution, and report analysis. Use the returned relative `path` as `<IM_TEST_HUB_ROOT>`. After that, use the CLI's native filesystem and shell capabilities (`rg`, file reads, edits, Git, Python, and pytest) inside this checkout. Do not run `git clone` yourself and do not ask the user for a local path.
+4. If `project.ensure` reports that the GitHub fork is not bound, tell the current user to send `/github bind`; do not ask for a Token in chat and do not fall back to another user's checkout. If `project.ensure` is unavailable, disabled, or fails, stop all repository work and report the error. Never use shell or file tools to scan the current directory, parent directories, `$HOME`, or `~/Documents`; never derive a repository root from `$IM_TEST_HUB_PYTHON` or another environment variable; and never use a host checkout or another user's checkout as a fallback.
 5. Outside managed WeCom, locate the real `im-test-hub` checkout. Prefer the current working directory when it contains `AGENTS.md`, `src/`, `tests/`, and `e2e_scripts/`; otherwise use the caller-provided path. Do not guess a developer-specific absolute path.
 6. Run the read-only probe:
 
@@ -97,12 +97,46 @@ When a caller-authorized real config is available, execute one case at a time:
   --no-serve
 ```
 
+In managed WeCom, execution remains a normal Kiro CLI repository operation after
+`project.ensure`; do not wrap pytest arguments in another MCP tool. The runtime
+injects the WebUI test environment and materializes its managed `.env` in the
+conversation checkout. When the WebUI project environment is configured, treat
+that managed `.env` as the caller-authorized runtime config. Do not ask the user
+to choose or provide another YAML merely because `run_e2e.sh` has a required
+`--config` argument.
+
+For a Case whose fixtures/config loader read `.env` or process environment (for
+example `tests/e2e/imm/test_switch_fixtures.py`), run it directly with the
+configured `$IM_TEST_HUB_PYTHON`. The generic E2E runner deliberately clears
+inherited app environment variables and re-injects values from YAML, so it is not
+the correct entrypoint for a WebUI-managed `.env` run. Preserve report generation
+with a unique run id:
+
+```bash
+run_id="wecom-$(date +%Y%m%d-%H%M%S)"
+E2E_EVIDENCE_DIR="output/e2e-run/$run_id/evidence" \
+  "$IM_TEST_HUB_PYTHON" -m pytest '<PYTEST_NODEID>' -q \
+  --alluredir="output/e2e-run/$run_id/allure-results"
+"$IM_TEST_HUB_PYTHON" e2e_scripts/src/run_tests.py report --run-id "$run_id"
+```
+
+Generate `allure-report/` from `allure-results/` when the Allure CLI is available;
+otherwise report that the JSON/HTML E2E report exists and Allure HTML was skipped.
+Use the YAML runner only when the requested flow genuinely requires its isolated
+YAML mapping and an authorized YAML already exists. Do not search for another
+`python3`, create a replacement virtualenv, or install/upgrade dependencies when
+`$IM_TEST_HUB_PYTHON` is configured. If that interpreter is missing a dependency,
+report the missing package and ask before changing the environment. Never run
+`env`, `printenv`, `cat .env`, `echo` secret variables, or otherwise expose the
+managed environment in model output.
+
 For old SDK/Server live cases, use `script/run_github_actions_live_cases.py` according to the project live Skills. Do not use raw `python -m unittest` as the normal live verification entry.
 
 Rules:
 
 - Never read or print real `.env`, YAML secrets, client secrets, tokens, cookies, or passwords.
 - Do not claim a real behavior passed from `--collect-only`, unit tests, static coverage, or report regeneration.
+- If pytest exits non-zero, say that the runner started but the Case failed; never label that outcome as “测试执行成功”.
 - If credentials/config are unavailable, run safe local checks and state exactly which real verification was skipped.
 - Treat runner exit status and generated evidence as truth. Use the LLM only to summarize them.
 - Auto-repair syntax, import, collection, and test-code errors at most twice when authorized. Do not change a business assertion merely to turn a product failure into a pass.
@@ -110,7 +144,14 @@ Rules:
 
 ## Report Results
 
-Return a concise Chinese result suitable for Enterprise WeChat:
+After a real E2E execution, read the generated
+`output/e2e-run/<run-id>/e2e-run-case-summary.json` and
+`output/e2e-run/<run-id>/e2e-run-report.json`. Use these artifacts, together with
+the runner exit status, to produce the user-facing result. Do not ask the user to
+open a local path to learn whether the run passed or why it failed.
+
+Return the useful report content directly as concise Chinese Markdown suitable
+for Enterprise WeChat:
 
 ```markdown
 ## 执行结果
@@ -120,7 +161,13 @@ Return a concise Chinese result suitable for Enterprise WeChat:
 - Case：...
 - 验证状态：通过 / 失败 / 部分验证 / 未执行真实环境
 - 通过/失败/跳过：...
-- 报告：仓库相对路径
+- 耗时：...
+
+### Case结果
+
+| Case | 结果 | 耗时 |
+| --- | --- | --- |
+| ... | 通过 / 失败 / 跳过 | ... |
 
 ### 失败或风险
 
@@ -134,7 +181,21 @@ Return a concise Chinese result suitable for Enterprise WeChat:
 - 尚未Push，尚未创建PR。
 ```
 
-Do not expose tool traces, absolute private paths, raw logs containing secrets, or environment values. Prefer repository-relative report paths. Include the exact focused verification that ran, and distinguish generated code from verified behavior.
+The direct reply is the report delivery. Generated JSON, HTML, evidence, and
+Allure directories are internal runtime artifacts: use them to build the answer
+but do not show their host paths or repository-relative paths to Enterprise WeChat
+users. If a user explicitly asks for the full report file, say that attachment
+delivery is not available yet; do not reveal the workspace location.
+
+For a large run, include all failed cases and a compact pass/skip summary; do not
+paste the complete raw JSON, HTML, Allure data, request bodies, or response bodies
+into chat. Sanitize evidence before quoting it. Wrap Case names, pytest nodeids,
+environment-variable names, and run ids in backticks so Enterprise WeChat
+Markdown does not consume underscores.
+
+Do not expose tool traces, absolute private paths, internal artifact paths, raw
+logs containing secrets, or environment values. Include the exact focused
+verification that ran, and distinguish generated code from verified behavior.
 
 ## Git Safety
 

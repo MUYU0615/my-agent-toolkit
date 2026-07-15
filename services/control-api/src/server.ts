@@ -1819,18 +1819,18 @@ function renderChannelWorkbenchPage(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Channel 管理 - Bot Control</title>
+  <title>Bot 控制台</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f7f9;
+      --bg: #f2f5f4;
       --surface: #ffffff;
       --surface-soft: #f1f4f7;
       --text: #17202e;
       --muted: #647184;
       --line: #d9e1ea;
-      --primary: #145f53;
-      --primary-strong: #0d493f;
+      --primary: #176b5c;
+      --primary-strong: #105247;
       --accent: #1f9d72;
       --warn: #8a5a10;
       --danger: #a63a32;
@@ -1906,7 +1906,19 @@ function renderChannelWorkbenchPage(): string {
       justify-content: space-between;
       gap: 16px;
     }
-    .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .top a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 11px;
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 650;
+    }
+    .top a:hover { background: var(--surface-soft); }
+    .brand h1 { margin: 0; font-size: 21px; letter-spacing: -.2px; }
     .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
     main {
       width: min(1440px, calc(100vw - 32px));
@@ -2181,23 +2193,37 @@ function renderChannelWorkbenchPage(): string {
     }
     .modal-backdrop.open { display: grid; }
     .modal {
-      width: min(620px, 100%);
+      width: min(760px, 100%);
       max-height: calc(100dvh - 36px);
       overflow: auto;
       background: #fff;
-      border-radius: 8px;
+      border-radius: 14px;
       border: 1px solid var(--line);
-      box-shadow: 0 20px 80px rgba(15, 23, 42, .18);
+      box-shadow: 0 24px 70px rgba(15, 23, 42, .24);
     }
     .modal-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 14px;
+      padding: 18px 20px;
       border-bottom: 1px solid var(--line);
     }
-    .modal-head h2 { margin: 0; font-size: 16px; }
-    .modal-body { padding: 14px; }
+    .modal-head h2 { margin: 0; font-size: 18px; }
+    .modal-body { padding: 20px; background: #f8fafb; }
+    .test-env-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid #cfe0dc;
+      border-radius: 12px;
+      background: #f1f8f6;
+    }
+    .test-env-summary strong { display: block; margin-bottom: 4px; font-size: 15px; }
+    .test-env-card { padding: 16px; border-radius: 12px; background: #fff; }
+    .test-env-card textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .test-env-actions { justify-content: flex-end; padding-top: 4px; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       background: var(--surface-soft);
@@ -2220,26 +2246,26 @@ function renderChannelWorkbenchPage(): string {
   <header>
     <div class="top">
       <div class="brand">
-        <h1>Channel 管理</h1>
-        <p>管理企业微信 Channel、管理员认领、Bot 初始化和文档上下文。</p>
+        <h1>Bot 控制台</h1>
+        <p>企业微信机器人、运行能力与环境配置。</p>
       </div>
       <div class="tools">
         <a href="/admin/global-documents">全局配置</a>
         <a href="/admin/roles">角色管理</a>
         <span class="toast" id="toast">等待操作。</span>
         <button type="button" class="secondary" id="refreshButton">刷新</button>
-        <button type="button" id="newChannelButton">新增 Channel</button>
+        <button type="button" id="newChannelButton">新增 Bot</button>
       </div>
     </div>
   </header>
   <main class="layout">
     <section class="panel">
       <div class="panel-head">
-        <h2>Channel 列表</h2>
-        <span class="subtle" id="channelCount">0 个 Channel</span>
+        <h2>Bot 列表</h2>
+        <span class="subtle" id="channelCount">0 个 Bot</span>
       </div>
       <div class="filters">
-        <input id="searchInput" type="search" placeholder="搜索 Bot、企业微信Bot ID、状态">
+        <input id="searchInput" type="search" placeholder="搜索名称、Bot ID 或状态">
         <select id="statusFilter" aria-label="筛选运行状态">
           <option value="all">全部状态</option>
           <option value="enabled">运行中</option>
@@ -2251,7 +2277,7 @@ function renderChannelWorkbenchPage(): string {
       <div class="channel-list" id="channelList"></div>
     </section>
     <section class="panel detail" id="detailPanel">
-      <div class="empty">选择左侧 Channel 查看详情。</div>
+      <div class="empty">选择左侧 Bot 查看详情。</div>
     </section>
   </main>
 
@@ -2312,9 +2338,6 @@ function renderChannelWorkbenchPage(): string {
       "memory.stats",
       "search.query",
       "project.ensure",
-      "project.inspect",
-      "project.read",
-      "project.search",
     ];
 
     function setToast(message, isError = false) {
@@ -2407,9 +2430,9 @@ function renderChannelWorkbenchPage(): string {
 
     function renderList() {
       const channels = filteredChannels();
-      channelCount.textContent = channels.length + " 个 Channel";
+      channelCount.textContent = channels.length + " 个 Bot";
       if (channels.length === 0) {
-        channelList.innerHTML = '<div class="empty"><h2>暂无 Channel</h2><p>新增 Channel 后会保存企业微信配置，并立即生成管理员认领码。</p><button type="button" data-action="empty-new">新增 Channel</button></div>';
+        channelList.innerHTML = '<div class="empty"><h2>暂无 Bot</h2><p>创建后即可配置企业微信连接、能力和测试环境。</p><button type="button" data-action="empty-new">新增 Bot</button></div>';
         return;
       }
       channelList.innerHTML = channels.map((channel) => {
@@ -2451,6 +2474,7 @@ function renderChannelWorkbenchPage(): string {
           '</div>',
           '<div class="tools">',
             '<button type="button" class="secondary" data-action="edit-channel">编辑配置</button>',
+            '<button type="button" data-action="edit-project">测试环境</button>',
             '<button type="button" data-action="manage-bot-capabilities">管理 Env / Skills / MCP</button>',
           '</div>',
         '</div>',
@@ -2537,7 +2561,7 @@ function renderChannelWorkbenchPage(): string {
         '<div class="capability-grid">',
           capabilityCard("MCP Tools", tools.length + " 个工具", tools.slice(0, 6).join("、") + (tools.length > 6 ? " 等" : "")),
           capabilityCard("文档能力", documents.count + " 个普通文档", formatTypeStats(documents.by_type)),
-          capabilityCard("记忆索引", memory.memories + " 条记忆 / " + memory.chunks + " 个 chunk", "资产 " + memory.assets + "，记忆文档 " + memory.memory_documents),
+          capabilityCard("记忆索引", (memory.memories ?? 0) + " 条记忆 / " + (memory.chunks ?? 0) + " 个片段", "资产 " + (memory.assets ?? 0) + "，记忆文档 " + (memory.memory_documents ?? 0)),
         '</div>',
         '<div class="chip-list">',
           '<span class="chip">读：' + escapeHtml(readableScopes.join(" / ") || "-") + '</span>',
@@ -2567,7 +2591,7 @@ function renderChannelWorkbenchPage(): string {
 
     function configDocPreview(label, doc) {
       if (!doc) return '<div class="doc-item"><strong>' + escapeHtml(label) + '</strong><div class="subtle">未生成。</div></div>';
-      return '<details class="doc-item" open><summary>' + escapeHtml(label) + '</summary>' +
+      return '<details class="doc-item"><summary>' + escapeHtml(label) + '</summary>' +
         '<div class="subtle">更新时间：' + escapeHtml(formatBeijingTime(doc.updated_at || doc.created_at)) + '</div>' +
         '<pre>' + escapeHtml(doc.content || "") + '</pre></details>';
     }
@@ -2614,12 +2638,14 @@ function renderChannelWorkbenchPage(): string {
       const detail = await requestJson("/v1/bot-channels/" + encodeURIComponent(channelId));
       if (detail?.bot?.bot_id) {
         const botId = encodeURIComponent(detail.bot.bot_id);
-        const [configDocuments, mcpCapabilities] = await Promise.all([
+        const [configDocuments, mcpCapabilities, projectEnv] = await Promise.all([
           requestJson("/v1/bots/" + botId + "/config-documents"),
           requestJson("/v1/bots/" + botId + "/mcp-capabilities"),
+          requestJson("/v1/bots/" + botId + "/project-env"),
         ]);
         detail.config_documents = configDocuments;
         detail.mcp_capabilities = mcpCapabilities;
+        detail.project_env = projectEnv;
       }
       state.details.set(channelId, detail);
       renderDetail(detail);
@@ -2660,38 +2686,26 @@ function renderChannelWorkbenchPage(): string {
         setToast("项目配置尚未加载。", true);
         return;
       }
-      modalTitle.textContent = "项目配置 · " + bot.name;
+      modalTitle.textContent = "测试环境 · " + bot.name;
       modalBody.innerHTML = renderProjectConfig(bot, detail.project_env || {});
       modalBackdrop.classList.add("open");
-      document.querySelector("#projectForm input[name='project_repository_url']")?.focus();
+      document.querySelector("#projectEnvForm input[name='python_path']")?.focus();
     }
 
     function renderProjectConfig(bot, projectEnv) {
       return '<div class="form-grid">' +
-        '<form id="projectForm" class="form-grid">' +
-          '<fieldset class="field-group"><legend>主项目</legend>' +
-            '<div class="subtle">只填 Git 仓库地址也可以保存；项目标识和工作目录默认取仓库名，默认分支为 main。</div>' +
-            '<label>Git 仓库地址<input name="project_repository_url" value="' + escapeHtml(bot.project_repository_url || "") + '" placeholder="https://github.com/org/im-test-hub.git"></label>' +
-            '<div class="row-2">' +
-              '<label>项目标识<input name="project_key" value="' + escapeHtml(bot.project_key || "") + '" placeholder="默认取仓库名"></label>' +
-              '<label>工作目录<input name="project_directory" value="' + escapeHtml(bot.project_directory || "") + '" placeholder="默认取项目标识"></label>' +
-            '</div>' +
-            '<label>默认分支<input name="project_default_branch" value="' + escapeHtml(bot.project_default_branch || "main") + '" placeholder="main"></label>' +
-            '<div class="subtle">清空 Git 仓库地址并保存，会移除该 Bot 的主项目配置。普通聊天不会自动克隆仓库。</div>' +
-          '</fieldset>' +
-          '<div class="tools"><button type="submit">保存项目配置</button></div>' +
-        '</form>' +
-        '<fieldset class="field-group"><legend>项目 .env 文件</legend>' +
-          '<div class="subtle">整份文件按 Bot 加密保存，仅供受控测试运行环境使用；不会写入 Kiro 会话工作目录，已保存内容不会在页面回显。</div>' +
+        '<div class="test-env-summary"><div><strong>用户仓库</strong><div class="subtle">由用户在企业微信发送 <code>/github bind</code> 绑定个人 Fork。</div></div><span class="badge ok">按用户隔离</span></div>' +
+        '<fieldset class="field-group test-env-card"><legend>本机测试环境</legend>' +
+          '<div class="subtle">仅保存执行测试所需配置。内容加密保存，真实值不会回显，也不会写入仓库。</div>' +
           '<div>' + badge(projectEnv.configured ? "已配置" : "未配置", projectEnv.configured ? "ok" : "warn") +
             (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(formatBeijingTime(projectEnv.updated_at)) + '</span>' : '') + '</div>' +
           '<form id="projectEnvForm" class="form-grid">' +
-            '<label>.env 文件内容<textarea name="content" required spellcheck="false" autocomplete="off" placeholder="PYTHONPATH=.&#10;APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
-            '<div class="tools"><button type="submit">' + (projectEnv.configured ? "整体替换 .env" : "保存 .env") + '</button>' +
+            '<label>Python 解释器<input name="python_path" required spellcheck="false" autocomplete="off" placeholder="/Users/name/work/im-test-hub/.venv/bin/python"></label>' +
+            '<label>环境变量（.env）<textarea name="env_content" required spellcheck="false" autocomplete="off" placeholder="APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
+            '<div class="tools test-env-actions"><button type="button" class="secondary" data-action="modal-cancel">取消</button><button type="submit">' + (projectEnv.configured ? "更新配置" : "保存配置") + '</button>' +
               (projectEnv.configured ? '<button type="button" class="danger" data-action="delete-project-env">删除 .env</button>' : '') + '</div>' +
           '</form>' +
         '</fieldset>' +
-        '<div class="tools"><button type="button" class="secondary" data-action="modal-cancel">关闭</button></div>' +
       '</div>';
     }
 
@@ -2930,9 +2944,9 @@ function renderChannelWorkbenchPage(): string {
         await requestJson("/v1/bots/" + encodeURIComponent(botId) + "/project-env", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            actor_id: detail.admin?.wecom_user_id || "webui",
-            content: form.content,
+        body: JSON.stringify({
+          actor_id: detail.admin?.wecom_user_id || "webui",
+          content: "IM_TEST_HUB_PYTHON=" + String(form.python_path || "").trim() + "\\n" + String(form.env_content || "").trim(),
             updated_by_wecom_user_id: detail.admin?.wecom_user_id || "webui",
           }),
         });

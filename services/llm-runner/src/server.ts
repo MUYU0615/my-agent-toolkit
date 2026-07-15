@@ -538,17 +538,58 @@ async function withBotEnv(
   const userEnv = config.resolveUserEnvVars
     ? await config.resolveUserEnvVars(chatRequest.bot_id, chatRequest.user_id)
     : await resolveUserCredentialEnv(config, chatRequest.bot_id, chatRequest.user_id);
+  const projectEnv = await resolveProjectRuntimeEnv(config, chatRequest.bot_id);
   return {
     ...config.kiro!,
     env: {
       ...(config.kiro?.env ?? {}),
       ...botEnv,
       ...userEnv,
+      ...projectEnv,
       KIRO_RELAY_BOT_ID: chatRequest.bot_id,
       KIRO_RELAY_USER_ID: chatRequest.user_id,
       KIRO_RELAY_CONVERSATION_ID: chatRequest.conversation_id,
     },
   };
+}
+
+async function resolveProjectRuntimeEnv(
+  config: RunnerConfig,
+  botId: string,
+): Promise<Record<string, string>> {
+  if (!config.data_service_url || !config.credential_internal_token) return {};
+  const response = await fetchWithConfig(config, new Request(
+    `${config.data_service_url}/internal/bots/${encodeURIComponent(botId)}/project-env`,
+    { headers: { authorization: `Bearer ${config.credential_internal_token}` } },
+  ));
+  const payload = await response.json().catch(() => undefined) as
+    | { configured?: boolean; content?: string; error?: string }
+    | undefined;
+  if (!response.ok) throw new Error(payload?.error ?? "project environment lookup failed");
+  if (payload?.configured !== true) return {};
+  if (typeof payload.content !== "string" || payload.content.trim() === "") {
+    throw new Error("configured project environment is empty");
+  }
+  return {
+    ...parseProjectDotenv(payload.content),
+    MY_AGENT_PROJECT_DOTENV_B64: Buffer.from(payload.content, "utf8").toString("base64"),
+  };
+}
+
+function parseProjectDotenv(content: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [index, line] of content.split(/\r?\n/).entries()) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) throw new Error(`project .env line ${index + 1} is invalid`);
+    let value = match[2].trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    env[match[1]] = value;
+  }
+  return env;
 }
 
 async function resolveUserCredentialEnv(

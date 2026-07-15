@@ -144,34 +144,4 @@ describe("project manager", () => {
     expect(existsSync(join(projectRoot, ".env"))).toBe(false);
   });
 
-  it("reads the current user's bound fork without creating a conversation workspace", async () => {
-    const root = mkdtempSync(join(tmpdir(), "project-manager-"));
-    roots.push(root);
-    const cloneRepository = vi.fn(async (_url: string, _branch: string, destination: string) => {
-      mkdirSync(join(destination, ".git"), { recursive: true });
-      mkdirSync(join(destination, "tests", "e2e"), { recursive: true });
-      writeFileSync(join(destination, "README.md"), "# IM Test Hub\nSDK login regression\n");
-      writeFileSync(join(destination, "tests", "e2e", "test_sdk.py"), "def test_sdk_login():\n    pass\n");
-    });
-    const manager = createProjectManager({
-      dataServiceUrl: "http://data-service",
-      userCredentialsInternalToken: "internal-token",
-      kiroWorkspaceRoot: root,
-      fetch: vi.fn(async () => projectBindingResponse()),
-      cloneRepository,
-      resolveRevision: vi.fn(async () => "c".repeat(40)),
-    });
-
-    const inspect = await manager.inspect({ botId: "qa-bot", userId: "user-a", projectKey: "im-test-hub" });
-    const read = await manager.read({ botId: "qa-bot", userId: "user-a", projectKey: "im-test-hub", path: "README.md" });
-    const search = await manager.search({ botId: "qa-bot", userId: "user-a", projectKey: "im-test-hub", query: "login" });
-
-    expect(inspect).toMatchObject({ base_commit: "c".repeat(40), entries: expect.any(Array) });
-    expect(read).toMatchObject({ path: "README.md", content: "# IM Test Hub\nSDK login regression\n" });
-    expect(search).toMatchObject({
-      results: expect.arrayContaining([expect.objectContaining({ path: "tests/e2e/test_sdk.py", line: 1 })]),
-    });
-    expect(cloneRepository).toHaveBeenCalledTimes(1);
-    expect(existsSync(join(root, "qa-bot", "users"))).toBe(false);
-  });
 });

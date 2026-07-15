@@ -17,6 +17,7 @@ SERVICES=(
   log-service
   llm-runner
   capability-runner
+  mcp-service
   bot-api
   control-api
 )
@@ -29,12 +30,13 @@ HEALTH_URLS=(
   "log-service|http://localhost:8500/health"
   "llm-runner|http://localhost:8200/health"
   "capability-runner|http://localhost:8700/health"
+  "mcp-service|http://localhost:8800/health"
   "bot-host|http://localhost:8400/health"
   "control-api|http://localhost:8600/health"
 )
 
 if docker compose --profile wecom "${COMPOSE_ARGS[@]}" config --services | grep -qx "$WECOM_SERVICE"; then
-  if docker ps --format '{{.Names}}' | grep -qx "${COMPOSE_PROJECT_NAME}-${WECOM_SERVICE}-1"; then
+  if docker ps -a --format '{{.Names}}' | grep -qx "${COMPOSE_PROJECT_NAME}-${WECOM_SERVICE}-1"; then
     SERVICES+=("$WECOM_SERVICE")
     HEALTH_URLS+=("wecom-worker|http://localhost:8401/health")
     COMPOSE_ARGS=(--profile wecom "${COMPOSE_ARGS[@]}")

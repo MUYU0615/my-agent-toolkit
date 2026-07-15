@@ -25,26 +25,6 @@ export interface CreateCapabilityRunnerServerOptions {
     conversationId: string;
     projectKey: string;
   }): unknown | Promise<unknown>;
-  inspectProject?(context: {
-    botId: string;
-    userId: string;
-    projectKey: string;
-  }): unknown | Promise<unknown>;
-  readProject?(context: {
-    botId: string;
-    userId: string;
-    projectKey: string;
-    path: string;
-    startLine?: number;
-    endLine?: number;
-  }): unknown | Promise<unknown>;
-  searchProject?(context: {
-    botId: string;
-    userId: string;
-    projectKey: string;
-    query: string;
-    path?: string;
-  }): unknown | Promise<unknown>;
   projectRunnerToken?: string;
 }
 
@@ -54,9 +34,6 @@ export function createCapabilityRunnerServer(
   const dispatch = options.dispatch;
   const listSkills = options.listSkills;
   const ensureProject = options.ensureProject;
-  const inspectProject = options.inspectProject;
-  const readProject = options.readProject;
-  const searchProject = options.searchProject;
 
   return {
     async fetch(request: Request): Promise<Response> {
@@ -96,77 +73,6 @@ export function createCapabilityRunnerServer(
             }, 400);
           }
         });
-      }
-
-      const projectInspectRouteMatch = url.pathname.match(
-        /^\/internal\/bots\/([^/]+)\/projects\/inspect$/,
-      );
-      if (request.method === "POST" && projectInspectRouteMatch) {
-        return withProjectRunnerToken(request, options.projectRunnerToken, async () => withDecodedBotId(
-          projectInspectRouteMatch[1],
-          async (botId) => {
-            try {
-              const payload = requireRecord(await readJsonPayload(request));
-              const result = await inspectProject?.({
-                botId,
-                userId: requireString(payload.user_id, "user_id"),
-                projectKey: requireString(payload.project_key, "project_key"),
-              });
-              return jsonResponse(result ?? { error: "project manager is not configured" }, result ? 200 : 503);
-            } catch (error) {
-              return jsonResponse({ error: error instanceof Error ? error.message : "project inspect failed" }, 400);
-            }
-          },
-        ));
-      }
-
-      const projectReadRouteMatch = url.pathname.match(
-        /^\/internal\/bots\/([^/]+)\/projects\/read$/,
-      );
-      if (request.method === "POST" && projectReadRouteMatch) {
-        return withProjectRunnerToken(request, options.projectRunnerToken, async () => withDecodedBotId(
-          projectReadRouteMatch[1],
-          async (botId) => {
-            try {
-              const payload = requireRecord(await readJsonPayload(request));
-              const result = await readProject?.({
-                botId,
-                userId: requireString(payload.user_id, "user_id"),
-                projectKey: requireString(payload.project_key, "project_key"),
-                path: requireString(payload.path, "path"),
-                ...(payload.start_line === undefined ? {} : { startLine: requirePositiveInteger(payload.start_line, "start_line") }),
-                ...(payload.end_line === undefined ? {} : { endLine: requirePositiveInteger(payload.end_line, "end_line") }),
-              });
-              return jsonResponse(result ?? { error: "project manager is not configured" }, result ? 200 : 503);
-            } catch (error) {
-              return jsonResponse({ error: error instanceof Error ? error.message : "project read failed" }, 400);
-            }
-          },
-        ));
-      }
-
-      const projectSearchRouteMatch = url.pathname.match(
-        /^\/internal\/bots\/([^/]+)\/projects\/search$/,
-      );
-      if (request.method === "POST" && projectSearchRouteMatch) {
-        return withProjectRunnerToken(request, options.projectRunnerToken, async () => withDecodedBotId(
-          projectSearchRouteMatch[1],
-          async (botId) => {
-            try {
-              const payload = requireRecord(await readJsonPayload(request));
-              const result = await searchProject?.({
-                botId,
-                userId: requireString(payload.user_id, "user_id"),
-                projectKey: requireString(payload.project_key, "project_key"),
-                query: requireString(payload.query, "query"),
-                ...(payload.path === undefined ? {} : { path: requireString(payload.path, "path") }),
-              });
-              return jsonResponse(result ?? { error: "project manager is not configured" }, result ? 200 : 503);
-            } catch (error) {
-              return jsonResponse({ error: error instanceof Error ? error.message : "project search failed" }, 400);
-            }
-          },
-        ));
       }
 
       const skillInstallRouteMatch = url.pathname.match(
@@ -220,17 +126,6 @@ export function createCapabilityRunnerServer(
       return jsonResponse({ error: "not found" }, 404);
     },
   };
-}
-
-function withProjectRunnerToken(
-  request: Request,
-  expectedToken: string | undefined,
-  handler: () => Promise<Response>,
-): Promise<Response> | Response {
-  if (!matchesToken(request.headers.get("x-project-runner-token"), expectedToken)) {
-    return jsonResponse({ error: "project runner token is invalid" }, 401);
-  }
-  return handler();
 }
 
 function dispatchAccepted(
@@ -289,13 +184,6 @@ function requireString(value: unknown, field: string): string {
     throw new Error(`${field} is required`);
   }
   return value.trim();
-}
-
-function requirePositiveInteger(value: unknown, field: string): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`${field} must be a positive integer`);
-  }
-  return value;
 }
 
 function matchesToken(actual: string | null, expected: string | undefined): boolean {

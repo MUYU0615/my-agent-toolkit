@@ -14,6 +14,7 @@ export interface RuntimeOutputPresentation {
 
 export function presentRuntimeOutput(value: string): RuntimeOutputPresentation {
   const normalized = stripRuntimeControlSequences(value)
+    .replace(/^.*<｜DSML｜(?:function_calls|tool_calls|function_results).*$/gim, "")
     .replace(
       /((?:[✓●⦁-]\s*)?Completed in\s+\d+(?:\.\d+)?s)(?=\S)/gi,
       "$1\n",
@@ -72,13 +73,39 @@ export function presentRuntimeOutput(value: string): RuntimeOutputPresentation {
     visible.push(line);
   }
 
-  const visibleText = compactVisibleText(visible.join("\n"));
+  const visibleText = removeInternalArtifactReferences(
+    selectLastCompleteReport(compactVisibleText(visible.join("\n"))),
+  );
   const diagnosticText = diagnostics.join("\n").trim();
   return {
     visibleText: visibleText || mapKnownRuntimeDiagnostic(normalized),
     diagnosticText,
     diagnosticInProgress: inToolBlock || inPythonTraceback,
   };
+}
+
+function selectLastCompleteReport(value: string): string {
+  for (const heading of ["## 执行结果", "执行结果报告"]) {
+    const first = value.indexOf(heading);
+    const last = value.lastIndexOf(heading);
+    if (first !== -1 && last > first) {
+      return value.slice(last).trim();
+    }
+  }
+  return value;
+}
+
+function removeInternalArtifactReferences(value: string): string {
+  const filtered = value
+    .split("\n")
+    .filter((line) => !/\boutput\/e2e-run\//i.test(line))
+    .join("\n");
+  return compactVisibleText(filtered)
+    .replace(
+      /(?:^|\n)(?:#{1,6}\s*)?报告产物\s*(?=\n(?:#{1,6}\s*)?(?:结论|Git状态)|$)/g,
+      "",
+    )
+    .trim();
 }
 
 export function stripRuntimeControlSequences(value: string): string {
