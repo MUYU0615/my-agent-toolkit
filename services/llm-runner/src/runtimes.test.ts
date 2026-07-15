@@ -173,4 +173,24 @@ describe("runtime adapters", () => {
       message: "runtime timed out",
     } satisfies Partial<RuntimeExecutionError>);
   });
+
+  it("preserves the relay timeout and rollback message", async () => {
+    await expect(
+      runCliRuntime(
+        {
+          command: process.execPath,
+          args: [
+            "-e",
+            "process.stderr.write('任务执行超过时间限制，已自动停止并丢弃本次更改'); process.exit(1)",
+          ],
+          timeout_ms: 1000,
+        },
+        { ...request, runtime: "kiro" },
+      ),
+    ).rejects.toMatchObject({
+      code: "runtime_timeout",
+      status: 504,
+      message: "任务执行超过时间限制，已自动停止并丢弃本次更改",
+    } satisfies Partial<RuntimeExecutionError>);
+  });
 });

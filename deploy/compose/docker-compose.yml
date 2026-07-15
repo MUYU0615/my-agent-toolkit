@@ -172,7 +172,7 @@ services:
       KIRO_RELAY_URL: "http://host.docker.internal:8210/v1/kiro/chat"
       KIRO_RELAY_STREAM: "true"
       KIRO_RELAY_STREAM_URL: "http://host.docker.internal:8210/v1/kiro/chat/stream"
-      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-300000}"
+      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-900000}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
       KIRO_RELAY_AUTH_TOKEN: "${KIRO_RELAY_AUTH_TOKEN:-}"
       MCP_SERVICE_URL: "http://mcp-service:8800"

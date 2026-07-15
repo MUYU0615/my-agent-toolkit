@@ -86,8 +86,9 @@ describe("mcpClient", () => {
     expect(section).toContain("document.create");
     expect(section).toContain("required: scope, owner_id, title, doc_type, content");
     expect(section).toContain("&lt;mcp_tool_call&gt;{\"tool\":\"tool.name\",\"input\":{}}&lt;/mcp_tool_call&gt;");
-    expect(section).toContain("project.ensure is the only authorized repository boundary");
-    expect(section).toContain("Never scan the current directory, parent directories, HOME, or Documents");
+    expect(section).toContain("runner prepares repository context automatically");
+    expect(section).toContain("Never call project.ensure");
+    expect(section).toContain("project.publish is the only project write-to-remote operation");
     expect(section).toContain("Do not invoke native Kiro CLI tools");
     expect(section).toContain("</mcp_tools>");
   });

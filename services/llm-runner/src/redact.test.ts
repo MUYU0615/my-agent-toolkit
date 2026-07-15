@@ -22,4 +22,9 @@ describe("runtime redaction", () => {
       "[PATH]",
     ].join("\n"));
   });
+
+  it("preserves public GitHub URLs", () => {
+    expect(redactText("https://github.com/acme/im-test-hub/tree/bot/test-case"))
+      .toBe("https://github.com/acme/im-test-hub/tree/bot/test-case");
+  });
 });

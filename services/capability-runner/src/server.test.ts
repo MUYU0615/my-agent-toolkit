@@ -86,6 +86,41 @@ describe("capability-runner server", () => {
     expect(ensureProject).not.toHaveBeenCalled();
   });
 
+  it("publishes a project with trusted user and conversation identifiers", async () => {
+    const publishProject = vi.fn().mockResolvedValue({
+      branch: "bot/add-case",
+      commit: "a".repeat(40),
+    });
+    const server = createCapabilityRunnerServer({
+      publishProject,
+      projectRunnerToken: "runner-secret",
+    });
+    const response = await server.fetch(new Request(
+      "http://localhost/internal/bots/qa-bot/projects/publish",
+      {
+        method: "POST",
+        headers: { "x-project-runner-token": "runner-secret" },
+        body: JSON.stringify({
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          project_key: "im-test-hub",
+          branch: "bot/add-case",
+          commit_message: "test: add case",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(publishProject).toHaveBeenCalledWith({
+      botId: "qa-bot",
+      userId: "user-a",
+      conversationId: "conv-1",
+      projectKey: "im-test-hub",
+      branch: "bot/add-case",
+      commitMessage: "test: add case",
+    });
+  });
+
   it("dispatches bot skill install requests with structured payload", async () => {
     const dispatch = vi.fn().mockResolvedValue(undefined);
     const server = createCapabilityRunnerServer({ dispatch });

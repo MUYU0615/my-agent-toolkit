@@ -97,7 +97,7 @@ describe("control-api server", () => {
     expect(html).not.toContain("写入 Memory 文档");
   });
 
-  it("renders a focused encrypted test environment editor", async () => {
+  it("renders a focused plaintext test environment editor", async () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
@@ -110,6 +110,12 @@ describe("control-api server", () => {
     expect(html).toContain("测试环境");
     expect(html).toContain("Python 解释器");
     expect(html).toContain("环境变量（.env）");
+    expect(html).toContain("保存后可直接查看和编辑");
+    expect(html).toContain("splitProjectEnvContent(projectEnv.content)");
+    expect(html).not.toContain("项目 .env 已加密保存");
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script ?? "")).not.toThrow();
     expect(html).toContain('id="projectEnvForm"');
     expect(html).toContain("/github bind");
     expect(html).not.toContain('id="projectForm"');

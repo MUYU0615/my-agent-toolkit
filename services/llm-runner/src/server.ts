@@ -6,6 +6,7 @@ import {
   formatMcpToolResult,
   injectMcpPromptSection,
   parseMcpToolCallRequest,
+  type McpToolResult,
 } from "./mcpClient.js";
 import { getRuntimeStatuses } from "./runtimeStatus.js";
 import {
@@ -152,12 +153,8 @@ async function handleChatStream(
           })));
 
           try {
-            if (!config.mcp) {
-              await pipeRuntimeStream(runtimeResult.stream, controller, encoder);
-              controller.enqueue(encoder.encode(ndjsonLine({ type: "done" })));
-              controller.close();
-              return;
-            }
+            // Buffer one runtime turn before forwarding it. This keeps an MCP
+            // protocol block private even when MCP is temporarily misconfigured.
             const finalOutput = await continueAfterMcpToolCallsStream(
               config,
               chatRequest,
@@ -207,21 +204,6 @@ async function collectRuntimeStream(stream: ReadableStream<string>): Promise<str
     }
   }
   return chunks.join("");
-}
-
-async function pipeRuntimeStream(
-  stream: ReadableStream<string>,
-  controller: ReadableStreamDefaultController<Uint8Array>,
-  encoder: TextEncoder,
-): Promise<void> {
-  const reader = stream.getReader();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
-    }
-    enqueueChunk(controller, encoder, value);
-  }
 }
 
 function enqueueChunk(
@@ -288,13 +270,32 @@ async function continueAfterMcpToolCalls(
   runtimeResult: RuntimeResult,
 ): Promise<RuntimeResult> {
   if (!config.mcp) {
-    return runtimeResult;
+    return replaceUnavailableMcpCall(runtimeResult);
   }
   let currentResult = runtimeResult;
   for (let round = 0; round < getMaxMcpToolRounds(config); round += 1) {
+    const completedOutput = outputAfterMcpToolCall(currentResult.output);
+    if (completedOutput) {
+      return { ...currentResult, output: completedOutput };
+    }
     const toolRequest = parseMcpToolCallRequest(currentResult.output);
     if (toolRequest.status === "none") {
+      if (containsMcpProtocolMarkup(currentResult.output)) {
+        currentResult = await runRuntime(config, {
+          ...chatRequest,
+          prompt: invalidMcpMarkupFeedback(),
+        });
+        continue;
+      }
       return currentResult;
+    }
+    if (toolRequest.status === "call" && toolRequest.call.tool === "project.publish") {
+      return {
+        ...currentResult,
+        output: formatProjectPublishOutcome(
+          await executeMcpToolCallResult(config, chatRequest, toolRequest.call),
+        ),
+      };
     }
     currentResult = await runRuntime(config, {
       ...chatRequest,
@@ -320,14 +321,30 @@ async function continueAfterMcpToolCallsStream(
   runtimeResult: RuntimeStreamResult,
 ): Promise<string> {
   if (!config.mcp) {
-    return collectRuntimeStream(runtimeResult.stream);
+    return replaceUnavailableMcpCallOutput(await collectRuntimeStream(runtimeResult.stream));
   }
   let currentResult = runtimeResult;
   for (let round = 0; round < getMaxMcpToolRounds(config); round += 1) {
     const output = await collectRuntimeStream(currentResult.stream);
+    const completedOutput = outputAfterMcpToolCall(output);
+    if (completedOutput) {
+      return completedOutput;
+    }
     const toolRequest = parseMcpToolCallRequest(output);
     if (toolRequest.status === "none") {
+      if (containsMcpProtocolMarkup(output)) {
+        currentResult = await runRuntimeStreamResolved(config, {
+          ...chatRequest,
+          prompt: invalidMcpMarkupFeedback(),
+        });
+        continue;
+      }
       return output;
+    }
+    if (toolRequest.status === "call" && toolRequest.call.tool === "project.publish") {
+      return formatProjectPublishOutcome(
+        await executeMcpToolCallResult(config, chatRequest, toolRequest.call),
+      );
     }
     currentResult = await runRuntimeStreamResolved(config, {
       ...chatRequest,
@@ -349,6 +366,29 @@ async function continueAfterMcpToolCallsStream(
   );
 }
 
+function outputAfterMcpToolCall(output: string): string | undefined {
+  const matches = [...output.matchAll(/<mcp_tool_call>\s*[\s\S]*?\s*<\/mcp_tool_call>/g)];
+  if (matches.length !== 1) {
+    return undefined;
+  }
+  const match = matches[0];
+  const trailingOutput = output.slice((match.index ?? 0) + match[0].length).trim();
+  return trailingOutput || undefined;
+}
+
+function replaceUnavailableMcpCall(runtimeResult: RuntimeResult): RuntimeResult {
+  return {
+    ...runtimeResult,
+    output: replaceUnavailableMcpCallOutput(runtimeResult.output),
+  };
+}
+
+function replaceUnavailableMcpCallOutput(output: string): string {
+  return parseMcpToolCallRequest(output).status === "none" && !containsMcpProtocolMarkup(output)
+    ? output
+    : "项目工具当前未正确配置，任务尚未执行。请联系管理员检查 MCP Runner 配置。";
+}
+
 function getMaxMcpToolRounds(config: RunnerConfig): number {
   return config.mcp?.max_tool_rounds ?? 4;
 }
@@ -361,9 +401,28 @@ function withoutLeakedMcpToolCall(result: RuntimeResult): RuntimeResult {
 }
 
 function withoutLeakedMcpToolCallOutput(output: string): string {
-  return parseMcpToolCallRequest(output).status === "none"
+  return parseMcpToolCallRequest(output).status === "none" && !containsMcpProtocolMarkup(output)
     ? output
     : "当前任务需要的工具调用次数过多，已停止继续调用。请缩小问题范围后重试。";
+}
+
+function containsMcpProtocolMarkup(output: string): boolean {
+  return /<\/?mcp_tool_(?:call|result)\b/i.test(output);
+}
+
+function invalidMcpMarkupFeedback(): string {
+  return formatMcpToolResult({
+    ok: false,
+    error: {
+      code: "invalid_mcp_result_markup",
+      message: [
+        "You emitted fabricated MCP result markup, so no tool was executed.",
+        "Do not write a result attribute or claim success.",
+        "Retry with exactly one real request block:",
+        '<mcp_tool_call>{"tool":"project.publish","input":{"project_key":"...","branch":"bot/meaningful-task-name","commit_message":"..."}}</mcp_tool_call>',
+      ].join(" "),
+    },
+  });
 }
 
 async function resolveMcpToolResult(
@@ -394,14 +453,22 @@ async function executeMcpToolCall(
   chatRequest: ReturnType<typeof parseChatRequest>,
   toolCall: { tool: string; input: unknown },
 ): Promise<string> {
+  return formatMcpToolResult(await executeMcpToolCallResult(config, chatRequest, toolCall));
+}
+
+async function executeMcpToolCallResult(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  toolCall: { tool: string; input: unknown },
+): Promise<McpToolResult> {
   if (!config.mcp) {
-    return formatMcpToolResult({
+    return {
       ok: false,
       error: "mcp is not configured",
-    });
+    };
   }
   try {
-    const result = await callMcpTool({
+    return await callMcpTool({
       ...config.mcp,
       ...(config.fetch ? { fetch: config.fetch } : {}),
     }, {
@@ -410,13 +477,45 @@ async function executeMcpToolCall(
       conversation_id: chatRequest.conversation_id,
       runtime: chatRequest.runtime,
     }, toolCall);
-    return formatMcpToolResult(result);
   } catch (error) {
-    return formatMcpToolResult({
+    return {
       ok: false,
       error: error instanceof Error ? error.message : "mcp tool call failed",
-    });
+    };
   }
+}
+
+function formatProjectPublishOutcome(toolResult: McpToolResult): string {
+  if (!toolResult.ok || !toolResult.result || typeof toolResult.result !== "object") {
+    return `提交和 Push 失败：${mcpErrorMessage(toolResult.error)}`;
+  }
+  const result = toolResult.result as Record<string, unknown>;
+  const branch = typeof result.branch === "string" ? result.branch : "";
+  const commit = typeof result.commit === "string" ? result.commit : "";
+  const changedPaths = Array.isArray(result.changed_paths)
+    ? result.changed_paths.filter((item): item is string => typeof item === "string")
+    : [];
+  const githubUrl = typeof result.github_url === "string" ? result.github_url : "";
+  if (!branch || !/^[0-9a-f]{40}$/i.test(commit) || changedPaths.length === 0) {
+    return "提交和 Push 失败：project.publish 返回了无效结果。";
+  }
+  return [
+    "提交并 Push 成功。",
+    `- 分支：${branch}`,
+    `- Commit：${commit}`,
+    `- 变更文件：${changedPaths.join("、")}`,
+    ...(githubUrl ? [`- GitHub：${githubUrl}`] : []),
+  ].join("\n");
+}
+
+function mcpErrorMessage(error: unknown): string {
+  if (typeof error === "string" && error.trim()) return error.trim();
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+    if (typeof record.error === "string" && record.error.trim()) return record.error.trim();
+  }
+  return "project.publish 未成功执行。";
 }
 
 async function enrichChatRequest(
@@ -427,22 +526,62 @@ async function enrichChatRequest(
     return chatRequest;
   }
   try {
-    const manifest = await fetchMcpToolManifest({
-      ...config.mcp,
-      ...(config.fetch ? { fetch: config.fetch } : {}),
-    }, {
+    const trustedContext = {
       bot_id: chatRequest.bot_id,
       user_id: chatRequest.user_id,
       conversation_id: chatRequest.conversation_id,
       runtime: chatRequest.runtime,
-    });
+    } as const;
+    const manifest = await fetchMcpToolManifest({
+      ...config.mcp,
+      ...(config.fetch ? { fetch: config.fetch } : {}),
+    }, trustedContext);
+    const projectResult = chatRequest.runtime === "kiro"
+      && manifest.tools.some((tool) => tool.name === "project.ensure")
+      ? await callMcpTool({
+        ...config.mcp,
+        ...(config.fetch ? { fetch: config.fetch } : {}),
+      }, trustedContext, {
+        tool: "project.ensure",
+        input: {},
+      })
+      : undefined;
+    const modelManifest = {
+      ...manifest,
+      tools: manifest.tools.filter((tool) => tool.name !== "project.ensure"),
+    };
+    const prompt = projectResult?.ok
+      ? injectPreparedProjectContext(chatRequest.prompt, projectResult.result)
+      : chatRequest.prompt;
     return {
       ...chatRequest,
-      prompt: injectMcpPromptSection(chatRequest.prompt, manifest),
+      prompt: injectMcpPromptSection(prompt, modelManifest),
     };
   } catch {
     return chatRequest;
   }
+}
+
+function injectPreparedProjectContext(prompt: string, value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return prompt;
+  const result = value as Record<string, unknown>;
+  const projectKey = typeof result.project_key === "string" ? result.project_key : "";
+  const path = typeof result.path === "string" ? result.path : "";
+  const branch = typeof result.branch === "string" ? result.branch : "";
+  const baseCommit = typeof result.base_commit === "string" ? result.base_commit : "";
+  if (!projectKey || !path || !branch || !/^[0-9a-f]{40}$/i.test(baseCommit)) return prompt;
+  return [
+    "<project_context>",
+    `The runner already prepared the current user's ${projectKey} repository.`,
+    `Project root: ${path}`,
+    `Current branch: ${branch}`,
+    `Current commit: ${baseCommit}`,
+    "Use native CLI file, search, edit, Git status, Python, and test commands only inside this project root.",
+    "Do not call project.ensure, clone another repository, scan parent directories, or infer a host path.",
+    "</project_context>",
+    "",
+    prompt,
+  ].join("\n");
 }
 
 async function runRuntime(
@@ -776,7 +915,11 @@ async function acquireRuntimeSessionLock(
   if (chatRequest.runtime !== "kiro") {
     return () => {};
   }
-  return sessionLocks.acquire(buildRunnerSessionId(chatRequest.runtime, chatRequest));
+  return sessionLocks.acquire([
+    chatRequest.runtime,
+    chatRequest.bot_id,
+    chatRequest.user_id,
+  ].join(":"));
 }
 
 async function fetchWithConfig(config: RunnerConfig, request: Request): Promise<Response> {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -117,9 +117,26 @@ test("host relay emits a session event for streaming calls", async () => {
 });
 
 test("host relay immediately cancels only the matching active Kiro run", async () => {
+  const projectRoot = join(
+    workspaceRoot,
+    "bot-a",
+    "users",
+    createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 32),
+    "projects",
+    "cancel-rollback",
+  );
+  await initializeGitProject(projectRoot);
+  await writeFile(join(projectRoot, "tracked.txt"), "preexisting change", "utf8");
+  await writeFile(join(projectRoot, "before.txt"), "keep me", "utf8");
   const script = [
+    "const { writeFileSync } = require('node:fs');",
     "process.stdin.resume();",
-    "process.stdin.on('end', () => { process.stdout.write('started'); setInterval(() => {}, 1000); });",
+    "process.stdin.on('end', () => {",
+    "  writeFileSync('../../projects/cancel-rollback/tracked.txt', 'changed');",
+    "  writeFileSync('../../projects/cancel-rollback/created.txt', 'remove me');",
+    "  process.stdout.write('started');",
+    "  setInterval(() => {}, 1000);",
+    "});",
   ].join(" ");
   const streamResponse = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
     method: "POST",
@@ -152,6 +169,50 @@ test("host relay immediately cancels only the matching active Kiro run", async (
     error: "kiro runtime cancelled",
     code: "runtime_cancelled",
   }]);
+  assert.equal(await readFile(join(projectRoot, "tracked.txt"), "utf8"), "preexisting change");
+  assert.equal(await readFile(join(projectRoot, "before.txt"), "utf8"), "keep me");
+  await assert.rejects(access(join(projectRoot, "created.txt")));
+});
+
+test("host relay stops timed-out work and restores the project checkpoint", async () => {
+  const projectRoot = join(
+    workspaceRoot,
+    "bot-a",
+    "users",
+    createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 32),
+    "projects",
+    "timeout-rollback",
+  );
+  await initializeGitProject(projectRoot);
+  const script = [
+    "const { writeFileSync } = require('node:fs');",
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  writeFileSync('../../projects/timeout-rollback/tracked.txt', 'changed');",
+    "  writeFileSync('../../projects/timeout-rollback/created.txt', 'remove me');",
+    "  setInterval(() => {}, 1000);",
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-timeout",
+      prompt: "long task",
+      args: ["-e", script],
+    }),
+  });
+
+  const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(events, [{
+    type: "error",
+    error: "任务执行超过时间限制，已自动停止并丢弃本次更改",
+    code: "runtime_timeout",
+  }]);
+  assert.equal(await readFile(join(projectRoot, "tracked.txt"), "utf8"), "baseline");
+  await assert.rejects(access(join(projectRoot, "created.txt")));
 });
 
 test("host relay persists the session id reported after a resumed session compacts", async () => {
@@ -400,7 +461,7 @@ test("host relay uses bot KIRO_HOME and a user-conversation working directory", 
   });
   await access(join(botRoot, ".kiro", "agents"));
   await access(join(botRoot, ".kiro", "skills"));
-  await access(join(conversationRoot, "projects"));
+  await access(join(botRoot, "users", userHash, "projects"));
   await access(join(conversationRoot, "artifacts"));
   await assert.rejects(access(join(conversationRoot, ".kiro", "skills")));
 });
@@ -561,7 +622,8 @@ test("host relay materializes the managed project .env and forwards project vari
     "conversations",
     testConversationId,
   );
-  const projectRoot = join(workspaceDir, "projects", projectName);
+  const userRoot = join(workspacesRoot, botId, "users", userHash);
+  const projectRoot = join(userRoot, "projects", projectName);
   await mkdir(projectRoot, { recursive: true });
   const projectDotenv = [
     `IM_TEST_HUB_PYTHON=${process.execPath}`,
@@ -626,7 +688,7 @@ test("host relay materializes the managed project .env and forwards project vari
     assert.equal((await stat(runtimeOutput.python)).mode & 0o777, 0o700);
     assert.equal((await stat(join(projectRoot, ".env"))).mode & 0o777, 0o600);
     assert.equal(
-      await readFile(join(workspaceDir, ".runtime", `${projectName}.dotenv-managed`), "utf8"),
+      await readFile(join(userRoot, ".runtime", `${projectName}.dotenv-managed`), "utf8"),
       "managed\n",
     );
   } finally {
@@ -640,6 +702,25 @@ test("host relay materializes the managed project .env and forwards project vari
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function initializeGitProject(projectRoot) {
+  await mkdir(projectRoot, { recursive: true });
+  await writeFile(join(projectRoot, "tracked.txt"), "baseline", "utf8");
+  execFileSync("git", ["-C", projectRoot, "init", "--quiet"]);
+  execFileSync("git", ["-C", projectRoot, "add", "tracked.txt"]);
+  execFileSync("git", [
+    "-C",
+    projectRoot,
+    "-c",
+    "user.name=Kiro Relay Test",
+    "-c",
+    "user.email=kiro-relay@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "baseline",
+  ]);
 }
 
 async function reservePort() {

@@ -168,9 +168,21 @@ export function listMcpTools(options: {
     toolDescriptor(
       "project.ensure",
       "project",
-      "Prepare the current WeCom user's bound GitHub fork in the conversation workspace. Call only when repository files are required.",
-      ["project_key"],
+      "Internal project preparation capability. The runner invokes it automatically; the model must not call it.",
+      [],
       { project_key: stringProperty() },
+      { writes: [], reads: [] },
+    ),
+    toolDescriptor(
+      "project.publish",
+      "project",
+      "Commit validated changes from the current user's shared project workspace and push a new bot/ branch to that user's bound GitHub fork. Requires explicit user authorization.",
+      ["project_key", "branch", "commit_message"],
+      {
+        project_key: stringProperty(),
+        branch: stringProperty(),
+        commit_message: stringProperty(),
+      },
       { writes: [], reads: [] },
     ),
   ].filter((tool) => !enabledTools || enabledTools.has(tool.name));
@@ -438,6 +450,17 @@ export async function callMcpTool(
       return {
         ok: true,
         result: await deps.projectClient.ensure(context, input.project_key),
+      };
+    }
+
+    if (call.tool === "project.publish") {
+      const input = parseProjectPublishInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return {
+        ok: true,
+        result: await deps.projectClient.publish(context, input),
       };
     }
 
@@ -768,7 +791,7 @@ interface DeleteInput {
 }
 
 interface ProjectEnsureInput {
-  project_key: string;
+  project_key?: string;
 }
 
 interface DocumentIngestFileInput extends DocumentCreateInput {
@@ -905,7 +928,22 @@ function parseDeleteInput(value: unknown): DeleteInput {
 function parseProjectEnsureInput(value: unknown): ProjectEnsureInput {
   const record = requireRecord(value, "project ensure input");
   return {
-    project_key: readRequiredString(record, "project_key"),
+    ...(record.project_key !== undefined
+      ? { project_key: readRequiredString(record, "project_key") }
+      : {}),
+  };
+}
+
+function parseProjectPublishInput(value: unknown): {
+  projectKey: string;
+  branch: string;
+  commitMessage: string;
+} {
+  const record = requireRecord(value, "project publish input");
+  return {
+    projectKey: readRequiredString(record, "project_key"),
+    branch: readRequiredString(record, "branch"),
+    commitMessage: readRequiredString(record, "commit_message"),
   };
 }
 

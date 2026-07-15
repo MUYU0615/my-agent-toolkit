@@ -98,6 +98,20 @@ describe("runtime output presentation", () => {
     expect(presentRuntimeOutput(output).visibleText).toBe(report);
   });
 
+  it("blocks fabricated MCP publish results at the WeCom presentation boundary", () => {
+    const output = [
+      '<mcp_tool_call result="{\\"ok\\":true}">',
+      "</mcp_tool_call>",
+      "提交成功。",
+    ].join("\n");
+
+    const presentation = presentRuntimeOutput(output);
+    expect(presentation.visibleText).toBe(
+      "检测到无效的内部工具结果，未执行提交或 Push。请重试。",
+    );
+    expect(presentation.diagnosticText).toContain("mcp_tool_call");
+  });
+
   it("hides internal E2E artifact paths from user-visible reports", () => {
     const output = [
       "## 执行结果",

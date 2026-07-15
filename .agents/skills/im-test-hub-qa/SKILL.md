@@ -10,9 +10,9 @@ Use this skill as the Bot-facing entrypoint for real `im-test-hub` project work.
 ## Establish The Project Context
 
 1. Decide whether repository files are actually required. Ordinary questions, Jira readiness analysis, and testcase Markdown review do not require repository access.
-2. In a managed WeCom Bot conversation, require the current user to bind a personal GitHub fork with `/github bind` before any repository work.
-3. Call `project.ensure` once with `{"project_key":"im-test-hub"}` whenever repository files are required, including project overview, Case discovery, code changes, execution, and report analysis. Use the returned relative `path` as `<IM_TEST_HUB_ROOT>`. After that, use the CLI's native filesystem and shell capabilities (`rg`, file reads, edits, Git, Python, and pytest) inside this checkout. Do not run `git clone` yourself and do not ask the user for a local path.
-4. If `project.ensure` reports that the GitHub fork is not bound, tell the current user to send `/github bind`; do not ask for a Token in chat and do not fall back to another user's checkout. If `project.ensure` is unavailable, disabled, or fails, stop all repository work and report the error. Never use shell or file tools to scan the current directory, parent directories, `$HOME`, or `~/Documents`; never derive a repository root from `$IM_TEST_HUB_PYTHON` or another environment variable; and never use a host checkout or another user's checkout as a fallback.
+2. In a managed WeCom Bot conversation, the runner prepares the current user's bound GitHub fork automatically and injects a trusted `<project_context>`. Use its relative `Project root` as `<IM_TEST_HUB_ROOT>`; do not call `project.ensure` yourself.
+3. After receiving the managed project context, use the CLI's native filesystem and shell capabilities (`rg`, file reads, edits, Git status, Python, and pytest) only inside this checkout. Do not run `git clone` yourself and do not ask the user for a local path.
+4. If a managed WeCom repository task has no `<project_context>`, tell the current user to send `/github bind` or report that project preparation is unavailable. Do not ask for a Token in chat, scan the current directory, parent directories, `$HOME`, or `~/Documents`, derive a repository root from `$IM_TEST_HUB_PYTHON`, or use a host/other user's checkout as a fallback.
 5. Outside managed WeCom, locate the real `im-test-hub` checkout. Prefer the current working directory when it contains `AGENTS.md`, `src/`, `tests/`, and `e2e_scripts/`; otherwise use the caller-provided path. Do not guess a developer-specific absolute path.
 6. Run the read-only probe:
 
@@ -40,6 +40,8 @@ Classify the input without forcing a Jira dependency:
 Do not rerun Jira analysis when the conversation already contains an approved case version. Do not require a Jira key for direct code generation, case automation, test execution, or report analysis.
 
 If the request lacks a concrete behavior, target side, expected observation, or environment needed to design a valid case, ask only the single most important question. If the user already gave exact cases or explicitly asked to implement the stated behavior, treat that as implementation authorization. For governed `tests/live` behavior changes, still follow the project `im-test-hub-create-case` confirmation rule.
+
+When the user explicitly delegates testcase selection with wording such as “随便选一个”, “你认为有意义的”, or “目前没有的 Case”, treat that as authorization to choose autonomously. Inspect existing tests first, select one meaningful non-duplicate scenario, state the chosen scenario briefly, and continue through design, implementation, and requested verification without presenting candidate menus or asking the user to choose priority. Ask a question only when a missing external decision would materially change safety or validity.
 
 ## Route To The Correct Project Skill
 
@@ -98,9 +100,9 @@ When a caller-authorized real config is available, execute one case at a time:
 ```
 
 In managed WeCom, execution remains a normal Kiro CLI repository operation after
-`project.ensure`; do not wrap pytest arguments in another MCP tool. The runtime
+the runner supplies `<project_context>`; do not wrap pytest arguments in another MCP tool. The runtime
 injects the WebUI test environment and materializes its managed `.env` in the
-conversation checkout. When the WebUI project environment is configured, treat
+current user's shared project checkout. When the WebUI project environment is configured, treat
 that managed `.env` as the caller-authorized runtime config. Do not ask the user
 to choose or provide another YAML merely because `run_e2e.sh` has a required
 `--config` argument.
@@ -203,3 +205,7 @@ verification that ran, and distinguish generated code from verified behavior.
 - Do not commit, push, force-push, open a PR, or trigger GitHub Actions without explicit authorization for that action.
 - Before a requested commit or PR, show changed paths, test results, skipped real verification, and known failures.
 - Never make Kiro or a report-generation prompt handle GitHub credentials.
+- In managed WeCom, use `project.publish` only after the current user explicitly asks to commit or push the prepared changes. Do not run native `git commit` or `git push`.
+- Pass the prepared `project_key`, a concise meaningful `bot/<task-name>` branch based on the actual Case, and a single-line `commit_message`. The service validates the branch and current workspace state; never pass a base Commit, repository URL, Token, local path, force option, or arbitrary Git arguments.
+- Publish only source, tests, and required project documentation. Do not publish `.env`, credentials, keys, logs, `output/`, evidence, `allure-results/`, or `allure-report/`.
+- After a successful publish, return the branch, commit SHA, changed paths, and GitHub link from the tool result. If publishing fails, report the error and do not claim that the branch reached GitHub.

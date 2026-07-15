@@ -23,6 +23,13 @@ export function presentRuntimeOutput(value: string): RuntimeOutputPresentation {
       /((?:[✓●⦁-]\s*)?Execution failed after\s+\d+(?:\.\d+)?s:?)(?=\S)/gi,
       "$1\n",
     );
+  if (/<\/?mcp_tool_(?:call|result)\b/i.test(normalized)) {
+    return {
+      visibleText: "检测到无效的内部工具结果，未执行提交或 Push。请重试。",
+      diagnosticText: normalized,
+      diagnosticInProgress: false,
+    };
+  }
   const visible: string[] = [];
   const diagnostics: string[] = [];
   let inToolBlock = false;

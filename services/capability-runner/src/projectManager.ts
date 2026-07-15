@@ -14,7 +14,7 @@ export interface EnsureProjectInput {
   botId: string;
   userId: string;
   conversationId: string;
-  projectKey: string;
+  projectKey?: string;
 }
 
 export interface EnsureProjectResult {
@@ -23,6 +23,19 @@ export interface EnsureProjectResult {
   branch: string;
   base_commit: string;
   reused: boolean;
+}
+
+export interface PublishProjectInput extends EnsureProjectInput {
+  branch: string;
+  commitMessage: string;
+}
+
+export interface PublishProjectResult {
+  project_key: string;
+  branch: string;
+  commit: string;
+  changed_paths: string[];
+  github_url?: string;
 }
 
 interface UserProjectBinding {
@@ -53,10 +66,17 @@ export interface CreateProjectManagerOptions {
   ) => Promise<void>;
   refreshRepository?: (repositoryPath: string, branch: string, accessToken?: string) => Promise<void>;
   resolveRevision?: (repositoryPath: string) => Promise<string>;
+  pushBranch?: (
+    repositoryPath: string,
+    repositoryUrl: string,
+    branch: string,
+    accessToken: string,
+  ) => Promise<void>;
 }
 
 export interface ProjectManager {
   ensure(input: EnsureProjectInput): Promise<EnsureProjectResult>;
+  publish(input: PublishProjectInput): Promise<PublishProjectResult>;
 }
 
 export function createProjectManager(options: CreateProjectManagerOptions): ProjectManager {
@@ -65,12 +85,14 @@ export function createProjectManager(options: CreateProjectManagerOptions): Proj
   const cloneWorkspace = options.cloneWorkspace ?? cloneWorkspaceFromBaseline;
   const refreshRepository = options.refreshRepository ?? refreshGitRepository;
   const resolveRevision = options.resolveRevision ?? resolveGitRevision;
+  const pushBranch = options.pushBranch ?? pushGitBranch;
   const workspaceRoot = initializeWorkspaceRoot(options.kiroWorkspaceRoot);
   const cacheRoot = initializeRepositoryCacheRoot(
     options.repositoryCacheRoot ?? join(workspaceRoot, ".project-cache"),
   );
   const baselineRefreshMs = options.baselineRefreshMs ?? 30_000;
   const pending = new Map<string, Promise<EnsureProjectResult>>();
+  const pendingPublishes = new Map<string, Promise<PublishProjectResult>>();
   const pendingBaselines = new Map<string, Promise<PreparedBaseline>>();
   const lastBaselineRefresh = new Map<string, number>();
 
@@ -120,34 +142,62 @@ export function createProjectManager(options: CreateProjectManagerOptions): Proj
     return operation;
   }
 
-  return {
-    async ensure(input) {
+  async function configuredProject(input: EnsureProjectInput): Promise<{
+    binding: UserProjectBinding;
+    userRoot: string;
+    conversationRoot: string;
+    destination: string;
+  }> {
       const botId = requireSafeSegment(input.botId, "bot_id");
       const conversationId = requireSafeSegment(input.conversationId, "conversation_id");
       const userId = requireText(input.userId, "user_id");
-      const projectKey = requireSafeSegment(input.projectKey, "project_key");
-      const binding = await loadUserProjectBinding(fetchImpl, options, botId, userId, projectKey);
+      const requestedProjectKey = input.projectKey === undefined
+        ? undefined
+        : requireSafeSegment(input.projectKey, "project_key");
+      const binding = await loadUserProjectBinding(fetchImpl, options, botId, userId, requestedProjectKey);
 
-      const conversationRoot = ensureConversationRoot(
+      const { userRoot, conversationRoot } = ensureUserProjectRoots(
         workspaceRoot,
         botId,
         userId,
         conversationId,
       );
-      const projectsRoot = ensureSafeDirectory(join(conversationRoot, "projects"));
+      const projectsRoot = ensureSafeDirectory(join(userRoot, "projects"));
       const destination = resolve(projectsRoot, binding.project_directory);
       assertPathInside(projectsRoot, destination);
+      return { binding, userRoot, conversationRoot, destination };
+  }
+
+  return {
+    async ensure(input) {
+      const botId = requireSafeSegment(input.botId, "bot_id");
+      const userId = requireText(input.userId, "user_id");
+      const { binding, userRoot, conversationRoot, destination } = await configuredProject(input);
+      const projectsRoot = resolve(destination, "..");
+      assertPathInside(userRoot, projectsRoot);
+
+      const legacyProjectsRoot = resolve(conversationRoot, "projects");
+      const legacyDestination = resolve(legacyProjectsRoot, binding.project_directory);
+      assertPathInside(conversationRoot, legacyProjectsRoot);
+      assertPathInside(legacyProjectsRoot, legacyDestination);
 
       const existing = pending.get(destination);
       if (existing) {
         return existing;
       }
       const operation = (async () => {
+        if (!existsSync(destination) && existsSync(legacyDestination)) {
+          if (!lstatSync(legacyDestination).isDirectory() || !existsSync(join(legacyDestination, ".git"))) {
+            throw new Error(`legacy project destination is not a Git repository: ${binding.project_directory}`);
+          }
+          cleanupLegacyManagedProjectDotenv(conversationRoot, legacyDestination, binding.project_directory);
+          renameSync(legacyDestination, destination);
+        }
         if (existsSync(destination)) {
           if (!lstatSync(destination).isDirectory() || !existsSync(join(destination, ".git"))) {
             throw new Error(`project destination exists but is not a Git repository: ${binding.project_directory}`);
           }
-          cleanupManagedProjectDotenv(conversationRoot, destination, binding.project_directory);
+          cleanupManagedProjectDotenv(userRoot, destination, binding.project_directory);
           return projectResult(binding, conversationRoot, destination, true, await resolveRevision(destination));
         }
         const baseline = await prepareBaseline({ botId, userId, binding });
@@ -166,10 +216,64 @@ export function createProjectManager(options: CreateProjectManagerOptions): Proj
             rmSync(temporaryDestination, { recursive: true, force: true });
           }
         }
-        cleanupManagedProjectDotenv(conversationRoot, destination, binding.project_directory);
+        cleanupManagedProjectDotenv(userRoot, destination, binding.project_directory);
         return projectResult(binding, conversationRoot, destination, false, baseline.commit);
       })().finally(() => pending.delete(destination));
       pending.set(destination, operation);
+      return operation;
+    },
+    async publish(input) {
+      const { binding, userRoot, destination } = await configuredProject(input);
+      const branch = requirePublishBranch(input.branch, binding.project_default_branch);
+      const commitMessage = requireCommitMessage(input.commitMessage);
+      const existing = pendingPublishes.get(destination);
+      if (existing) return existing;
+      const operation = (async () => {
+        if (!existsSync(destination) || !lstatSync(destination).isDirectory() || !existsSync(join(destination, ".git"))) {
+          throw new Error("project workspace is not prepared; call project.ensure first");
+        }
+        cleanupManagedProjectDotenv(userRoot, destination, binding.project_directory);
+        await assertSafeLocalGitConfig(destination);
+        const originalCommit = await resolveRevision(destination);
+        const originalBranch = (await runGit(["-C", destination, "branch", "--show-current"])).trim();
+        const changedPaths = await listPublishableChanges(destination);
+        if (changedPaths.length === 0) {
+          throw new Error("project workspace has no changes to publish");
+        }
+        if (await gitRefExists(destination, `refs/heads/${branch}`)) {
+          throw new Error(`publish branch already exists locally: ${branch}`);
+        }
+        await runGit(["-C", destination, "switch", "-c", branch]);
+        try {
+          await runGit(["-C", destination, "add", "--all"]);
+          const stagedPaths = parseNulSeparated(await runGit([
+            "-C", destination, "diff", "--cached", "--name-only", "-z",
+          ]));
+          validatePublishPaths(destination, stagedPaths);
+          await runGit([
+            "-C", destination,
+            "-c", "user.name=IM Test Hub Bot",
+            "-c", "user.email=im-test-hub-bot@users.noreply.github.com",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "commit.gpgsign=false",
+            "commit", "-m", commitMessage,
+          ]);
+          await pushBranch(destination, binding.project_repository_url, branch, binding.access_token);
+          const commit = await resolveRevision(destination);
+          const githubUrl = githubBranchUrl(binding.project_repository_url, branch);
+          return {
+            project_key: binding.project_key,
+            branch,
+            commit,
+            changed_paths: stagedPaths.sort(),
+            ...(githubUrl ? { github_url: githubUrl } : {}),
+          };
+        } catch (error) {
+          await rollbackPublish(destination, originalBranch, originalCommit, branch);
+          throw error;
+        }
+      })().finally(() => pendingPublishes.delete(destination));
+      pendingPublishes.set(destination, operation);
       return operation;
     },
   };
@@ -181,11 +285,11 @@ interface PreparedBaseline {
 }
 
 function cleanupManagedProjectDotenv(
-  conversationRoot: string,
+  userRoot: string,
   destination: string,
   projectDirectory: string,
 ): void {
-  const runtimeRoot = ensureSafeDirectory(join(conversationRoot, ".runtime"));
+  const runtimeRoot = ensureSafeDirectory(join(userRoot, ".runtime"));
   const marker = resolve(runtimeRoot, `${projectDirectory}.dotenv-managed`);
   const dotenvPath = resolve(destination, ".env");
   assertPathInside(runtimeRoot, marker);
@@ -198,6 +302,28 @@ function cleanupManagedProjectDotenv(
     const stat = lstatSync(dotenvPath);
     if (stat.isSymbolicLink() || !stat.isFile()) {
       throw new Error("project .env path is unsafe");
+    }
+    rmSync(dotenvPath);
+  }
+  rmSync(marker);
+}
+
+function cleanupLegacyManagedProjectDotenv(
+  conversationRoot: string,
+  destination: string,
+  projectDirectory: string,
+): void {
+  const runtimePath = resolve(conversationRoot, ".runtime");
+  const marker = resolve(runtimePath, `${projectDirectory}.dotenv-managed`);
+  const dotenvPath = resolve(destination, ".env");
+  assertPathInside(conversationRoot, runtimePath);
+  assertPathInside(runtimePath, marker);
+  assertPathInside(destination, dotenvPath);
+  if (!existsSync(marker)) return;
+  if (existsSync(dotenvPath)) {
+    const stat = lstatSync(dotenvPath);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error("legacy project .env path is unsafe");
     }
     rmSync(dotenvPath);
   }
@@ -225,7 +351,7 @@ async function loadUserProjectBinding(
   options: CreateProjectManagerOptions,
   botId: string,
   userId: string,
-  projectKey: string,
+  projectKey?: string,
 ): Promise<UserProjectBinding> {
   const internalToken = options.userCredentialsInternalToken?.trim();
   if (!internalToken) {
@@ -236,8 +362,8 @@ async function loadUserProjectBinding(
     bot_id: botId,
     wecom_user_id: userId,
     provider: "github_fork",
-    project_key: projectKey,
   });
+  if (projectKey) query.set("project_key", projectKey);
   const response = await fetchImpl(
     `${baseUrl}/internal/user-credentials/project-git?${query}`,
     { headers: { authorization: `Bearer ${internalToken}` } },
@@ -246,26 +372,30 @@ async function loadUserProjectBinding(
   if (!response.ok) {
     throw new Error(typeof body.error === "string" ? body.error : "failed to load GitHub fork binding");
   }
+  const resolvedProjectKey = requireSafeSegment(body.project_key ?? projectKey, "project_key");
   return {
-    project_key: requireSafeSegment(body.project_key ?? projectKey, "project_key"),
+    project_key: resolvedProjectKey,
     project_repository_url: requireText(body.repository_url, "repository_url"),
     project_default_branch: requireText(body.branch, "branch"),
-    project_directory: projectKey,
+    project_directory: resolvedProjectKey,
     access_token: requireText(body.access_token, "access_token", false),
   };
 }
 
-function ensureConversationRoot(
+function ensureUserProjectRoots(
   workspaceRoot: string,
   botId: string,
   userId: string,
   conversationId: string,
-): string {
+): { userRoot: string; conversationRoot: string } {
   const botRoot = ensureSafeDirectory(join(workspaceRoot, botId));
   const usersRoot = ensureSafeDirectory(join(botRoot, "users"));
   const userRoot = ensureSafeDirectory(join(usersRoot, hashUserId(userId)));
   const conversationsRoot = ensureSafeDirectory(join(userRoot, "conversations"));
-  return ensureSafeDirectory(join(conversationsRoot, conversationId));
+  return {
+    userRoot,
+    conversationRoot: ensureSafeDirectory(join(conversationsRoot, conversationId)),
+  };
 }
 
 function initializeWorkspaceRoot(configuredRoot: string): string {
@@ -326,6 +456,158 @@ function requireGitRef(value: unknown, field: string): string {
   return ref;
 }
 
+function requirePublishBranch(value: unknown, defaultBranch: string): string {
+  const branch = requireGitRef(value, "branch");
+  if (!branch.startsWith("bot/") || branch.length > 200) {
+    throw new Error("publish branch must start with bot/ and contain at most 200 characters");
+  }
+  if (branch === requireGitRef(defaultBranch, "project_default_branch")) {
+    throw new Error("publishing directly to the default branch is not allowed");
+  }
+  return branch;
+}
+
+function requireCommitMessage(value: unknown): string {
+  const message = requireText(value, "commit_message");
+  if (message.length > 200 || /[\r\n]/.test(message)) {
+    throw new Error("commit_message must be a single line of at most 200 characters");
+  }
+  return message;
+}
+
+async function assertSafeLocalGitConfig(repositoryPath: string): Promise<void> {
+  const keys = (await runGit([
+    "-C", repositoryPath, "config", "--local", "--no-includes", "--name-only", "--list",
+  ])).split(/\r?\n/).map((key) => key.trim().toLowerCase()).filter(Boolean);
+  const unsafeKey = keys.find((key) => (
+    key === "core.hookspath"
+    || key === "core.fsmonitor"
+    || key === "core.attributesfile"
+    || key === "core.sshcommand"
+    || key === "credential.helper"
+    || key === "include.path"
+    || (key.startsWith("includeif.") && key.endsWith(".path"))
+    || (key.startsWith("filter.") && [".clean", ".smudge", ".process"].some((suffix) => key.endsWith(suffix)))
+    || (key.startsWith("diff.") && [".command", ".textconv"].some((suffix) => key.endsWith(suffix)))
+    || (key.startsWith("url.") && [".insteadof", ".pushinsteadof"].some((suffix) => key.endsWith(suffix)))
+    || (key.startsWith("http.") && [".extraheader", ".proxy"].some((suffix) => key.endsWith(suffix)))
+  ));
+  if (unsafeKey) {
+    throw new Error(`project Git config contains a blocked setting: ${unsafeKey}`);
+  }
+}
+
+async function listPublishableChanges(repositoryPath: string): Promise<string[]> {
+  const records = parseNulSeparated(await runGit([
+    "-C", repositoryPath, "status", "--porcelain=v1", "-z", "--untracked-files=all",
+  ]));
+  const paths: string[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.length < 4 || record[2] !== " ") {
+      throw new Error("project Git status is invalid");
+    }
+    paths.push(record.slice(3));
+    if (record[0] === "R" || record[0] === "C" || record[1] === "R" || record[1] === "C") {
+      const sourcePath = records[index + 1];
+      if (!sourcePath) throw new Error("project Git rename status is invalid");
+      paths.push(sourcePath);
+      index += 1;
+    }
+  }
+  return validatePublishPaths(repositoryPath, [...new Set(paths)]);
+}
+
+function validatePublishPaths(repositoryPath: string, paths: string[]): string[] {
+  if (paths.length > 100) {
+    throw new Error("project publish contains more than 100 changed paths");
+  }
+  let totalBytes = 0;
+  for (const path of paths) {
+    const normalized = path.replace(/\\/g, "/");
+    const segments = normalized.split("/");
+    const basename = segments.at(-1)?.toLowerCase() ?? "";
+    if (
+      normalized.startsWith("/")
+      || segments.some((segment) => !segment || segment === "." || segment === "..")
+      || segments.some((segment) => [".git", ".runtime", ".venv", "node_modules"].includes(segment))
+      || ["output", "log", "logs", "allure-results", "allure-report"].includes(segments[0])
+      || (basename.startsWith(".env") && ![".env.example", ".env.template"].includes(basename))
+      || ["credentials.json", "cookies.json"].includes(basename)
+      || [".pem", ".key", ".p12", ".pfx"].some((suffix) => basename.endsWith(suffix))
+    ) {
+      throw new Error(`project publish contains a blocked path: ${normalized}`);
+    }
+    const absolutePath = resolve(repositoryPath, normalized);
+    assertPathInside(repositoryPath, absolutePath);
+    if (existsSync(absolutePath)) {
+      const stat = lstatSync(absolutePath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`project publish cannot include symlinks: ${normalized}`);
+      }
+      if (stat.isFile()) {
+        if (stat.size > 1024 * 1024) {
+          throw new Error(`project publish file exceeds 1 MiB: ${normalized}`);
+        }
+        totalBytes += stat.size;
+      }
+    }
+  }
+  if (totalBytes > 5 * 1024 * 1024) {
+    throw new Error("project publish exceeds the 5 MiB changed-file limit");
+  }
+  return paths;
+}
+
+function parseNulSeparated(value: string): string[] {
+  return value.split("\0").filter(Boolean);
+}
+
+async function gitRefExists(repositoryPath: string, ref: string): Promise<boolean> {
+  try {
+    await runGit(["-C", repositoryPath, "show-ref", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function rollbackPublish(
+  repositoryPath: string,
+  originalBranch: string,
+  originalCommit: string,
+  publishBranch: string,
+): Promise<void> {
+  try {
+    await runGit(["-C", repositoryPath, "reset", "--mixed", originalCommit]);
+    if (originalBranch) {
+      await runGit(["-C", repositoryPath, "switch", originalBranch]);
+    } else {
+      await runGit(["-C", repositoryPath, "switch", "--detach", originalCommit]);
+    }
+    await runGit(["-C", repositoryPath, "branch", "-D", publishBranch]);
+  } catch {
+    // Preserve the original publish error. The repository remains available for manual recovery.
+  }
+}
+
+function githubBranchUrl(repositoryUrl: string, branch: string): string | undefined {
+  let repositoryPath: string | undefined;
+  try {
+    const url = new URL(repositoryUrl);
+    if (url.protocol === "https:" && url.hostname.toLowerCase() === "github.com") {
+      repositoryPath = url.pathname.replace(/^\/+|\/+$/g, "");
+    }
+  } catch {
+    const match = repositoryUrl.match(/^git@github\.com:([^\s]+)$/i);
+    repositoryPath = match?.[1];
+  }
+  if (!repositoryPath) return undefined;
+  repositoryPath = repositoryPath.replace(/\.git$/i, "");
+  const encodedBranch = branch.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${repositoryPath}/tree/${encodedBranch}`;
+}
+
 function cloneGitRepository(
   repositoryUrl: string,
   branch: string,
@@ -346,6 +628,8 @@ function cloneGitRepository(
       stdio: ["ignore", "ignore", "pipe"],
       env: {
         ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
         ...(accessToken ? gitCredentialEnv(accessToken) : { GIT_TERMINAL_PROMPT: "0" }),
       },
     });
@@ -403,6 +687,21 @@ async function refreshGitRepository(repositoryPath: string, branch: string, acce
   ]);
 }
 
+async function pushGitBranch(
+  repositoryPath: string,
+  repositoryUrl: string,
+  branch: string,
+  accessToken: string,
+): Promise<void> {
+  await runGit([
+    "-C", repositoryPath,
+    "push",
+    "--porcelain",
+    repositoryUrl,
+    `HEAD:refs/heads/${requireGitRef(branch, "branch")}`,
+  ], accessToken);
+}
+
 async function resolveGitRevision(repositoryPath: string): Promise<string> {
   const output = await runGit(["-C", repositoryPath, "rev-parse", "HEAD"]);
   const revision = output.trim();
@@ -416,7 +715,12 @@ function runGit(args: string[], accessToken?: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn("git", args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...(accessToken ? gitCredentialEnv(accessToken) : { GIT_TERMINAL_PROMPT: "0" }) },
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        ...(accessToken ? gitCredentialEnv(accessToken) : { GIT_TERMINAL_PROMPT: "0" }),
+      },
     });
     let stdout = "";
     let stderr = "";

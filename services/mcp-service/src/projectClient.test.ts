@@ -19,7 +19,7 @@ describe("project client", () => {
       user_id: "user-a",
       conversation_id: "conv-1",
       runtime: "kiro",
-    }, "im-test-hub")).resolves.toEqual({
+    })).resolves.toEqual({
       path: "projects/im-test-hub",
       reused: false,
     });
@@ -31,7 +31,28 @@ describe("project client", () => {
     await expect(requests[0].json()).resolves.toEqual({
       user_id: "user-a",
       conversation_id: "conv-1",
+    });
+
+    await client.publish({
+      bot_id: "qa-bot",
+      user_id: "user-a",
+      conversation_id: "conv-1",
+      runtime: "kiro",
+    }, {
+      projectKey: "im-test-hub",
+      branch: "bot/add-case",
+      commitMessage: "test: add case",
+    });
+    expect(requests[1].url).toBe(
+      "http://capability-runner:8700/internal/bots/qa-bot/projects/publish",
+    );
+    expect(requests[1].headers.get("x-project-runner-token")).toBe("runner-secret");
+    await expect(requests[1].json()).resolves.toEqual({
+      user_id: "user-a",
+      conversation_id: "conv-1",
       project_key: "im-test-hub",
+      branch: "bot/add-case",
+      commit_message: "test: add case",
     });
   });
 

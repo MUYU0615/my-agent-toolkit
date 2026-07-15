@@ -35,13 +35,13 @@ describe("loadRunnerConfig", () => {
     });
   });
 
-  it("uses a five-minute Kiro timeout by default", () => {
+  it("uses a fifteen-minute Kiro timeout by default", () => {
     const config = loadRunnerConfig({
       LLM_RUNNER_ENABLED_RUNTIMES: "kiro",
       KIRO_COMMAND: "/usr/local/bin/kiro-cli",
     });
 
-    expect(config.kiro?.timeout_ms).toBe(300_000);
+    expect(config.kiro?.timeout_ms).toBe(900_000);
   });
 
   it("loads optional MCP service config from env", () => {

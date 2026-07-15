@@ -153,6 +153,16 @@ function runProcess(
 
       const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
       if (code !== 0) {
+        if (isRuntimeTimeoutDiagnostic(runtimeStderr.diagnostics)) {
+          reject(
+            new RuntimeExecutionError(
+              "runtime_timeout",
+              504,
+              "任务执行超过时间限制，已自动停止并丢弃本次更改",
+            ),
+          );
+          return;
+        }
         reject(
           new RuntimeExecutionError(
             "runtime_exit",
@@ -234,6 +244,16 @@ function streamProcess(
         const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
         if (code !== 0) {
           resolveProviderSessionId(undefined);
+          if (isRuntimeTimeoutDiagnostic(runtimeStderr.diagnostics)) {
+            controller.error(
+              new RuntimeExecutionError(
+                "runtime_timeout",
+                504,
+                "任务执行超过时间限制，已自动停止并丢弃本次更改",
+              ),
+            );
+            return;
+          }
           controller.error(
             new RuntimeExecutionError(
               "runtime_exit",
@@ -344,6 +364,10 @@ function parseRuntimeStderr(stderr: string): {
     ...(providerSessionId ? { provider_session_id: providerSessionId } : {}),
     diagnostics: diagnostics.join("\n"),
   };
+}
+
+function isRuntimeTimeoutDiagnostic(diagnostics: string): boolean {
+  return /runtime timed out|超过时间限制/.test(diagnostics);
 }
 
 function isKiroSessionId(value: unknown): value is string {

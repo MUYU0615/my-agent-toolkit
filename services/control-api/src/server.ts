@@ -2338,6 +2338,7 @@ function renderChannelWorkbenchPage(): string {
       "memory.stats",
       "search.query",
       "project.ensure",
+      "project.publish",
     ];
 
     function setToast(message, isError = false) {
@@ -2693,20 +2694,37 @@ function renderChannelWorkbenchPage(): string {
     }
 
     function renderProjectConfig(bot, projectEnv) {
+      const values = splitProjectEnvContent(projectEnv.content);
       return '<div class="form-grid">' +
         '<div class="test-env-summary"><div><strong>用户仓库</strong><div class="subtle">由用户在企业微信发送 <code>/github bind</code> 绑定个人 Fork。</div></div><span class="badge ok">按用户隔离</span></div>' +
         '<fieldset class="field-group test-env-card"><legend>本机测试环境</legend>' +
-          '<div class="subtle">仅保存执行测试所需配置。内容加密保存，真实值不会回显，也不会写入仓库。</div>' +
+          '<div class="subtle">仅保存执行测试所需配置。保存后可直接查看和编辑，不会提交到用户仓库。</div>' +
           '<div>' + badge(projectEnv.configured ? "已配置" : "未配置", projectEnv.configured ? "ok" : "warn") +
             (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(formatBeijingTime(projectEnv.updated_at)) + '</span>' : '') + '</div>' +
           '<form id="projectEnvForm" class="form-grid">' +
-            '<label>Python 解释器<input name="python_path" required spellcheck="false" autocomplete="off" placeholder="/Users/name/work/im-test-hub/.venv/bin/python"></label>' +
-            '<label>环境变量（.env）<textarea name="env_content" required spellcheck="false" autocomplete="off" placeholder="APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
+            '<label>Python 解释器<input name="python_path" required spellcheck="false" autocomplete="off" value="' + escapeHtml(values.pythonPath) + '" placeholder="/Users/name/work/im-test-hub/.venv/bin/python"></label>' +
+            '<label>环境变量（.env）<textarea name="env_content" required spellcheck="false" autocomplete="off" placeholder="APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret">' + escapeHtml(values.envContent) + '</textarea></label>' +
             '<div class="tools test-env-actions"><button type="button" class="secondary" data-action="modal-cancel">取消</button><button type="submit">' + (projectEnv.configured ? "更新配置" : "保存配置") + '</button>' +
               (projectEnv.configured ? '<button type="button" class="danger" data-action="delete-project-env">删除 .env</button>' : '') + '</div>' +
           '</form>' +
         '</fieldset>' +
       '</div>';
+    }
+
+    function splitProjectEnvContent(content) {
+      const envLines = [];
+      let pythonPath = "";
+      for (const line of String(content || "").split(/\\r?\\n/)) {
+        if (!pythonPath && line.startsWith("IM_TEST_HUB_PYTHON=")) {
+          pythonPath = line.slice("IM_TEST_HUB_PYTHON=".length);
+        } else {
+          envLines.push(line);
+        }
+      }
+      return {
+        pythonPath,
+        envContent: envLines.join("\\n").replace(/^\\n+|\\n+$/g, ""),
+      };
     }
 
     function openCapabilityModal(detail) {
@@ -2950,10 +2968,9 @@ function renderChannelWorkbenchPage(): string {
             updated_by_wecom_user_id: detail.admin?.wecom_user_id || "webui",
           }),
         });
-        formElement.reset();
         await loadDetail(state.selectedChannelId);
         openProjectModal(state.details.get(state.selectedChannelId));
-        setToast("项目 .env 已加密保存。");
+        setToast("测试环境已保存。");
       } catch (error) {
         setToast(error.error || "项目 .env 保存失败", true);
       }

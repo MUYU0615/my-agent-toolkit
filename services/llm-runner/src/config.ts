@@ -57,7 +57,7 @@ export function loadRunnerConfig(
     config.kiro = {
       command,
       args: parseArgs(env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools"),
-      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 300_000),
+      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 900_000),
     };
     const relayUrl = env.KIRO_RELAY_URL?.trim();
     if (relayUrl) {

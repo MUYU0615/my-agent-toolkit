@@ -250,7 +250,12 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
 
       const result = await handleBotMessage(messageInput, workerConfig);
       await sendWorkerResult(workerConfig.wecomClient, message.conversationId, result);
-    } catch (_error) {
+    } catch (error) {
+      console.error("[wecom] message handling failed", {
+        botId: config.botId,
+        conversationId: message.conversationId,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
       await workerConfig.wecomClient.sendText(
         message.conversationId,
         "机器人处理失败，请稍后重试。",

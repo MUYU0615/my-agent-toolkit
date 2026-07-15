@@ -1,17 +1,28 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, timingSafeEqual } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
-import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const port = Number.parseInt(process.env.KIRO_HOST_RELAY_PORT ?? "8210", 10);
 const host = process.env.KIRO_HOST_RELAY_HOST ?? "127.0.0.1";
 const command = process.env.KIRO_COMMAND ?? "/Users/dujiepeng/.local/bin/kiro-cli";
 const args = parseArgs(process.env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools");
-const timeoutMs = Number.parseInt(process.env.KIRO_TIMEOUT_MS ?? "300000", 10);
+const timeoutMs = Number.parseInt(process.env.KIRO_TIMEOUT_MS ?? "900000", 10);
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const workspaceRoot = initializeWorkspaceRoot(
   process.env.KIRO_WORKSPACE_ROOT ?? join(homedir(), "Documents", "KiroBotWorkspaces"),
@@ -57,8 +68,9 @@ const server = createServer(async (request, response) => {
         return;
       }
       const runtimeWorkspace = resolveRuntimeWorkspace(payload);
-      const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
-      const runtimeEnv = prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome);
+      const { botRoot, userRoot, workspaceDir, kiroHome } = runtimeWorkspace;
+      const runtimeEnv = prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome);
+      const projectCheckpoint = createProjectCheckpoint(userRoot);
 
       response.writeHead(200, {
         "content-type": "application/x-ndjson",
@@ -71,7 +83,7 @@ const server = createServer(async (request, response) => {
         runtimeEnv,
         (effectiveArgs, sessionsBefore) => streamKiro(payload.prompt, effectiveArgs, (event) => {
           response.write(`${JSON.stringify(event)}\n`);
-        }, sessionsBefore, workspaceDir, runtimeEnv, runKeyFromPayload(payload)),
+        }, sessionsBefore, workspaceDir, runtimeEnv, runKeyFromPayload(payload), projectCheckpoint),
       );
       response.write(`${JSON.stringify({
         type: "session",
@@ -88,7 +100,11 @@ const server = createServer(async (request, response) => {
       response.end(`${JSON.stringify({
         type: "error",
         error: error instanceof Error ? error.message : "kiro relay failed",
-        ...(error instanceof RelayCancelledError ? { code: "runtime_cancelled" } : {}),
+        ...(error instanceof RelayCancelledError
+          ? { code: "runtime_cancelled" }
+          : error instanceof RelayTimeoutError
+            ? { code: "runtime_timeout" }
+            : {}),
       })}\n`);
     }
     return;
@@ -107,8 +123,9 @@ const server = createServer(async (request, response) => {
       return;
     }
     const runtimeWorkspace = resolveRuntimeWorkspace(payload);
-    const { botRoot, workspaceDir, kiroHome } = runtimeWorkspace;
-    const runtimeEnv = prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome);
+    const { botRoot, userRoot, workspaceDir, kiroHome } = runtimeWorkspace;
+    const runtimeEnv = prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome);
+    const projectCheckpoint = createProjectCheckpoint(userRoot);
 
     const requestArgs = argsFromPayload(payload);
     const result = await runWithSessionDiscovery(
@@ -122,14 +139,23 @@ const server = createServer(async (request, response) => {
         workspaceDir,
         runtimeEnv,
         runKeyFromPayload(payload),
+        projectCheckpoint,
       ),
     );
     writeJson(response, 200, result);
   } catch (error) {
-    writeJson(response, error instanceof RelayRequestError ? 400 : error instanceof RelayCancelledError ? 409 : 502, {
+    writeJson(
+      response,
+      error instanceof RelayRequestError ? 400 : error instanceof RelayCancelledError ? 409 : error instanceof RelayTimeoutError ? 504 : 502,
+      {
       error: error instanceof Error ? error.message : "kiro relay failed",
-      ...(error instanceof RelayCancelledError ? { code: "runtime_cancelled" } : {}),
-    });
+      ...(error instanceof RelayCancelledError
+        ? { code: "runtime_cancelled" }
+        : error instanceof RelayTimeoutError
+          ? { code: "runtime_timeout" }
+          : {}),
+      },
+    );
   }
 });
 
@@ -138,7 +164,7 @@ server.listen(port, host, () => {
   console.log(`kiro workspace root: ${workspaceRoot}`);
 });
 
-function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runtimeEnv = {}, runKey) {
+function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runtimeEnv = {}, runKey, projectCheckpoint) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, requestArgs, {
       cwd: workspaceDir,
@@ -156,7 +182,8 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
       settled = true;
       clearActiveRun(runKey, activeRun);
       child.kill("SIGTERM");
-      reject(new Error("kiro runtime timed out"));
+      rollbackProjectCheckpoint(projectCheckpoint);
+      reject(new RelayTimeoutError());
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => stdout.push(chunk));
@@ -168,6 +195,7 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
       settled = true;
       clearActiveRun(runKey, activeRun);
       clearTimeout(timeout);
+      rollbackProjectCheckpoint(projectCheckpoint);
       reject(error);
     });
     child.on("close", async (code) => {
@@ -178,10 +206,12 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
       clearTimeout(timeout);
       clearActiveRun(runKey, activeRun);
       if (activeRun?.cancelled) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(new RelayCancelledError());
         return;
       }
       if (code !== 0) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(new Error(`kiro runtime exited with code ${code ?? "unknown"}: ${redact(Buffer.concat(stderr).toString())}`));
         return;
       }
@@ -197,14 +227,17 @@ function runKiro(prompt, requestArgs = args, sessionsBefore, workspaceDir, runti
           runtimeEnv,
         );
         if (!providerSessionId) {
+          rollbackProjectCheckpoint(projectCheckpoint);
           reject(new Error("kiro runtime did not report a session id"));
           return;
         }
+        discardProjectCheckpoint(projectCheckpoint);
         resolve({
           output: stripResumeHint(stdoutText),
           provider_session_id: providerSessionId,
         });
       } catch (error) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(error);
       }
     });
@@ -220,6 +253,7 @@ function streamKiro(
   workspaceDir,
   runtimeEnv = {},
   runKey,
+  projectCheckpoint,
 ) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, requestArgs, {
@@ -238,7 +272,8 @@ function streamKiro(
       settled = true;
       clearActiveRun(runKey, activeRun);
       child.kill("SIGTERM");
-      reject(new Error("kiro runtime timed out"));
+      rollbackProjectCheckpoint(projectCheckpoint);
+      reject(new RelayTimeoutError());
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -256,6 +291,7 @@ function streamKiro(
       settled = true;
       clearActiveRun(runKey, activeRun);
       clearTimeout(timeout);
+      rollbackProjectCheckpoint(projectCheckpoint);
       reject(error);
     });
     child.on("close", async (code) => {
@@ -266,10 +302,12 @@ function streamKiro(
       clearTimeout(timeout);
       clearActiveRun(runKey, activeRun);
       if (activeRun?.cancelled) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(new RelayCancelledError());
         return;
       }
       if (code !== 0) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(new Error(`kiro runtime exited with code ${code ?? "unknown"}: ${redact(Buffer.concat(stderr).toString())}`));
         return;
       }
@@ -283,14 +321,17 @@ function streamKiro(
           runtimeEnv,
         );
         if (!providerSessionId) {
+          rollbackProjectCheckpoint(projectCheckpoint);
           reject(new Error("kiro runtime did not report a session id"));
           return;
         }
+        discardProjectCheckpoint(projectCheckpoint);
         resolve({
           provider_session_id: providerSessionId,
           has_visible_output: stdout.some((chunk) => stripResumeHint(chunk.toString()).trim()),
         });
       } catch (error) {
+        rollbackProjectCheckpoint(projectCheckpoint);
         reject(error);
       }
     });
@@ -316,6 +357,92 @@ class RelayRequestError extends Error {}
 class RelayCancelledError extends Error {
   constructor() {
     super("kiro runtime cancelled");
+  }
+}
+class RelayTimeoutError extends Error {
+  constructor() {
+    super("任务执行超过时间限制，已自动停止并丢弃本次更改");
+  }
+}
+
+function createProjectCheckpoint(userRoot) {
+  const projectsRoot = join(userRoot, "projects");
+  const checkpointRoot = mkdtempSync(join(tmpdir(), "kiro-project-checkpoint-"));
+  const repositories = [];
+  try {
+    for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const repositoryRoot = join(projectsRoot, entry.name);
+      if (!existsSync(join(repositoryRoot, ".git"))) continue;
+      const head = gitOutput(repositoryRoot, ["rev-parse", "HEAD"]).trim();
+      const branch = gitOutput(repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"], true).trim();
+      const stashCommit = gitOutput(repositoryRoot, ["stash", "create", "kiro-runtime-checkpoint"], true).trim();
+      const untrackedFiles = gitOutput(
+        repositoryRoot,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+      ).split("\0").filter(Boolean);
+      const untrackedRoot = join(checkpointRoot, String(repositories.length), "untracked");
+      for (const file of untrackedFiles) {
+        const source = join(repositoryRoot, file);
+        const destination = join(untrackedRoot, file);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(source, destination, { recursive: true, preserveTimestamps: true, dereference: false });
+      }
+      repositories.push({ repositoryRoot, head, branch, stashCommit, untrackedFiles, untrackedRoot });
+    }
+    return { checkpointRoot, repositories, settled: false };
+  } catch (error) {
+    rmSync(checkpointRoot, { recursive: true, force: true });
+    throw new RelayRequestError(
+      `无法创建任务回滚点：${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+}
+
+function rollbackProjectCheckpoint(checkpoint) {
+  if (!checkpoint || checkpoint.settled) return;
+  checkpoint.settled = true;
+  try {
+    for (const repository of checkpoint.repositories) {
+      if (repository.branch) {
+        gitOutput(repository.repositoryRoot, ["checkout", "--force", repository.branch]);
+      } else {
+        gitOutput(repository.repositoryRoot, ["checkout", "--detach", "--force", repository.head]);
+      }
+      gitOutput(repository.repositoryRoot, ["reset", "--hard", repository.head]);
+      gitOutput(repository.repositoryRoot, ["clean", "-fd"]);
+      if (repository.stashCommit) {
+        gitOutput(repository.repositoryRoot, ["stash", "apply", "--index", repository.stashCommit]);
+      }
+      for (const file of repository.untrackedFiles) {
+        const source = join(repository.untrackedRoot, file);
+        const destination = join(repository.repositoryRoot, file);
+        mkdirSync(dirname(destination), { recursive: true });
+        cpSync(source, destination, { recursive: true, preserveTimestamps: true, dereference: false });
+      }
+    }
+  } catch (error) {
+    console.error("kiro project rollback failed", error);
+  } finally {
+    rmSync(checkpoint.checkpointRoot, { recursive: true, force: true });
+  }
+}
+
+function discardProjectCheckpoint(checkpoint) {
+  if (!checkpoint || checkpoint.settled) return;
+  checkpoint.settled = true;
+  rmSync(checkpoint.checkpointRoot, { recursive: true, force: true });
+}
+
+function gitOutput(repositoryRoot, gitArgs, allowFailure = false) {
+  try {
+    return execFileSync("git", ["-C", repositoryRoot, ...gitArgs], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    if (allowFailure) return "";
+    throw error;
   }
 }
 
@@ -367,7 +494,7 @@ function assertRelayAuthorized(request) {
   }
 }
 
-function prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome) {
+function prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome) {
   if (
     payload.runtime_env !== undefined
     && (!payload.runtime_env || typeof payload.runtime_env !== "object" || Array.isArray(payload.runtime_env))
@@ -389,7 +516,7 @@ function prepareRuntimeEnv(payload, botRoot, workspaceDir, kiroHome) {
   const projectDotenv = result.MY_AGENT_PROJECT_DOTENV_B64;
   delete result.MY_AGENT_PROJECT_DOTENV_B64;
   if (projectDotenv) {
-    const managedProjectEnv = materializeProjectDotenv(botRoot, workspaceDir, projectDotenv);
+    const managedProjectEnv = materializeProjectDotenv(botRoot, userRoot, projectDotenv);
     for (const [key, value] of Object.entries(managedProjectEnv)) {
       if (value && isAllowedRuntimeEnvKey(key) && result[key] === undefined) {
         result[key] = value;
@@ -435,7 +562,7 @@ function isAllowedRuntimeEnvKey(key) {
   ].includes(key) && !key.startsWith("LD_") && !key.startsWith("DYLD_");
 }
 
-function materializeProjectDotenv(botRoot, workspaceDir, encodedContent) {
+function materializeProjectDotenv(botRoot, userRoot, encodedContent) {
   let content;
   try {
     content = Buffer.from(encodedContent, "base64").toString("utf8");
@@ -451,8 +578,8 @@ function materializeProjectDotenv(botRoot, workspaceDir, encodedContent) {
     const managedPython = createManagedPythonLauncher(botRoot, configuredPython);
     content = replaceDotenvAssignment(content, "IM_TEST_HUB_PYTHON", managedPython);
   }
-  const projectsRoot = join(workspaceDir, "projects");
-  const runtimePath = join(workspaceDir, ".runtime");
+  const projectsRoot = join(userRoot, "projects");
+  const runtimePath = join(userRoot, ".runtime");
   ensureSafeDirectory(runtimePath);
   const runtimeRoot = realpathSync(runtimePath);
   for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
@@ -593,11 +720,13 @@ function resolveRuntimeWorkspace(payload) {
   for (const directory of [usersRoot, userRoot, conversationsRoot, workspaceDir]) {
     ensureSafeDirectory(directory);
   }
-  ensureSafeDirectory(join(workspaceDir, "projects"));
+  ensureSafeDirectory(join(userRoot, "projects"));
+  ensureSafeDirectory(join(userRoot, ".runtime"));
   ensureSafeDirectory(join(workspaceDir, "artifacts"));
 
   return {
     botRoot,
+    userRoot: realpathSync(userRoot),
     workspaceDir: realpathSync(workspaceDir),
     kiroHome: realpathSync(join(botRoot, ".kiro")),
   };

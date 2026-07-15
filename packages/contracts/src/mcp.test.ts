@@ -204,6 +204,7 @@ describe("MCP capability config", () => {
           "memory.stats",
           "search.query",
           "project.ensure",
+          "project.publish",
         ],
       },
       directory_refs: [],

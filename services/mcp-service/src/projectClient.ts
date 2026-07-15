@@ -3,7 +3,15 @@ import type { TrustedMcpContext } from "@my-agent-toolkit/contracts";
 export interface ProjectClient {
   ensure(
     context: TrustedMcpContext,
-    projectKey: string,
+    projectKey?: string,
+  ): Promise<Record<string, unknown>>;
+  publish(
+    context: TrustedMcpContext,
+    input: {
+      projectKey: string;
+      branch: string;
+      commitMessage: string;
+    },
   ): Promise<Record<string, unknown>>;
 }
 
@@ -27,7 +35,7 @@ export function createProjectClient(options: {
           body: JSON.stringify({
             user_id: context.user_id,
             conversation_id: context.conversation_id,
-            project_key: projectKey,
+            ...(projectKey ? { project_key: projectKey } : {}),
           }),
         },
       );
@@ -37,6 +45,34 @@ export function createProjectClient(options: {
           typeof body.error === "string"
             ? body.error
             : `project ensure failed: ${response.status}`,
+        );
+      }
+      return body;
+    },
+    async publish(context, input) {
+      const response = await fetchImpl(
+        `${baseUrl}/internal/bots/${encodeURIComponent(context.bot_id)}/projects/publish`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-project-runner-token": options.token,
+          },
+          body: JSON.stringify({
+            user_id: context.user_id,
+            conversation_id: context.conversation_id,
+            project_key: input.projectKey,
+            branch: input.branch,
+            commit_message: input.commitMessage,
+          }),
+        },
+      );
+      const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(
+          typeof body.error === "string"
+            ? body.error
+            : `project publish failed: ${response.status}`,
         );
       }
       return body;

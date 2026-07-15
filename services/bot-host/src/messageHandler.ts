@@ -1427,6 +1427,9 @@ function isPromptEchoOutput(output: string): boolean {
 
 function formatRuntimeUnavailableMessage(error: string | undefined): string {
   const reason = error?.trim() || "runtime unavailable";
+  if (/runtime timed out|超过时间限制/.test(reason)) {
+    return "任务执行超过 15 分钟，已自动停止并丢弃本次产生的代码更改。";
+  }
   return `LLM 运行器暂不可用：${reason}。请检查 Kiro relay 或 runtime 配置后重试。`;
 }
 

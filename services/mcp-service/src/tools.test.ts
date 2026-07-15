@@ -22,18 +22,47 @@ describe("document MCP tools", () => {
     const deps = createNoopDeps();
     deps.projectClient = {
       ensure,
+      publish: vi.fn(),
     };
 
     const result = await callMcpTool(context, deps, {
       tool: "project.ensure",
-      input: { project_key: "im-test-hub" },
+      input: {},
     });
 
     expect(result).toEqual({
       ok: true,
       result: { path: "projects/im-test-hub" },
     });
-    expect(ensure).toHaveBeenCalledWith(context, "im-test-hub");
+    expect(ensure).toHaveBeenCalledWith(context, undefined);
+  });
+
+  it("publishes the configured project using trusted user context", async () => {
+    const publish = vi.fn().mockResolvedValue({
+      branch: "bot/add-case",
+      commit: "a".repeat(40),
+    });
+    const deps = createNoopDeps();
+    deps.projectClient = { ensure: vi.fn(), publish };
+
+    const result = await callMcpTool(context, deps, {
+      tool: "project.publish",
+      input: {
+        project_key: "im-test-hub",
+        branch: "bot/add-case",
+        commit_message: "test: add case",
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { branch: "bot/add-case", commit: "a".repeat(40) },
+    });
+    expect(publish).toHaveBeenCalledWith(context, {
+      projectKey: "im-test-hub",
+      branch: "bot/add-case",
+      commitMessage: "test: add case",
+    });
   });
 
   it("creates bot scoped documents through data-service", async () => {
@@ -981,6 +1010,7 @@ describe("MCP tool discovery", () => {
       "memory.stats",
       "search.query",
       "project.ensure",
+      "project.publish",
     ]);
     expect(manifest.tools.find((tool) => tool.name === "document.create")).toMatchObject({
       category: "document",
@@ -1000,6 +1030,12 @@ describe("MCP tool discovery", () => {
           },
         },
       },
+    });
+    expect(manifest.tools.find((tool) => tool.name === "project.ensure")).toMatchObject({
+      input_schema: { required: [] },
+    });
+    expect(manifest.tools.find((tool) => tool.name === "project.publish")).toMatchObject({
+      input_schema: { required: ["project_key", "branch", "commit_message"] },
     });
   });
 });

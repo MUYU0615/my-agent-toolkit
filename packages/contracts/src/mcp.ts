@@ -65,6 +65,7 @@ const DEFAULT_MCP_TOOLS = [
   "memory.stats",
   "search.query",
   "project.ensure",
+  "project.publish",
 ] as const;
 const RESERVED_CONFIG_DOCUMENT_TITLES = new Set([
   "soul",
