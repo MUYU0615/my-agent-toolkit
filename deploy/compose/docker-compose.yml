@@ -166,6 +166,7 @@ services:
       context: ../..
       dockerfile: services/llm-runner/Dockerfile
     environment:
+      LOG_SERVICE_URL: "http://log-service:8500"
       PORT: "8200"
       DATA_SERVICE_URL: "http://data-service:8300"
       LLM_RUNNER_ENABLED_RUNTIMES: "mock,kiro,claude-code"

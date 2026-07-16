@@ -495,6 +495,20 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         );
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/message-traces") {
+        return proxyGetRequest(
+          `${config.logServiceUrl}/internal/message-traces${url.search}`,
+          config,
+        );
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/trace-spans") {
+        return proxyGetRequest(
+          `${config.logServiceUrl}/internal/trace-spans${url.search}`,
+          config,
+        );
+      }
+
       if (request.method === "GET" && url.pathname === "/v1/audit-events") {
         return proxyGetRequest(
           `${config.logServiceUrl}/v1/audit-events${url.search}`,
@@ -2224,6 +2238,16 @@ function renderChannelWorkbenchPage(): string {
     .test-env-card { padding: 16px; border-radius: 12px; background: #fff; }
     .test-env-card textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
     .test-env-actions { justify-content: flex-end; padding-top: 4px; }
+    .trace-filters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 12px; }
+    .trace-list { display: grid; gap: 8px; }
+    .trace-row { width: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; text-align: left; padding: 11px; color: var(--text); background: #fff; border: 1px solid var(--line); }
+    .trace-row:hover { background: #f1f8f6; }
+    .trace-meta { color: var(--muted); font-size: 12px; margin-top: 3px; word-break: break-all; }
+    .trace-spans { display: grid; gap: 8px; margin-top: 14px; }
+    .trace-span { border-left: 3px solid var(--primary); background: #fff; border-radius: 8px; padding: 10px 12px; }
+    .trace-span.error { border-left-color: var(--danger); }
+    .trace-span summary { cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
+    .trace-span pre { max-height: 340px; overflow: auto; margin: 9px 0 0; font-size: 12px; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       background: var(--surface-soft);
@@ -2475,6 +2499,7 @@ function renderChannelWorkbenchPage(): string {
           '<div class="tools">',
             '<button type="button" class="secondary" data-action="edit-channel">编辑配置</button>',
             '<button type="button" data-action="edit-project">测试环境</button>',
+            '<button type="button" class="secondary" data-action="view-traces">消息链路</button>',
             '<button type="button" data-action="manage-bot-capabilities">管理 Env / Skills / MCP</button>',
           '</div>',
         '</div>',
@@ -2765,6 +2790,67 @@ function renderChannelWorkbenchPage(): string {
       return '<label><input type="checkbox" name="' + escapeHtml(name) + '" value="' + escapeHtml(value) + '"' + (checked ? " checked" : "") + '> <span>' + escapeHtml(value) + '</span></label>';
     }
 
+    async function openTraceModal(detail) {
+      const bot = detail?.bot;
+      if (!bot) return;
+      modalTitle.textContent = "消息链路 · " + bot.name;
+      modalBody.innerHTML = '<div class="subtle">正在加载 Trace…</div>';
+      modalBackdrop.classList.add("open");
+      try {
+        const traces = await requestJson("/v1/message-traces?bot_id=" + encodeURIComponent(bot.bot_id) + "&limit=50");
+        renderTraceModal(bot, traces, detail);
+      } catch (error) {
+        modalBody.innerHTML = '<div class="empty">Trace 加载失败。</div>';
+        setToast(error.error || "Trace 加载失败", true);
+      }
+    }
+
+    function renderTraceModal(bot, traces, detail) {
+      const users = [...new Set(traces.map((trace) => trace.wecom_user_id).filter(Boolean))];
+      const conversations = [...new Set(traces.map((trace) => trace.conversation_id).filter(Boolean))];
+      modalBody.innerHTML = [
+        '<div class="trace-filters">',
+          '<select id="traceUserFilter"><option value="">全部用户</option>' + users.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
+          '<select id="traceConversationFilter"><option value="">全部会话</option>' + conversations.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
+          '<button type="button" class="secondary" data-action="refresh-traces">筛选</button>',
+        '</div>',
+        '<div class="subtle">一条 Trace 对应一条企微消息；展开后可查看 Prompt、CLI、MCP 和最终回复。</div>',
+        '<div class="trace-list" id="traceList">' + renderTraceList(traces) + '</div>',
+        '<div class="trace-spans" id="traceSpans"><div class="empty">选择一条消息查看完整链路。</div></div>',
+      ].join("");
+      modalBody.dataset.traceBotId = bot.bot_id;
+      modalBody.dataset.traceChannelId = detail?.channel?.channel_id || "";
+    }
+
+    function renderTraceList(traces) {
+      if (!traces.length) return '<div class="empty">还没有 Trace。重启服务后发送一条普通消息即可出现。</div>';
+      return traces.map((trace) => '<button type="button" class="trace-row" data-trace-id="' + escapeHtml(trace.trace_id) + '">' +
+        '<div><strong>' + escapeHtml(formatBeijingTime(trace.started_at)) + '</strong>' +
+        '<div class="trace-meta">用户：' + escapeHtml(trace.wecom_user_id) + ' · 会话：' + escapeHtml(trace.conversation_id) + '</div>' +
+        '<div class="trace-meta">' + escapeHtml(trace.trace_id) + '</div></div>' +
+        badge(trace.status, statusKind(trace.status)) + '</button>').join("");
+    }
+
+    async function loadTraceSpans(traceId) {
+      const botId = modalBody.dataset.traceBotId;
+      const target = document.querySelector("#traceSpans");
+      if (!botId || !target) return;
+      target.innerHTML = '<div class="subtle">正在加载消息链路…</div>';
+      try {
+        const spans = await requestJson("/v1/trace-spans?bot_id=" + encodeURIComponent(botId) + "&trace_id=" + encodeURIComponent(traceId));
+        target.innerHTML = spans.length ? spans.map((span, index) => {
+          const body = JSON.stringify(span.summary || {}, null, 2);
+          return '<details class="trace-span ' + (span.status === "error" ? "error" : "") + '"' + (index < 2 ? " open" : "") + '>' +
+            '<summary><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
+            '<div class="trace-meta">' + escapeHtml(formatBeijingTime(span.created_at)) + (span.run_id ? ' · ' + escapeHtml(span.run_id) : '') + '</div>' +
+            '<pre>' + escapeHtml(body) + '</pre></details>';
+        }).join("") : '<div class="empty">该消息暂时没有步骤记录。</div>';
+      } catch (error) {
+        target.innerHTML = '<div class="empty">链路加载失败。</div>';
+        setToast(error.error || "链路加载失败", true);
+      }
+    }
+
     function closeModal() {
       modalBackdrop.classList.remove("open");
     }
@@ -2818,6 +2904,10 @@ function renderChannelWorkbenchPage(): string {
           openProjectModal(detail);
           return;
         }
+        if (button.dataset.action === "view-traces") {
+          await openTraceModal(detail);
+          return;
+        }
         if (button.dataset.action === "manage-bot-capabilities") {
           window.location.href = "/admin/bots/" + encodeURIComponent(botId) + "/capabilities";
           return;
@@ -2856,10 +2946,32 @@ function renderChannelWorkbenchPage(): string {
     });
 
     modalBody.addEventListener("click", async (event) => {
+      const traceRow = event.target.closest("button[data-trace-id]");
+      if (traceRow) {
+        await loadTraceSpans(traceRow.dataset.traceId);
+        return;
+      }
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       if (button.dataset.action === "modal-cancel") {
         closeModal();
+        return;
+      }
+      if (button.dataset.action === "refresh-traces") {
+        const botId = modalBody.dataset.traceBotId;
+        if (!botId) return;
+        const userId = document.querySelector("#traceUserFilter")?.value || "";
+        const conversationId = document.querySelector("#traceConversationFilter")?.value || "";
+        const query = new URLSearchParams({ bot_id: botId, limit: "50" });
+        if (userId) query.set("wecom_user_id", userId);
+        if (conversationId) query.set("conversation_id", conversationId);
+        try {
+          const traces = await requestJson("/v1/message-traces?" + query.toString());
+          const list = document.querySelector("#traceList");
+          if (list) list.innerHTML = renderTraceList(traces);
+        } catch (error) {
+          setToast(error.error || "Trace 筛选失败", true);
+        }
         return;
       }
       if (button.dataset.action !== "delete-project-env" || !state.selectedChannelId) return;

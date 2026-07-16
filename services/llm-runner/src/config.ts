@@ -4,6 +4,7 @@ import type { CliRuntimeConfig } from "./runtimes.js";
 export interface RunnerConfig {
   enabled_runtimes: RuntimeName[];
   data_service_url?: string;
+  log_service_url?: string;
   kiro?: CliRuntimeConfig;
   claude_code?: CliRuntimeConfig;
   mcp?: McpRunnerConfig;
@@ -42,6 +43,11 @@ export function loadRunnerConfig(
   const dataServiceUrl = env.DATA_SERVICE_URL?.trim();
   if (dataServiceUrl) {
     config.data_service_url = dataServiceUrl.replace(/\/+$/, "");
+  }
+
+  const logServiceUrl = env.LOG_SERVICE_URL?.trim();
+  if (logServiceUrl) {
+    config.log_service_url = logServiceUrl.replace(/\/+$/, "");
   }
 
   const credentialInternalToken = env.USER_CREDENTIALS_INTERNAL_TOKEN?.trim();

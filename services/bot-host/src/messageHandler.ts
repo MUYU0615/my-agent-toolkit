@@ -876,17 +876,38 @@ async function processAllowedWeComMessage(
     input,
     resolvedConversationId,
   );
-  const prompt = buildPrompt(input.text, memoryDocuments, projectContextFromKey(projectKey));
+  const projectContext = projectContextFromKey(projectKey);
+  const prompt = buildPrompt(input.text, memoryDocuments, projectContext);
+  const traceId = `trace_${crypto.randomUUID()}`;
+  await startMessageTrace(config, input, resolvedConversationId, traceId);
+  await recordPromptAssemblyTrace(
+    config, input, resolvedConversationId, traceId, prompt, memoryDocuments, projectContext,
+  );
+  const runnerStartedAt = Date.now();
 
-  const result = await postJson<{
-    run_id: string;
-    output: string;
-  }>(config, `${config.llmRunnerUrl}/v1/chat`, {
-    bot_id: input.bot_id,
-    user_id: input.wecom_user_id,
-    conversation_id: resolvedConversationId,
-    runtime: input.runtime,
-    prompt,
+  let result: { run_id: string; output: string };
+  try {
+    result = await postJson(config, `${config.llmRunnerUrl}/v1/chat`, {
+      bot_id: input.bot_id,
+      user_id: input.wecom_user_id,
+      conversation_id: resolvedConversationId,
+      runtime: input.runtime,
+      prompt,
+    }, "POST", { "x-trace-id": traceId });
+  } catch (error) {
+    await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+      stage: "runner.request", status: "error", duration_ms: Date.now() - runnerStartedAt,
+      summary: { runtime: input.runtime },
+    });
+    await finishMessageTrace(config, traceId, "error");
+    throw error;
+  }
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "runner.request",
+    status: "ok",
+    run_id: result.run_id,
+    duration_ms: Date.now() - runnerStartedAt,
+    summary: { runtime: input.runtime },
   });
 
   const presentation = presentRuntimeOutput(result.output);
@@ -894,13 +915,23 @@ async function processAllowedWeComMessage(
   const presentedOutput = presentation.visibleText || INVALID_RUNTIME_OUTPUT_MESSAGE;
   const processed = await processAssistantOutput(config, input, presentedOutput, resolvedConversationId);
   const output = selectVisibleAssistantOutput(input.text, presentedOutput, processed);
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "response.prepare", status: "ok", run_id: result.run_id,
+    summary: { input: result.output, output },
+  });
   await recordChatEvent(
     config,
     input,
     resolvedConversationId,
     { ...result, output },
     memoryDocuments,
+    traceId,
   );
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "wecom.reply", status: "ok", run_id: result.run_id,
+    summary: { output, character_count: output.length },
+  });
+  await finishMessageTrace(config, traceId, "ok");
 
   return {
     conversation_id: resolvedConversationId,
@@ -1093,15 +1124,22 @@ async function streamAllowedWeComMessage(
     resolvedConversationId,
   );
   const context = await resolveMessageContext(config, input);
+  const projectContext = projectContextFromKey(context.project_key);
   const prompt = buildPrompt(
     input.text,
     memoryDocuments,
-    projectContextFromKey(context.project_key),
+    projectContext,
   );
+  const traceId = `trace_${crypto.randomUUID()}`;
+  await startMessageTrace(config, input, resolvedConversationId, traceId);
+  await recordPromptAssemblyTrace(
+    config, input, resolvedConversationId, traceId, prompt, memoryDocuments, projectContext,
+  );
+  const runnerStartedAt = Date.now();
   const response = await config.fetch(
     new Request(`${config.llmRunnerUrl}/v1/chat/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-trace-id": traceId },
       body: JSON.stringify({
         bot_id: input.bot_id,
         user_id: input.wecom_user_id,
@@ -1145,7 +1183,21 @@ async function streamAllowedWeComMessage(
           resolvedConversationId,
           { run_id: runId, output: visibleOutput },
           memoryDocuments,
+          traceId,
         );
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "runner.request", status: "ok", run_id: runId,
+          duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+        });
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "response.prepare", status: "ok", run_id: runId,
+          summary: { input: rawOutput, output: visibleOutput },
+        });
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "wecom.reply", status: "ok", run_id: runId,
+          summary: { output: visibleOutput, character_count: visibleOutput.length },
+        });
+        await finishMessageTrace(config, traceId, "ok");
         return;
       }
       sentAnyVisibleChunk = true;
@@ -1168,7 +1220,17 @@ async function streamAllowedWeComMessage(
         resolvedConversationId,
         { run_id: runId, output },
         memoryDocuments,
+        traceId,
       );
+      await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+        stage: "runner.request", status: "error", run_id: runId,
+        duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+      });
+      await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+        stage: "wecom.reply", status: "error", run_id: runId,
+        summary: { output, character_count: output.length },
+      });
+      await finishMessageTrace(config, traceId, "error");
       return;
     }
     if (event.type === "done") {
@@ -1193,7 +1255,21 @@ async function streamAllowedWeComMessage(
     resolvedConversationId,
     { run_id: runId, output: finalOutput },
     memoryDocuments,
+    traceId,
   );
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "runner.request", status: "ok", run_id: runId,
+    duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+  });
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "response.prepare", status: "ok", run_id: runId,
+    summary: { input: rawOutput, output: finalOutput },
+  });
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "wecom.reply", status: "ok", run_id: runId,
+    summary: { output: finalOutput, character_count: finalOutput.length },
+  });
+  await finishMessageTrace(config, traceId, "ok");
 }
 
 async function getJson<T>(
@@ -2968,6 +3044,7 @@ async function recordChatEvent(
   conversationId: string,
   result: { run_id: string; output: string },
   memoryDocuments: ScopedMemoryDocument[],
+  traceId?: string,
 ): Promise<void> {
   if (!config.logServiceUrl) {
     return;
@@ -2981,6 +3058,7 @@ async function recordChatEvent(
     prompt: input.text,
     output: result.output,
     run_id: result.run_id,
+    ...(traceId ? { trace_id: traceId } : {}),
     memory_refs: memoryDocuments
       .filter((document) => document.memory_doc_id)
       .map((document) => ({
@@ -2991,6 +3069,112 @@ async function recordChatEvent(
         ...(document.version === undefined ? {} : { version: document.version }),
       })),
   });
+}
+
+async function recordPromptAssemblyTrace(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+  renderedPrompt: string,
+  documents: ScopedMemoryDocument[],
+  project?: ProjectContext,
+): Promise<void> {
+  const configDocuments = documents.filter((document) => document.scope === "bot-config");
+  const memoryDocuments = documents.filter((document) => document.scope !== "bot-config");
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "wecom.received", status: "ok",
+    summary: { output: input.text, character_count: input.text.length },
+  });
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "bot.authorize", status: "ok", summary: { output: "allowed" },
+  });
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "conversation.resolve", status: "ok",
+    summary: { output: { conversation_id: conversationId } },
+  });
+  if (project) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.project", status: "ok", summary: { output: project },
+    });
+  }
+  if (memoryDocuments.length > 0) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.memory", status: "ok",
+      summary: { output: memoryDocuments.map(traceDocument) },
+    });
+  }
+  if (configDocuments.length > 0) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.config", status: "ok",
+      summary: { output: configDocuments.map(traceDocument) },
+    });
+  }
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "prompt.rendered", status: "ok",
+    summary: { input: input.text, output: renderedPrompt, character_count: renderedPrompt.length },
+  });
+}
+
+function traceDocument(document: ScopedMemoryDocument): Record<string, unknown> {
+  return {
+    scope: document.scope,
+    owner_id: document.owner_id,
+    title: document.title,
+    ...(document.memory_doc_id ? { memory_doc_id: document.memory_doc_id } : {}),
+    ...(document.version === undefined ? {} : { version: document.version }),
+    content: document.content,
+  };
+}
+
+async function startMessageTrace(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/message-traces`, {
+      trace_id: traceId, bot_id: input.bot_id, wecom_user_id: input.wecom_user_id,
+      conversation_id: conversationId, runtime: input.runtime,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
+}
+
+async function finishMessageTrace(
+  config: BotHostConfig,
+  traceId: string,
+  status: "ok" | "error" | "cancelled",
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/message-traces/finish`, {
+      trace_id: traceId, status,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
+}
+
+async function recordTraceSpan(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+  span: Record<string, unknown>,
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/trace-spans`, {
+      trace_id: traceId, bot_id: input.bot_id, wecom_user_id: input.wecom_user_id,
+      conversation_id: conversationId, ...span,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
 }
 
 function parseClaimAdminCommand(text: string): string | undefined {
@@ -3037,12 +3221,14 @@ async function postJson<T>(
   url: string,
   body: unknown,
   method = "POST",
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const response = await config.fetch(
     new Request(url, {
       method,
       headers: {
         "content-type": "application/json",
+        ...extraHeaders,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     }),

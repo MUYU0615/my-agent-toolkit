@@ -226,4 +226,29 @@ describe("log-service server", () => {
       },
     ]);
   });
+
+  it("records a trace timeline over the internal API", async () => {
+    const server = createLogServiceServer();
+    expect((await server.fetch(new Request("http://localhost/internal/message-traces", {
+      method: "POST",
+      body: JSON.stringify({
+        trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+        conversation_id: "conv-1", runtime: "kiro",
+      }),
+    }))).status).toBe(201);
+    expect((await server.fetch(new Request("http://localhost/internal/trace-spans", {
+      method: "POST",
+      body: JSON.stringify({
+        trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+        conversation_id: "conv-1", stage: "runner.request", status: "ok",
+        summary: { runtime: "kiro", secret: "not-visible" }, duration_ms: 12,
+      }),
+    }))).status).toBe(201);
+    const listed = await server.fetch(new Request(
+      "http://localhost/internal/trace-spans?trace_id=trace-1&bot_id=prd-bot",
+    ));
+    await expect(listed.json()).resolves.toMatchObject([{
+      stage: "runner.request", summary: { secret: "[REDACTED]" },
+    }]);
+  });
 });

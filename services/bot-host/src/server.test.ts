@@ -2028,7 +2028,7 @@ describe("bot-host server", () => {
 
     expect(response.status).toBe(200);
     const logCall = calls.find((call) => call.url === "http://log-service/v1/chat-events");
-    expect(logCall?.body).toEqual({
+    expect(logCall?.body).toMatchObject({
       bot_id: "prd-bot",
       wecom_user_id: "user-a",
       conversation_id: "conv-1",
@@ -2045,6 +2045,7 @@ describe("bot-host server", () => {
         },
       ],
     });
+    expect((logCall?.body as { trace_id?: string }).trace_id).toMatch(/^trace_/);
   });
 
   it("blocks messages when data-service says bot is not ready", async () => {

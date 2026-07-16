@@ -129,6 +129,14 @@ function healthResponse(service: string): {
   };
 }
 
+function withTraceId(
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  request: Request,
+): ReturnType<typeof parseChatRequest> {
+  const traceId = request.headers.get("x-trace-id")?.trim();
+  return traceId ? { ...chatRequest, trace_id: traceId } : chatRequest;
+}
+
 async function handleChatStream(
   request: Request,
   config: RunnerConfig,
@@ -136,7 +144,7 @@ async function handleChatStream(
 ): Promise<Response> {
   let releaseSessionLock: (() => void) | undefined;
   try {
-    const chatRequest = parseChatRequest(await request.json());
+    const chatRequest = withTraceId(parseChatRequest(await request.json()), request);
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
     releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntimeStreamResolved(config, runtimeRequest);
@@ -227,7 +235,7 @@ async function handleChat(
 ): Promise<Response> {
   let releaseSessionLock: (() => void) | undefined;
   try {
-    const chatRequest = parseChatRequest(await request.json());
+    const chatRequest = withTraceId(parseChatRequest(await request.json()), request);
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
     releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntime(config, runtimeRequest);
@@ -340,10 +348,16 @@ async function continueAfterMcpToolCallsStream(
     return replaceUnavailableMcpCallOutput(await collectRuntimeStream(runtimeResult.stream));
   }
   let currentResult = runtimeResult;
+  let turnNumber = 1;
   const requiresProjectPublish = isExplicitProjectPublishRequest(chatRequest.prompt);
   let publishRetryIssued = false;
   for (let round = 0; round < getMaxMcpToolRounds(config); round += 1) {
     const output = await collectRuntimeStream(currentResult.stream);
+    await recordRunnerTraceSpan(config, chatRequest, {
+      stage: "cli.turn",
+      status: "ok",
+      summary: { input: chatRequest.prompt, output, turn: turnNumber++ },
+    });
     const completedOutput = outputAfterMcpToolCall(output);
     if (completedOutput) {
       return completedOutput;
@@ -535,8 +549,10 @@ async function executeMcpToolCallResult(
       error: "project.publish requires an explicit user request to submit or Push code",
     };
   }
+  const startedAt = Date.now();
+  let result: McpToolResult;
   try {
-    return await callMcpTool({
+    result = await callMcpTool({
       ...config.mcp,
       ...(config.fetch ? { fetch: config.fetch } : {}),
     }, {
@@ -546,10 +562,50 @@ async function executeMcpToolCallResult(
       runtime: chatRequest.runtime,
     }, toolCall);
   } catch (error) {
-    return {
+    result = {
       ok: false,
       error: error instanceof Error ? error.message : "mcp tool call failed",
     };
+  }
+  await recordMcpTraceSpan(config, chatRequest, toolCall.tool, result, Date.now() - startedAt);
+  return result;
+}
+
+async function recordMcpTraceSpan(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  toolName: string,
+  result: McpToolResult,
+  durationMs: number,
+): Promise<void> {
+  await recordRunnerTraceSpan(config, chatRequest, {
+    stage: "mcp.call",
+    status: result.ok ? "ok" : "error",
+    duration_ms: durationMs,
+    summary: { input: { tool_name: toolName }, output: result },
+  });
+}
+
+async function recordRunnerTraceSpan(
+  config: RunnerConfig,
+  chatRequest: ReturnType<typeof parseChatRequest>,
+  span: Record<string, unknown>,
+): Promise<void> {
+  if (!config.log_service_url || !chatRequest.trace_id) return;
+  try {
+    await fetchWithConfig(config, new Request(`${config.log_service_url}/internal/trace-spans`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        trace_id: chatRequest.trace_id,
+        bot_id: chatRequest.bot_id,
+        wecom_user_id: chatRequest.user_id,
+        conversation_id: chatRequest.conversation_id,
+        ...span,
+      }),
+    }));
+  } catch {
+    // Observability must never make a user request fail.
   }
 }
 
@@ -604,6 +660,9 @@ async function enrichChatRequest(
       ...config.mcp,
       ...(config.fetch ? { fetch: config.fetch } : {}),
     }, trustedContext);
+    await recordRunnerTraceSpan(config, chatRequest, {
+      stage: "context.mcp", status: "ok", summary: { output: manifest },
+    });
     return {
       ...chatRequest,
       prompt: injectMcpPromptSection(chatRequest.prompt, manifest),
@@ -617,36 +676,49 @@ async function runRuntime(
   config: RunnerConfig,
   chatRequest: ReturnType<typeof parseChatRequest>,
 ): Promise<RuntimeResult> {
-  if (!config.enabled_runtimes.includes(chatRequest.runtime)) {
-    throw new UnavailableRuntimeError("runtime is not available yet");
-  }
+  const startedAt = Date.now();
+  try {
+    if (!config.enabled_runtimes.includes(chatRequest.runtime)) {
+      throw new UnavailableRuntimeError("runtime is not available yet");
+    }
 
-  if (chatRequest.runtime === "mock") {
-    return runMockRuntime(chatRequest);
-  }
-
-  const cliConfig = cliRuntimeConfig(config, chatRequest.runtime);
-  if (cliConfig) {
-    const runtimeSession = await getPersistedRuntimeSession(config, chatRequest);
-    const runtimeResult = await runCliRuntime(
-      {
-        ...(await withBotEnv(config, chatRequest, cliConfig)),
-        ...(runtimeSession?.provider_session_id
-          ? { provider_session_id: runtimeSession.provider_session_id }
-          : {}),
+    let runtimeResult: RuntimeResult;
+    if (chatRequest.runtime === "mock") {
+      runtimeResult = await runMockRuntime(chatRequest);
+    } else {
+      const cliConfig = cliRuntimeConfig(config, chatRequest.runtime);
+      if (!cliConfig) throw new UnavailableRuntimeError("runtime is not available yet");
+      const runtimeSession = await getPersistedRuntimeSession(config, chatRequest);
+      runtimeResult = await runCliRuntime(
+        {
+          ...(await withBotEnv(config, chatRequest, cliConfig)),
+          ...(runtimeSession?.provider_session_id
+            ? { provider_session_id: runtimeSession.provider_session_id }
+            : {}),
+        },
+        chatRequest,
+      );
+      await persistRuntimeSession(
+        config, chatRequest, runtimeResult.runner_session_id, runtimeResult.provider_session_id,
+      );
+    }
+    await recordRunnerTraceSpan(config, chatRequest, {
+      stage: "cli.turn", status: "ok", duration_ms: Date.now() - startedAt,
+      summary: {
+        input: chatRequest.prompt,
+        output: runtimeResult.output,
+        runner_session_id: runtimeResult.runner_session_id,
       },
-      chatRequest,
-    );
-    await persistRuntimeSession(
-      config,
-      chatRequest,
-      runtimeResult.runner_session_id,
-      runtimeResult.provider_session_id,
-    );
+    });
     return runtimeResult;
+  } catch (error) {
+    await recordRunnerTraceSpan(config, chatRequest, {
+      stage: "cli.turn", status: "error", duration_ms: Date.now() - startedAt,
+      summary: { input: chatRequest.prompt },
+      error_code: error instanceof RuntimeExecutionError ? error.code : "runtime_error",
+    });
+    throw error;
   }
-
-  throw new UnavailableRuntimeError("runtime is not available yet");
 }
 
 function runRuntimeStream(
@@ -720,6 +792,7 @@ async function withBotEnv(
       KIRO_RELAY_BOT_ID: chatRequest.bot_id,
       KIRO_RELAY_USER_ID: chatRequest.user_id,
       KIRO_RELAY_CONVERSATION_ID: chatRequest.conversation_id,
+      ...(chatRequest.trace_id ? { MY_AGENT_TRACE_ID: chatRequest.trace_id } : {}),
       KIRO_RELAY_RUNTIME: chatRequest.runtime,
       MY_AGENT_CLI_PROVIDER: chatRequest.runtime,
     },

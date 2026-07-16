@@ -1679,6 +1679,27 @@ describe("control-api server", () => {
     ]);
   });
 
+  it("queries message traces and trace spans through log-service", async () => {
+    const calls: string[] = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) throw new Error("expected Request");
+        calls.push(request.url);
+        return Response.json([]);
+      },
+    });
+
+    await server.fetch(new Request("http://localhost/v1/message-traces?bot_id=prd-bot&wecom_user_id=user-a"));
+    await server.fetch(new Request("http://localhost/v1/trace-spans?bot_id=prd-bot&trace_id=trace-1"));
+
+    expect(calls).toEqual([
+      "http://log-service/internal/message-traces?bot_id=prd-bot&wecom_user_id=user-a",
+      "http://log-service/internal/trace-spans?bot_id=prd-bot&trace_id=trace-1",
+    ]);
+  });
+
   it("records audit events after management writes", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const server = createControlApiServer({
