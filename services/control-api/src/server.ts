@@ -2224,6 +2224,7 @@ function renderChannelWorkbenchPage(): string {
     }
     .modal-head h2 { margin: 0; font-size: 18px; }
     .modal-body { padding: 20px; background: #f8fafb; }
+    .modal-backdrop.trace-open .modal { width: min(1180px, 100%); }
     .test-env-summary {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -2248,6 +2249,14 @@ function renderChannelWorkbenchPage(): string {
     .trace-span.error { border-left-color: var(--danger); }
     .trace-span summary { cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
     .trace-span pre { max-height: 340px; overflow: auto; margin: 9px 0 0; font-size: 12px; }
+    .trace-toolbar { position: sticky; top: -20px; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; background: #f8fafb; border-bottom: 1px solid var(--line); }
+    .trace-toolbar button { min-height: 34px; font-size: 13px; }
+    .trace-flow { display: grid; gap: 10px; margin-top: 10px; }
+    .trace-flow-arrow { color: var(--primary); font-weight: 800; text-align: center; }
+    .trace-text { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+    .trace-text-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: #f1f8f6; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 750; }
+    .trace-text-head button { min-height: 30px; padding: 0 9px; font-size: 12px; }
+    .trace-text pre { max-height: 480px; overflow: auto; margin: 0; border-radius: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       background: var(--surface-soft);
@@ -2794,6 +2803,7 @@ function renderChannelWorkbenchPage(): string {
       const bot = detail?.bot;
       if (!bot) return;
       modalTitle.textContent = "消息链路 · " + bot.name;
+      modalBackdrop.classList.add("trace-open");
       modalBody.innerHTML = '<div class="subtle">正在加载 Trace…</div>';
       modalBackdrop.classList.add("open");
       try {
@@ -2814,7 +2824,7 @@ function renderChannelWorkbenchPage(): string {
           '<select id="traceConversationFilter"><option value="">全部会话</option>' + conversations.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
           '<button type="button" class="secondary" data-action="refresh-traces">筛选</button>',
         '</div>',
-        '<div class="subtle">一条 Trace 对应一条企微消息；展开后可查看 Prompt、CLI、MCP 和最终回复。</div>',
+        '<div class="subtle">一条 Trace 对应一条企微消息；依次查看基础 Prompt、MCP 注入和 CLI 实际输入。</div>',
         '<div class="trace-list" id="traceList">' + renderTraceList(traces) + '</div>',
         '<div class="trace-spans" id="traceSpans"><div class="empty">选择一条消息查看完整链路。</div></div>',
       ].join("");
@@ -2831,6 +2841,46 @@ function renderChannelWorkbenchPage(): string {
         badge(trace.status, statusKind(trace.status)) + '</button>').join("");
     }
 
+    function traceTextBlock(label, value, copyLabel) {
+      const text = typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2);
+      const copyId = "trace-copy-" + Math.random().toString(36).slice(2);
+      return '<section class="trace-text"><div class="trace-text-head"><span>' + escapeHtml(label) + '</span>' +
+        '<button type="button" class="secondary" data-trace-copy-id="' + copyId + '">' + escapeHtml(copyLabel || "复制") + '</button></div>' +
+        '<pre id="' + copyId + '">' + escapeHtml(text) + '</pre></section>';
+    }
+
+    function renderTraceSpanContent(span) {
+      const summary = span.summary || {};
+      if (span.stage === "prompt.rendered") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("用户原始消息", summary.input, "复制消息") +
+          '<div class="trace-flow-arrow">↓ Bot Host 拼接项目、记忆、AGENTS ↓</div>' +
+          traceTextBlock("Bot Host 基础 Prompt（MCP 注入前）", summary.output, "复制基础 Prompt") +
+          '</div>';
+      }
+      if (span.stage === "cli.turn") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("CLI 实际 Prompt（已注入 MCP）", summary.input, "复制完整 Prompt") +
+          '<div class="trace-flow-arrow">↓ CLI 执行 ↓</div>' +
+          traceTextBlock("CLI 原始输出", summary.output, "复制输出") +
+          '</div>';
+      }
+      if (span.stage === "response.prepare") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("CLI 输出", summary.input, "复制") +
+          '<div class="trace-flow-arrow">↓ 脱敏、隐藏工具协议、整理格式 ↓</div>' +
+          traceTextBlock("用户可见回复", summary.output, "复制回复") +
+          '</div>';
+      }
+      if (span.stage === "context.mcp") {
+        return traceTextBlock("本轮注入的 MCP 工具清单", summary.output, "复制 MCP 清单");
+      }
+      if (span.stage === "wecom.received" || span.stage === "wecom.reply") {
+        return traceTextBlock(span.stage === "wecom.received" ? "企微原始消息" : "实际企微回复", summary.output, "复制");
+      }
+      return '<pre>' + escapeHtml(JSON.stringify(summary, null, 2)) + '</pre>';
+    }
+
     async function loadTraceSpans(traceId) {
       const botId = modalBody.dataset.traceBotId;
       const target = document.querySelector("#traceSpans");
@@ -2838,12 +2888,17 @@ function renderChannelWorkbenchPage(): string {
       target.innerHTML = '<div class="subtle">正在加载消息链路…</div>';
       try {
         const spans = await requestJson("/v1/trace-spans?bot_id=" + encodeURIComponent(botId) + "&trace_id=" + encodeURIComponent(traceId));
-        target.innerHTML = spans.length ? spans.map((span, index) => {
-          const body = JSON.stringify(span.summary || {}, null, 2);
+        target.innerHTML = spans.length ? '<div class="trace-toolbar">' +
+          '<button type="button" class="secondary" data-scroll-trace="wecom.received">原消息</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="prompt.rendered">基础 Prompt</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="context.mcp">MCP 清单</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="cli.turn">CLI 最终 Prompt</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="response.prepare">最终回复</button>' +
+          '</div>' + spans.map((span, index) => {
           return '<details class="trace-span ' + (span.status === "error" ? "error" : "") + '"' + (index < 2 ? " open" : "") + '>' +
-            '<summary><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
+            '<summary data-trace-stage="' + escapeHtml(span.stage) + '"><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
             '<div class="trace-meta">' + escapeHtml(formatBeijingTime(span.created_at)) + (span.run_id ? ' · ' + escapeHtml(span.run_id) : '') + '</div>' +
-            '<pre>' + escapeHtml(body) + '</pre></details>';
+            renderTraceSpanContent(span) + '</details>';
         }).join("") : '<div class="empty">该消息暂时没有步骤记录。</div>';
       } catch (error) {
         target.innerHTML = '<div class="empty">链路加载失败。</div>';
@@ -2852,6 +2907,7 @@ function renderChannelWorkbenchPage(): string {
     }
 
     function closeModal() {
+      modalBackdrop.classList.remove("trace-open");
       modalBackdrop.classList.remove("open");
     }
 
@@ -2946,6 +3002,27 @@ function renderChannelWorkbenchPage(): string {
     });
 
     modalBody.addEventListener("click", async (event) => {
+      const traceCopyButton = event.target.closest("button[data-trace-copy-id]");
+      if (traceCopyButton) {
+        const source = document.querySelector("#" + traceCopyButton.dataset.traceCopyId);
+        try {
+          await navigator.clipboard.writeText(source?.textContent || "");
+          setToast("内容已复制。");
+        } catch (_error) {
+          setToast("复制失败，请手动复制。", true);
+        }
+        return;
+      }
+      const traceJumpButton = event.target.closest("button[data-scroll-trace]");
+      if (traceJumpButton) {
+        const stage = traceJumpButton.dataset.scrollTrace;
+        const summary = document.querySelector("summary[data-trace-stage='" + stage + "']");
+        if (summary) {
+          summary.parentElement.open = true;
+          summary.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        return;
+      }
       const traceRow = event.target.closest("button[data-trace-id]");
       if (traceRow) {
         await loadTraceSpans(traceRow.dataset.traceId);

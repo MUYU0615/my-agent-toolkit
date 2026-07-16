@@ -165,7 +165,7 @@ async function handleChatStream(
             // protocol block private even when MCP is temporarily misconfigured.
             const finalOutput = await continueAfterMcpToolCallsStream(
               config,
-              chatRequest,
+              runtimeRequest,
               runtimeResult,
             );
             enqueueChunk(controller, encoder, finalOutput);
@@ -239,7 +239,7 @@ async function handleChat(
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
     releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntime(config, runtimeRequest);
-    const finalResult = await continueAfterMcpToolCalls(config, chatRequest, runtimeResult);
+    const finalResult = await continueAfterMcpToolCalls(config, runtimeRequest, runtimeResult);
     const response: ChatResponse = {
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: finalResult.runner_session_id,
