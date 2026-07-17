@@ -93,12 +93,12 @@ export function createDataServiceServer(
       const projectEnvMatch = url.pathname.match(/^\/v1\/bots\/([^/]+)\/project-env$/);
       if (request.method === "GET" && projectEnvMatch) {
         return withDecodedBotId(projectEnvMatch[1], (botId) =>
-          handleGetBotProjectEnvMetadata(store, botId),
+          handleGetBotProjectEnv(store, config, botId),
         );
       }
       if (request.method === "PUT" && projectEnvMatch) {
         return withDecodedBotId(projectEnvMatch[1], (botId) =>
-          handlePutBotProjectEnv(request, store, config, botId),
+          handlePutBotProjectEnv(request, store, botId),
         );
       }
       if (request.method === "DELETE" && projectEnvMatch) {
@@ -1086,15 +1086,19 @@ function handleListBotEnvVars(
   }
 }
 
-function handleGetBotProjectEnvMetadata(
+function handleGetBotProjectEnv(
   store: DataStore,
+  config: DataServiceServerConfig,
   botId: string,
 ): Response {
   try {
     const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
     return jsonResponse({
       configured: Boolean(record),
-      ...(record ? { updated_at: record.updated_at } : {}),
+      ...(record ? {
+        content: readProjectDotenvContent(record.value_ciphertext, config.credentialVault),
+        updated_at: record.updated_at,
+      } : {}),
     });
   } catch (error) {
     return errorResponse(error);
@@ -1104,13 +1108,9 @@ function handleGetBotProjectEnvMetadata(
 async function handlePutBotProjectEnv(
   request: Request,
   store: DataStore,
-  config: DataServiceServerConfig,
   botId: string,
 ): Promise<Response> {
   try {
-    if (!config.credentialVault) {
-      return jsonResponse({ error: "credential vault is not configured" }, 503);
-    }
     const body = await request.json() as {
       content?: unknown;
       updated_by_wecom_user_id?: unknown;
@@ -1118,7 +1118,7 @@ async function handlePutBotProjectEnv(
     const content = requireProjectDotenvContent(body.content);
     const record = store.upsertBotEnvVar(botId, {
       key: PROJECT_DOTENV_ENV_KEY,
-      value_ciphertext: config.credentialVault.encryptText(content),
+      value_ciphertext: content,
       updated_by_wecom_user_id: requireText(
         body.updated_by_wecom_user_id,
         "updated_by_wecom_user_id",
@@ -1126,6 +1126,7 @@ async function handlePutBotProjectEnv(
     });
     return jsonResponse({
       configured: true,
+      content,
       updated_at: record.updated_at,
     });
   } catch (error) {
@@ -1155,20 +1156,30 @@ function handleGetInternalBotProjectEnv(
   if (accessError) {
     return accessError;
   }
-  if (!config.credentialVault) {
-    return jsonResponse({ error: "credential vault is not configured" }, 503);
-  }
   try {
     const record = store.getBotEnvVar(botId, PROJECT_DOTENV_ENV_KEY);
     return jsonResponse(record
       ? {
           configured: true,
-          content: config.credentialVault.decryptText(record.value_ciphertext),
+          content: readProjectDotenvContent(record.value_ciphertext, config.credentialVault),
         }
       : { configured: false });
   } catch (error) {
     return errorResponse(error);
   }
+}
+
+function readProjectDotenvContent(
+  storedValue: string,
+  credentialVault: CredentialVault | undefined,
+): string {
+  if (!storedValue.startsWith("aes-256-gcm:v1.")) {
+    return storedValue;
+  }
+  if (!credentialVault) {
+    throw new Error("credential vault is required to read legacy encrypted project .env");
+  }
+  return credentialVault.decryptText(storedValue);
 }
 
 function requireProjectDotenvContent(value: unknown): string {
@@ -2185,7 +2196,6 @@ function handleGetUserCredentialProjectGit(
     if (scope.provider !== "github_fork") {
       return jsonResponse({ error: "github fork credential is required" }, 400);
     }
-    const projectKey = requireText(url.searchParams.get("project_key"), "project_key");
     const credential = store.getUserCredential(scope);
     if (!credential) {
       return jsonResponse({ error: "GitHub fork is not bound for the current WeCom user and Bot. Send /github bind first." }, 404);
@@ -2194,6 +2204,8 @@ function handleGetUserCredentialProjectGit(
     if (payload.provider !== "github_fork") {
       return jsonResponse({ error: "GitHub fork credential is invalid" }, 500);
     }
+    const requestedProjectKey = url.searchParams.get("project_key")?.trim();
+    const projectKey = requestedProjectKey || projectKeyFromGitRepository(payload.repository_url);
     return jsonResponse({
       project_key: projectKey,
       repository_url: payload.repository_url,
@@ -2204,6 +2216,17 @@ function handleGetUserCredentialProjectGit(
   } catch (error) {
     return jsonResponse({ error: error instanceof Error ? error.message : "GitHub credential lookup failed" }, 500);
   }
+}
+
+function projectKeyFromGitRepository(repositoryUrl: string): string {
+  const path = /^https:\/\//i.test(repositoryUrl)
+    ? new URL(repositoryUrl).pathname
+    : repositoryUrl.replace(/^ssh:\/\//i, "").replace(/^[^:]+:/, "");
+  const projectKey = path.replace(/\/+$/, "").split("/").at(-1)?.replace(/\.git$/i, "") ?? "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(projectKey)) {
+    throw new Error("GitHub fork repository name is not a valid project key");
+  }
+  return projectKey;
 }
 
 async function handleAppendMcpToolExecution(

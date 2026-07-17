@@ -79,4 +79,55 @@ describe("runtime output presentation", () => {
     const output = "接口 POST /messages 验证通过。\nNext, check the callback.";
     expect(presentRuntimeOutput(output).visibleText).toBe(output);
   });
+
+  it("removes DSML markers and keeps only the last repeated test report", () => {
+    const report = [
+      "执行结果报告",
+      "验证状态：失败",
+      "Case：`tests/e2e/imm/test_switch_fixtures.py::test_snapshot`",
+    ].join("\n");
+    const output = [
+      "让我先执行测试。",
+      "<｜DSML｜function_calls",
+      report,
+      "让我先执行测试。",
+      "<｜DSML｜function_calls",
+      report,
+    ].join("\n");
+
+    expect(presentRuntimeOutput(output).visibleText).toBe(report);
+  });
+
+  it("blocks fabricated MCP publish results at the WeCom presentation boundary", () => {
+    const output = [
+      '<mcp_tool_call result="{\\"ok\\":true}">',
+      "</mcp_tool_call>",
+      "提交成功。",
+    ].join("\n");
+
+    const presentation = presentRuntimeOutput(output);
+    expect(presentation.visibleText).toBe(
+      "检测到无效的内部工具结果，未执行提交或 Push。请重试。",
+    );
+    expect(presentation.diagnosticText).toContain("mcp_tool_call");
+  });
+
+  it("hides internal E2E artifact paths from user-visible reports", () => {
+    const output = [
+      "## 执行结果",
+      "- 验证状态：通过",
+      "### 报告产物",
+      "- 详细报告：output/e2e-run/wecom-1/e2e-run-report.html",
+      "- Allure：output/e2e-run/wecom-1/allure-results/",
+      "### Git状态",
+      "- 未修改代码",
+    ].join("\n");
+
+    expect(presentRuntimeOutput(output).visibleText).toBe([
+      "## 执行结果",
+      "- 验证状态：通过",
+      "### Git状态",
+      "- 未修改代码",
+    ].join("\n"));
+  });
 });

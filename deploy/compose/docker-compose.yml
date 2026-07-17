@@ -42,6 +42,7 @@ services:
       LLM_RUNNER_URL: "http://llm-runner:8200"
       CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
       LOG_SERVICE_URL: "http://log-service:8500"
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
       CREDENTIAL_BIND_PUBLIC_URL: "${CREDENTIAL_BIND_PUBLIC_URL:-http://localhost:8600}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
     ports:
@@ -83,6 +84,7 @@ services:
       LLM_RUNNER_URL: "http://llm-runner:8200"
       CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
       LOG_SERVICE_URL: "http://log-service:8500"
+      MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
       CREDENTIAL_BIND_PUBLIC_URL: "${CREDENTIAL_BIND_PUBLIC_URL:-http://localhost:8600}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
     ports:
@@ -164,15 +166,19 @@ services:
       context: ../..
       dockerfile: services/llm-runner/Dockerfile
     environment:
+      LOG_SERVICE_URL: "http://log-service:8500"
       PORT: "8200"
       DATA_SERVICE_URL: "http://data-service:8300"
-      LLM_RUNNER_ENABLED_RUNTIMES: "mock,kiro"
+      LLM_RUNNER_ENABLED_RUNTIMES: "mock,kiro,claude-code"
       KIRO_COMMAND: "node"
       KIRO_ARGS: "services/llm-runner/scripts/kiro-relay-cli.mjs chat --no-interactive --trust-all-tools"
       KIRO_RELAY_URL: "http://host.docker.internal:8210/v1/kiro/chat"
       KIRO_RELAY_STREAM: "true"
       KIRO_RELAY_STREAM_URL: "http://host.docker.internal:8210/v1/kiro/chat/stream"
-      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-300000}"
+      KIRO_TIMEOUT_MS: "${KIRO_TIMEOUT_MS:-900000}"
+      CLAUDE_CODE_COMMAND: "node"
+      CLAUDE_CODE_ARGS: "services/llm-runner/scripts/kiro-relay-cli.mjs -p --output-format text --permission-mode bypassPermissions --setting-sources project,local,user"
+      CLAUDE_CODE_TIMEOUT_MS: "${CLAUDE_CODE_TIMEOUT_MS:-900000}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
       KIRO_RELAY_AUTH_TOKEN: "${KIRO_RELAY_AUTH_TOKEN:-}"
       MCP_SERVICE_URL: "http://mcp-service:8800"
@@ -204,7 +210,6 @@ services:
       WORKSPACE_ROOT: "/workspace/runtime/bots"
       DATA_SERVICE_URL: "http://data-service:8300"
       KIRO_WORKSPACE_ROOT: "/kiro-workspaces"
-      PROJECT_REPOSITORY_CACHE_ROOT: "/workspace/runtime/repository-cache"
       SKILL_CATALOG_ROOT: "/skill-catalog"
       MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"

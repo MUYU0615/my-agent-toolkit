@@ -308,7 +308,7 @@ docker compose -f deploy/compose/docker-compose.yml --profile wecom up -d wecom-
 
 1. 将可分发的 Skill 包放在项目 `.agents/skills/<skill-name>/`，包内必须有带 `name` 和 `description` frontmatter 的 `SKILL.md`。
 2. 打开 WebUI 的 Bot 能力页，在 Skills 区域选择内置 Skill 并安装。
-3. `capability-runner` 把 Skill 原子复制到 `~/Documents/KiroBotWorkspaces/<bot_id>/.kiro/skills/<skill-name>/`。
+3. `capability-runner` 把 Skill 原子复制到 `~/Documents/KiroBotWorkspaces/<bot_id>/.kiro/skills/<skill-name>/` 和 `.claude/skills/<skill-name>/`。
 4. 安装状态同步写入 `data-service.db` 的 `bot_skills`；页面会展示状态和失败原因。
 5. 在企业微信中发送 `/skill`，只会看到当前 Bot 已成功安装的技能。
 
@@ -318,11 +318,11 @@ Compose 使用 `${HOME}/Documents/KiroBotWorkspaces` 作为宿主机挂载源，
 
 ### wecom-cli-bot
 
-企业微信 CLI 机器人框架。当前实现将 Kiro CLI 接入企业微信智能机器人；代码保留 provider 边界，后续可扩展其他 CLI。
+企业微信 CLI 机器人框架。托管平台已接入 Kiro CLI 和 Claude Code，WebUI 可按 Bot 选择运行时。
 
 **核心功能：**
 
-- 当前支持 Kiro CLI：`kiro-cli chat --no-interactive --trust-all-tools`
+- 当前支持 Kiro CLI 与 Claude Code
 - Docker 容器化部署，docker-compose 多 Bot 管理
 - 会话管理：自动 resume、3 小时空闲过期、用户隔离
 - 完整指令体系：`/stop` `/help` `/history` `/new` `/open N` `/name`

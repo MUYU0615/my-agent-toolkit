@@ -13,15 +13,12 @@ const projectManager = createProjectManager({
   dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
   userCredentialsInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN,
   kiroWorkspaceRoot: process.env.KIRO_WORKSPACE_ROOT ?? "/kiro-workspaces",
-  repositoryCacheRoot: process.env.PROJECT_REPOSITORY_CACHE_ROOT,
 });
 const app = createCapabilityRunnerServer({
   dispatch: (context) => skillManager.dispatch(context),
   listSkills: () => skillManager.listCatalog(),
-  ensureProject: (context) => projectManager.ensure(context),
-  inspectProject: (context) => projectManager.inspect(context),
-  readProject: (context) => projectManager.read(context),
-  searchProject: (context) => projectManager.search(context),
+  syncProject: (context) => projectManager.sync(context),
+  publishProject: (context) => projectManager.publish(context),
   projectRunnerToken: process.env.MCP_RUNNER_SECRET,
 });
 

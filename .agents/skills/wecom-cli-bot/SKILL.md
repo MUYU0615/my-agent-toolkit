@@ -1,11 +1,11 @@
 ---
 name: wecom-cli-bot
-description: Use when creating or extending an Enterprise WeChat smart bot bridge that receives WeCom long-connection messages and runs the current Kiro CLI based bot runtime with Docker, admin claiming, shared memory, workspace isolation, and secret redaction.
+description: Use when creating or extending an Enterprise WeChat smart bot bridge that receives WeCom long-connection messages and runs Kiro CLI or Claude Code through the managed runtime, with Docker, admin claiming, shared memory, workspace isolation, and secret redaction.
 ---
 
 # WeCom CLI Bot
 
-Use this skill to scaffold or modify a `./wecom-cli-bots` project that bridges WeCom intelligent bot messages to `kiro-cli`. The provider boundary remains in code for future adapters, but the current shipped runtime supports only `kiro-cli`.
+Use this skill to scaffold or modify a `./wecom-cli-bots` project that bridges WeCom intelligent bot messages to a CLI runtime. The managed WebUI platform supports Kiro CLI and Claude Code; the standalone scaffold wizard remains Kiro CLI by default.
 
 ## Skill Interaction Rule
 
@@ -22,11 +22,12 @@ Use the wizard below instead:
 
 ## Current Support
 
-- Current CLI provider: `kiro-cli` only.
+- Managed platform CLI providers: `kiro-cli` and `claude-code`.
+- Standalone scaffold provider: `kiro-cli`.
 - Default command: `kiro-cli`.
 - Default args: `["chat", "--no-interactive", "--trust-all-tools", "{{prompt}}"]`.
 - Default deployment: Docker Compose, with Kiro auth/config mounted read-only from the Docker host.
-- Future providers may be added through the adapter/auth strategy, but do not present Codex, Claude Code, Kimi Code, or custom CLI as currently supported choices.
+- Future providers may be added through the adapter/auth strategy, but do not present Codex, Kimi Code, or custom CLI as currently supported choices.
 
 ## Bot Creation Wizard
 

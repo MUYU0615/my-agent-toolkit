@@ -28,6 +28,15 @@ describe("parseTrustedMcpContext", () => {
     });
   });
 
+  it("accepts Claude Code in trusted MCP context", () => {
+    expect(parseTrustedMcpContext({
+      bot_id: "prd-bot",
+      user_id: "user-a",
+      conversation_id: "conv-claude",
+      runtime: "claude-code",
+    }).runtime).toBe("claude-code");
+  });
+
   it("rejects empty trusted context ids", () => {
     expect(() =>
       parseTrustedMcpContext({
@@ -203,10 +212,7 @@ describe("MCP capability config", () => {
           "memory.search",
           "memory.stats",
           "search.query",
-          "project.ensure",
-          "project.inspect",
-          "project.read",
-          "project.search",
+          "project.publish",
         ],
       },
       directory_refs: [],
@@ -262,5 +268,13 @@ describe("MCP capability config", () => {
       },
       directory_refs: [],
     })).toThrow("scope must be system, shared, bot, user, or session");
+  });
+
+  it("removes legacy internal project.ensure entries from bot capability config", () => {
+    const config = buildDefaultMcpCapabilityConfig();
+    expect(parseMcpCapabilityConfig({
+      ...config,
+      tools: { enabled: ["project.ensure", "project.publish"] },
+    }).tools.enabled).toEqual(["project.publish"]);
   });
 });

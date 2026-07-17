@@ -14,10 +14,18 @@ if [[ ! -f "$ENV_FILE" ]]; then
     printf 'USER_CREDENTIALS_MASTER_KEY=%s\n' "$master_key"
     printf 'USER_CREDENTIALS_INTERNAL_TOKEN=%s\n' "$internal_token"
     printf 'KIRO_RELAY_AUTH_TOKEN=%s\n' "$relay_token"
+    printf 'MCP_RUNNER_SECRET=%s\n' "$(openssl rand -hex 32)"
     printf 'CREDENTIAL_BIND_PUBLIC_URL=http://localhost:8600\n'
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
   echo "Created local credential runtime config: $ENV_FILE" >&2
+fi
+
+if ! grep -Eq '^MCP_RUNNER_SECRET=.+$' "$ENV_FILE"; then
+  umask 077
+  printf 'MCP_RUNNER_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  echo "Added missing MCP runner secret to local credential runtime config." >&2
 fi
 
 printf '%s\n' "$ENV_FILE"

@@ -4,6 +4,7 @@ import {
   clearWizardGenerationInProgress,
   clearWizardState,
   handleBotMessage,
+  isProjectSyncCommand,
   resolveMessageContext,
   shouldDeferStreamingForWizardState,
   shouldHandleWizardConfirmationAsync,
@@ -52,12 +53,12 @@ export interface BotHostServerConfig extends BotHostConfig {
 
 export interface BotHostWorkerConfig extends StreamBotMessageConfig {
   botId: string;
-  runtime: "mock" | "kiro";
+  runtime: "mock" | "kiro" | "claude-code";
 }
 
 export interface WeComRuntimeBotConfig {
   bot_id: string;
-  runtime: "mock" | "kiro";
+  runtime: "mock" | "kiro" | "claude-code";
   wecom_bot_id: string;
   wecom_secret: string;
 }
@@ -132,6 +133,12 @@ export function createBotHostServer(config: BotHostServerConfig): BotHostServer 
 }
 
 export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker {
+  // A stopped stream finishes asynchronously after the /stop command has been answered.
+  // Keep this state local to one Bot worker so its terminal cancellation error is not sent.
+  const workerConfig: BotHostWorkerConfig = {
+    ...config,
+    runtimeCancellationState: new Set<string>(),
+  };
   const restartInitialization = async (input: {
     botId: string;
     adminWeComUserId: string;
@@ -148,15 +155,15 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
     };
     let conversationId: string | undefined;
     try {
-      const context = await resolveMessageContext(config, messageInput);
+      const context = await resolveMessageContext(workerConfig, messageInput);
       conversationId = context.conversation?.conversation_id;
     } catch (_error) {
       conversationId = input.adminWeComUserId;
     }
     conversationId ??= input.adminWeComUserId;
-    await clearWizardState(config, messageInput, conversationId);
-    const output = await startInitializationWizard(messageInput, config, conversationId);
-    await config.wecomClient.sendText(input.adminWeComUserId, output, { forceActive: true });
+    await clearWizardState(workerConfig, messageInput, conversationId);
+    const output = await startInitializationWizard(messageInput, workerConfig, conversationId);
+    await workerConfig.wecomClient.sendText(input.adminWeComUserId, output, { forceActive: true });
     return {
       bot_id: config.botId,
       admin_wecom_user_id: input.adminWeComUserId,
@@ -173,20 +180,20 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
         text: message.text,
         runtime: config.runtime,
       };
-      if (await shouldHandleWizardConfirmationAsync(config, messageInput)) {
-        await config.wecomClient.sendText(
+      if (await shouldHandleWizardConfirmationAsync(workerConfig, messageInput)) {
+        await workerConfig.wecomClient.sendText(
           message.conversationId,
           "配置已确认，正在生成 soul.md 和 agents.md。完成后我会主动通知你。",
         );
-        void handleBotMessage(messageInput, config)
+        void handleBotMessage(messageInput, workerConfig)
           .then(async (asyncResult) => {
             if ("output" in asyncResult && typeof asyncResult.output === "string") {
-              await config.wecomClient.sendText(message.conversationId, asyncResult.output);
+              await workerConfig.wecomClient.sendText(message.conversationId, asyncResult.output);
             }
           })
           .catch(async (error) => {
             console.error("[wecom] async initialization failed", error);
-            await config.wecomClient.sendText(
+            await workerConfig.wecomClient.sendText(
               message.conversationId,
               "初始化文档生成失败，请稍后重试或在 WebUI 重置引导。",
             );
@@ -196,27 +203,27 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
 
       let wizardGeneration: { notice: string; shouldProcess: boolean } | undefined;
       try {
-        wizardGeneration = await beginWizardGenerationIfReady(messageInput, config);
+        wizardGeneration = await beginWizardGenerationIfReady(messageInput, workerConfig);
       } catch (_error) {
-        await config.wecomClient.sendText(
+        await workerConfig.wecomClient.sendText(
           message.conversationId,
           "初始化状态读取失败，请稍后重试。",
         );
         return;
       }
       if (wizardGeneration) {
-        await config.wecomClient.sendText(message.conversationId, wizardGeneration.notice);
+        await workerConfig.wecomClient.sendText(message.conversationId, wizardGeneration.notice);
         if (wizardGeneration.shouldProcess) {
-          void handleBotMessage(messageInput, config)
+          void handleBotMessage(messageInput, workerConfig)
             .then(async (asyncResult) => {
               if ("output" in asyncResult && typeof asyncResult.output === "string") {
-                await config.wecomClient.sendText(message.conversationId, asyncResult.output);
+                await workerConfig.wecomClient.sendText(message.conversationId, asyncResult.output);
               }
             })
             .catch(async (error) => {
-              await clearWizardGenerationInProgress(messageInput, config);
+              await clearWizardGenerationInProgress(messageInput, workerConfig);
               console.error("[wecom] async initialization failed", error);
-              await config.wecomClient.sendText(
+              await workerConfig.wecomClient.sendText(
                 message.conversationId,
                 "初始化文档生成失败，请稍后重试或在 WebUI 重置引导。",
               );
@@ -225,27 +232,40 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
         return;
       }
 
-      const wizardLookup = await shouldDeferStreamingForWizardState(config, messageInput);
+      const wizardLookup = await shouldDeferStreamingForWizardState(workerConfig, messageInput);
       if (wizardLookup.failed) {
-        await config.wecomClient.sendText(
+        await workerConfig.wecomClient.sendText(
           message.conversationId,
           "初始化状态读取失败，请稍后重试。",
         );
         return;
       }
 
-      if (!wizardLookup.hasWizardState && await shouldStreamReply(config, messageInput)) {
-        await config.wecomClient.sendText(message.conversationId, "正在思考...", {
-          finish: false,
-        });
-        await streamBotMessage(messageInput, config, message.conversationId);
+      // `/sync` can spend noticeable time recreating the project checkout. It
+      // needs a passive reply stream of its own so the user sees progress
+      // immediately, while the other capability commands remain non-streaming.
+      if (!wizardLookup.hasWizardState && isProjectSyncCommand(message.text)) {
+        await streamBotMessage(messageInput, workerConfig, message.conversationId);
         return;
       }
 
-      const result = await handleBotMessage(messageInput, config);
-      await sendWorkerResult(config.wecomClient, message.conversationId, result);
-    } catch (_error) {
-      await config.wecomClient.sendText(
+      if (!wizardLookup.hasWizardState && await shouldStreamReply(workerConfig, messageInput)) {
+        await workerConfig.wecomClient.sendText(message.conversationId, "正在思考...", {
+          finish: false,
+        });
+        await streamBotMessage(messageInput, workerConfig, message.conversationId);
+        return;
+      }
+
+      const result = await handleBotMessage(messageInput, workerConfig);
+      await sendWorkerResult(workerConfig.wecomClient, message.conversationId, result);
+    } catch (error) {
+      console.error("[wecom] message handling failed", {
+        botId: config.botId,
+        conversationId: message.conversationId,
+        error: error instanceof Error ? error.message : "unknown error",
+      });
+      await workerConfig.wecomClient.sendText(
         message.conversationId,
         "机器人处理失败，请稍后重试。",
       );
@@ -254,11 +274,11 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
 
   return {
     async start() {
-      config.wecomClient.onMessage(onMessage);
-      await config.wecomClient.connect();
+      workerConfig.wecomClient.onMessage(onMessage);
+      await workerConfig.wecomClient.connect();
     },
     stop() {
-      config.wecomClient.disconnect();
+      workerConfig.wecomClient.disconnect();
     },
     restartInitialization,
   };
@@ -448,8 +468,8 @@ function parseWeComMessageInput(value: unknown): WeComMessageInput {
 
   const record = value as Record<string, unknown>;
   const runtime = record.runtime;
-  if (runtime !== "mock" && runtime !== "kiro") {
-    throw new Error("runtime must be mock or kiro");
+  if (runtime !== "mock" && runtime !== "kiro" && runtime !== "claude-code") {
+    throw new Error("runtime must be mock, kiro, or claude-code");
   }
 
   return {
@@ -463,8 +483,8 @@ function parseWeComMessageInput(value: unknown): WeComMessageInput {
   };
 }
 
-function isSupportedRuntime(value: string): value is "mock" | "kiro" {
-  return value === "mock" || value === "kiro";
+function isSupportedRuntime(value: string): value is "mock" | "kiro" | "claude-code" {
+  return value === "mock" || value === "kiro" || value === "claude-code";
 }
 
 function requireText(value: unknown, field: string): string {

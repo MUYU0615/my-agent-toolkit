@@ -2,7 +2,18 @@
 
 Adapters describe local CLI invocation only. They do not call model APIs.
 
-Current implementation support is intentionally narrow: only `kiro-cli` is runnable. Keep the provider boundary in code so future adapters can be added, but do not document Codex, Claude Code, Kimi Code, or custom CLIs as current runtime choices.
+The managed platform supports `kiro-cli` and `claude-code`. The standalone scaffold remains Kiro-only until its own provider validation and image installation flow are extended.
+
+## Managed Claude Code Adapter
+
+Claude Code runs on the Docker host through the existing authenticated host relay. New conversations receive an explicit UUID with `--session-id`; later turns resume the exact UUID with `--resume`. The runner uses print mode and text output:
+
+```text
+claude -p --output-format text --permission-mode bypassPermissions --setting-sources project,local --session-id <UUID>
+claude -p --output-format text --permission-mode bypassPermissions --setting-sources project,local --resume <UUID>
+```
+
+The WebUI stores only `runtime: claude-code`. Workspace isolation, bot environment variables, MCP calls, cancellation, timeout rollback, and report delivery stay in the common runner path. Installed bot skills are copied to both `.kiro/skills` and `.claude/skills`.
 
 ## Current Config
 
@@ -68,4 +79,4 @@ The bot should never ask the user to paste Kiro API keys or auth files in chat. 
 
 ## Future Providers
 
-Future providers may be added by implementing a new adapter path, tests, install/auth documentation, runtime checks, and secret handling. Until then, keep non-Kiro provider names only in tests that prove unsupported-provider rejection.
+Future providers may be added by implementing a new adapter path, tests, install/auth documentation, runtime checks, and secret handling.

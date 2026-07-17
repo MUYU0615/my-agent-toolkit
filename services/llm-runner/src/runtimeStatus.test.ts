@@ -43,4 +43,23 @@ describe("getRuntimeStatuses", () => {
       },
     ]);
   });
+
+  it("reports configured Claude Code runtime independently", async () => {
+    const statuses = await getRuntimeStatuses({
+      enabled_runtimes: ["claude-code"],
+      claude_code: {
+        provider: "claude-code",
+        command: process.execPath,
+        args: ["relay.mjs"],
+        timeout_ms: 1000,
+      },
+    });
+
+    expect(statuses).toEqual([{
+      runtime: "claude-code",
+      enabled: true,
+      configured: true,
+      available: true,
+    }]);
+  });
 });

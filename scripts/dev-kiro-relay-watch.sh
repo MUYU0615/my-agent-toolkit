@@ -13,7 +13,7 @@ HOST="${KIRO_HOST_RELAY_HOST:-0.0.0.0}"
 PID_FILE="${KIRO_HOST_RELAY_PID_FILE:-$ROOT_DIR/runtime/kiro-host-relay.pid}"
 COMMAND="${KIRO_COMMAND:-$HOME/.local/bin/kiro-cli}"
 WORKSPACE_ROOT="${KIRO_WORKSPACE_ROOT:-$HOME/Documents/KiroBotWorkspaces}"
-TIMEOUT_MS="${KIRO_TIMEOUT_MS:-300000}"
+TIMEOUT_MS="${KIRO_TIMEOUT_MS:-900000}"
 RELAY_SCRIPT="$ROOT_DIR/services/llm-runner/scripts/kiro-host-relay.mjs"
 
 if [[ "$COMMAND" == */* && ! -x "$COMMAND" ]]; then

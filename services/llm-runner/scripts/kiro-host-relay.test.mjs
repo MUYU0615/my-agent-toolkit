@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 const providerSessionId = "f2946a26-3735-4b08-8d05-c928010302d5";
+const compactedSessionId = "5cf91421-e688-4741-a2d5-717f87d09ce8";
 const userId = "user-a";
 const conversationId = "conv-a";
 let relay;
@@ -23,10 +24,17 @@ before(async () => {
     env: {
       ...process.env,
       KIRO_COMMAND: process.execPath,
+      CLAUDE_CODE_COMMAND: process.execPath,
       KIRO_HOST_RELAY_HOST: "127.0.0.1",
       KIRO_HOST_RELAY_PORT: String(port),
       KIRO_TIMEOUT_MS: "2000",
       KIRO_WORKSPACE_ROOT: workspaceRoot,
+      GITHUB_TOKEN: "host-github-token",
+      GH_TOKEN: "host-gh-token",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.https://github.com/.extraheader",
+      GIT_CONFIG_VALUE_0: "AUTHORIZATION: basic host-token",
+      SSH_AUTH_SOCK: "/tmp/host-ssh-agent.sock",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -86,6 +94,74 @@ test("host relay returns the Kiro session id from the process exit hint", async 
   });
 });
 
+test("host relay strips Git credentials from the CLI child process", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => { process.stdout.write(JSON.stringify({",
+    "  github: process.env.GITHUB_TOKEN ?? null,",
+    "  gh: process.env.GH_TOKEN ?? null,",
+    "  configCount: process.env.GIT_CONFIG_COUNT ?? null,",
+    "  configKey: process.env.GIT_CONFIG_KEY_0 ?? null,",
+    "  sshAuthSock: process.env.SSH_AUTH_SOCK ?? null,",
+    "  terminalPrompt: process.env.GIT_TERMINAL_PROMPT,",
+    "  askPass: process.env.GIT_ASKPASS,",
+    "  globalConfig: process.env.GIT_CONFIG_GLOBAL,",
+    "  directCommitBlocked: (() => { try { require('node:child_process').execFileSync('git', ['commit', '-m', 'blocked']); return false; } catch (error) { return error.status === 126; } })(),",
+    `})); process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n'); });`,
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-git-env",
+      prompt: "hello",
+      args: ["-e", script],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.provider_session_id, providerSessionId);
+  assert.deepEqual(JSON.parse(body.output), {
+    github: null,
+    gh: null,
+    configCount: null,
+    configKey: null,
+    sshAuthSock: null,
+    terminalPrompt: "0",
+    askPass: "/bin/false",
+    globalConfig: "/dev/null",
+    directCommitBlocked: true,
+  });
+});
+
+test("host relay executes Claude Code with the explicit session id", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => process.stdout.write('claude answer'));",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-claude",
+      provider: "claude-code",
+      prompt: "hello",
+      args: ["-e", script, "--", "--session-id", providerSessionId],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    output: "claude answer",
+    provider_session_id: providerSessionId,
+  });
+});
+
 test("host relay emits a session event for streaming calls", async () => {
   const script = [
     "process.stdin.resume();",
@@ -113,6 +189,132 @@ test("host relay emits a session event for streaming calls", async () => {
     { type: "session", provider_session_id: providerSessionId },
     { type: "done" },
   ]);
+});
+
+test("host relay immediately cancels only the matching active Kiro run", async () => {
+  const projectRoot = join(
+    workspaceRoot,
+    "bot-a",
+    "users",
+    createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 32),
+    "projects",
+    "cancel-rollback",
+  );
+  await initializeGitProject(projectRoot);
+  await writeFile(join(projectRoot, "tracked.txt"), "preexisting change", "utf8");
+  await writeFile(join(projectRoot, "before.txt"), "keep me", "utf8");
+  const script = [
+    "const { writeFileSync } = require('node:fs');",
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  writeFileSync('../../projects/cancel-rollback/tracked.txt', 'changed');",
+    "  writeFileSync('../../projects/cancel-rollback/created.txt', 'remove me');",
+    "  process.stdout.write('started');",
+    "  setInterval(() => {}, 1000);",
+    "});",
+  ].join(" ");
+  const streamResponse = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-stop",
+      prompt: "long task",
+      args: ["-e", script],
+    }),
+  });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const cancelResponse = await fetch(`${relayUrl}/v1/kiro/cancel`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-stop",
+    }),
+  });
+
+  assert.equal(cancelResponse.status, 200);
+  assert.deepEqual(await cancelResponse.json(), { cancelled: true });
+  const events = (await streamResponse.text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(events, [{ type: "chunk", content: "started" }, {
+    type: "error",
+    error: "kiro runtime cancelled",
+    code: "runtime_cancelled",
+  }]);
+  assert.equal(await readFile(join(projectRoot, "tracked.txt"), "utf8"), "preexisting change");
+  assert.equal(await readFile(join(projectRoot, "before.txt"), "utf8"), "keep me");
+  await assert.rejects(access(join(projectRoot, "created.txt")));
+});
+
+test("host relay stops timed-out work and restores the project checkpoint", async () => {
+  const projectRoot = join(
+    workspaceRoot,
+    "bot-a",
+    "users",
+    createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 32),
+    "projects",
+    "timeout-rollback",
+  );
+  await initializeGitProject(projectRoot);
+  const script = [
+    "const { writeFileSync } = require('node:fs');",
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  writeFileSync('../../projects/timeout-rollback/tracked.txt', 'changed');",
+    "  writeFileSync('../../projects/timeout-rollback/created.txt', 'remove me');",
+    "  setInterval(() => {}, 1000);",
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-timeout",
+      prompt: "long task",
+      args: ["-e", script],
+    }),
+  });
+
+  const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(events, [{
+    type: "error",
+    error: "任务执行超过时间限制，已自动停止并丢弃本次更改",
+    code: "runtime_timeout",
+  }]);
+  assert.equal(await readFile(join(projectRoot, "tracked.txt"), "utf8"), "baseline");
+  await assert.rejects(access(join(projectRoot, "created.txt")));
+});
+
+test("host relay persists the session id reported after a resumed session compacts", async () => {
+  const script = [
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  process.stdout.write('compacted answer');",
+    `  process.stderr.write('Resume with: kiro-cli chat --resume-id ${compactedSessionId}\\n');`,
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: conversationId,
+      prompt: "hello",
+      args: ["-e", script, "--", "--resume-id", providerSessionId],
+    }),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    output: "compacted answer",
+    provider_session_id: compactedSessionId,
+  });
 });
 
 test("host relay rejects bare resume", async () => {
@@ -221,6 +423,81 @@ if (process.argv.includes("--list-sessions")) {
   }
 });
 
+test("host relay retries a blank resumed session with its compacted successor", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-session-recovery-"));
+  const commandPath = join(directory, "fake-kiro.mjs");
+  const statePath = join(directory, "sessions.json");
+  const fakeKiro = `#!/usr/bin/env node
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+const oldSessionId = ${JSON.stringify(providerSessionId)};
+const successorSessionId = ${JSON.stringify(compactedSessionId)};
+const readSessions = () => existsSync(process.env.KIRO_FAKE_STATE)
+  ? JSON.parse(readFileSync(process.env.KIRO_FAKE_STATE, "utf8"))
+  : [{ sessionId: oldSessionId, updatedAt: "2026-07-14T10:00:00.000Z" }];
+if (process.argv.includes("--list-sessions")) {
+  process.stdout.write(JSON.stringify([{ cwd: process.cwd(), sessions: readSessions() }]));
+} else {
+  const resumeIndex = process.argv.indexOf("--resume-id");
+  const resumeId = resumeIndex >= 0 ? process.argv[resumeIndex + 1] : undefined;
+  process.stdin.resume();
+  process.stdin.on("end", () => {
+    if (resumeId === oldSessionId) {
+      writeFileSync(process.env.KIRO_FAKE_STATE, JSON.stringify([
+        { sessionId: oldSessionId, updatedAt: "2026-07-14T10:00:00.000Z" },
+        { sessionId: successorSessionId, updatedAt: "2026-07-14T10:01:00.000Z" },
+      ]));
+      return;
+    }
+    process.stdout.write("recovered answer");
+    process.stderr.write("Resume with: kiro-cli chat --resume-id " + successorSessionId + "\\n");
+  });
+}
+`;
+  await writeFile(commandPath, fakeKiro, "utf8");
+  await chmod(commandPath, 0o755);
+  const port = await reservePort();
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: commandPath,
+      KIRO_FAKE_STATE: statePath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: join(directory, "workspaces"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const response = await fetch(`${isolatedRelayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        bot_id: "bot-session-recovery",
+        user_id: userId,
+        conversation_id: conversationId,
+        prompt: "hello",
+        args: ["chat", "--resume-id", providerSessionId, "--no-interactive"],
+      }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      output: "recovered answer",
+      provider_session_id: compactedSessionId,
+    });
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("host relay uses bot KIRO_HOME and a user-conversation working directory", async () => {
   const script = [
     "process.stdin.resume();",
@@ -259,7 +536,7 @@ test("host relay uses bot KIRO_HOME and a user-conversation working directory", 
   });
   await access(join(botRoot, ".kiro", "agents"));
   await access(join(botRoot, ".kiro", "skills"));
-  await access(join(conversationRoot, "projects"));
+  await access(join(botRoot, "users", userHash, "projects"));
   await access(join(conversationRoot, "artifacts"));
   await assert.rejects(access(join(conversationRoot, ".kiro", "skills")));
 });
@@ -401,6 +678,125 @@ test("host relay injects Jira credentials and computes a user-private cookie pat
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("host relay materializes the managed project .env and forwards project variables", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-project-env-"));
+  const port = await reservePort();
+  const authToken = "relay-project-env-token";
+  const workspacesRoot = join(directory, "workspaces");
+  const botId = "project-bot";
+  const testUserId = "user-project";
+  const testConversationId = "conv-project";
+  const projectName = "im-test-hub";
+  const userHash = createHash("sha256").update(testUserId, "utf8").digest("hex").slice(0, 32);
+  const workspaceDir = join(
+    workspacesRoot,
+    botId,
+    "users",
+    userHash,
+    "conversations",
+    testConversationId,
+  );
+  const userRoot = join(workspacesRoot, botId, "users", userHash);
+  const projectRoot = join(userRoot, "projects", projectName);
+  await mkdir(projectRoot, { recursive: true });
+  const projectDotenv = [
+    `IM_TEST_HUB_PYTHON=${process.execPath}`,
+    "IM_TEST_HUB_API_SECRET=relay-project-secret",
+    "",
+  ].join("\n");
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: process.execPath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_RELAY_AUTH_TOKEN: authToken,
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_WORKSPACE_ROOT: workspacesRoot,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const script = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => { process.stdout.write(JSON.stringify({",
+      "python: process.env.IM_TEST_HUB_PYTHON,",
+      "secret: process.env.IM_TEST_HUB_API_SECRET,",
+      "payload: process.env.MY_AGENT_PROJECT_DOTENV_B64",
+      "}));",
+      `process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+      "});",
+    ].join(" ");
+    const response = await fetch(`${isolatedRelayUrl}/v1/kiro/chat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({
+        bot_id: botId,
+        user_id: testUserId,
+        conversation_id: testConversationId,
+        prompt: "run tests",
+        args: ["-e", script],
+        runtime_env: {
+          MY_AGENT_PROJECT_DOTENV_B64: Buffer.from(projectDotenv, "utf8").toString("base64"),
+        },
+      }),
+    });
+
+    const payload = await response.json();
+    assert.equal(response.status, 200, JSON.stringify(payload));
+    const runtimeOutput = JSON.parse(payload.output);
+    const botRoot = await realpath(join(workspacesRoot, botId));
+    assert.equal(runtimeOutput.secret, "relay-project-secret");
+    assert.match(runtimeOutput.python, new RegExp(`^${escapeRegExp(join(botRoot, ".runtime", "python-launchers"))}`));
+    assert.doesNotMatch(runtimeOutput.python, new RegExp(escapeRegExp(process.execPath)));
+    const materializedDotenv = await readFile(join(projectRoot, ".env"), "utf8");
+    assert.match(materializedDotenv, /^IM_TEST_HUB_PYTHON=.*\.runtime\/python-launchers\//m);
+    assert.doesNotMatch(materializedDotenv, new RegExp(escapeRegExp(process.execPath)));
+    assert.match(materializedDotenv, /IM_TEST_HUB_API_SECRET=relay-project-secret/);
+    assert.equal((await stat(runtimeOutput.python)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(projectRoot, ".env"))).mode & 0o777, 0o600);
+    assert.equal(
+      await readFile(join(userRoot, ".runtime", `${projectName}.dotenv-managed`), "utf8"),
+      "managed\n",
+    );
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function initializeGitProject(projectRoot) {
+  await mkdir(projectRoot, { recursive: true });
+  await writeFile(join(projectRoot, "tracked.txt"), "baseline", "utf8");
+  execFileSync("git", ["-C", projectRoot, "init", "--quiet"]);
+  execFileSync("git", ["-C", projectRoot, "add", "tracked.txt"]);
+  execFileSync("git", [
+    "-C",
+    projectRoot,
+    "-c",
+    "user.name=Kiro Relay Test",
+    "-c",
+    "user.email=kiro-relay@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "baseline",
+  ]);
+}
 
 async function reservePort() {
   const server = createServer();

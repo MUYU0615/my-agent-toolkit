@@ -220,8 +220,12 @@ function installSkillPackage(
   name: string,
   source: string,
 ): void {
-  const skillsRoot = safeSkillsRoot(workspaceRoot, botId);
+  for (const providerDirectory of [".kiro", ".claude"]) {
+    installSkillIntoRoot(safeSkillsRoot(workspaceRoot, botId, providerDirectory), name, source);
+  }
+}
 
+function installSkillIntoRoot(skillsRoot: string, name: string, source: string): void {
   const destination = join(skillsRoot, name);
   const staging = join(skillsRoot, `.install-${name}-${randomUUID()}`);
   const backup = join(skillsRoot, `.backup-${name}-${randomUUID()}`);
@@ -252,17 +256,17 @@ function installSkillPackage(
 }
 
 function deleteSkillPackage(workspaceRoot: string, botId: string, name: string): void {
-  const destination = join(safeSkillsRoot(workspaceRoot, botId), name);
-  if (!existsSync(destination)) {
-    return;
+  for (const providerDirectory of [".kiro", ".claude"]) {
+    const destination = join(safeSkillsRoot(workspaceRoot, botId, providerDirectory), name);
+    if (!existsSync(destination)) continue;
+    assertRealDirectory(destination, "installed skill");
+    rmSync(destination, { recursive: true });
   }
-  assertRealDirectory(destination, "installed skill");
-  rmSync(destination, { recursive: true });
 }
 
-function safeSkillsRoot(workspaceRoot: string, botId: string): string {
+function safeSkillsRoot(workspaceRoot: string, botId: string, providerDirectory: string): string {
   const botRoot = safeBotRoot(workspaceRoot, botId);
-  const skillsRoot = join(botRoot, ".kiro", "skills");
+  const skillsRoot = join(botRoot, providerDirectory, "skills");
   mkdirSync(skillsRoot, { recursive: true });
   assertRealDirectory(skillsRoot, "bot skills directory");
   const realSkillsRoot = realpathSync(skillsRoot);

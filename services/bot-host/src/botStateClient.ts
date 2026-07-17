@@ -673,3 +673,46 @@ function errorPayload(payload: unknown): { error?: string } | undefined {
     ? payload as { error?: string }
     : undefined;
 }
+
+export interface EnsureProjectResult {
+  project_key: string;
+  path: string;
+  branch: string;
+  base_commit: string;
+  reused: boolean;
+}
+
+export async function syncBotProject(
+  config: BotHostConfig,
+  botId: string,
+  userId: string,
+  conversationId: string,
+): Promise<EnsureProjectResult | { error: string } | undefined> {
+  if (!config.capabilityRunnerUrl) {
+    return undefined;
+  }
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (config.projectRunnerToken) {
+    headers["x-project-runner-token"] = config.projectRunnerToken;
+  }
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/projects/sync`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        user_id: userId,
+        conversation_id: conversationId,
+      }),
+    }),
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+    if (typeof body.error === "string" && (
+      body.error.includes("credential") || body.error.includes("token") || body.error.includes("auth")
+    )) {
+      return { error: body.error };
+    }
+    return undefined;
+  }
+  return await response.json() as EnsureProjectResult;
+}

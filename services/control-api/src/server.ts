@@ -495,6 +495,20 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         );
       }
 
+      if (request.method === "GET" && url.pathname === "/v1/message-traces") {
+        return proxyGetRequest(
+          `${config.logServiceUrl}/internal/message-traces${url.search}`,
+          config,
+        );
+      }
+
+      if (request.method === "GET" && url.pathname === "/v1/trace-spans") {
+        return proxyGetRequest(
+          `${config.logServiceUrl}/internal/trace-spans${url.search}`,
+          config,
+        );
+      }
+
       if (request.method === "GET" && url.pathname === "/v1/audit-events") {
         return proxyGetRequest(
           `${config.logServiceUrl}/v1/audit-events${url.search}`,
@@ -1533,7 +1547,7 @@ function renderJiraBindingForm(token: string, expiresAt?: string): string {
       </details>
       <button type="submit">加密保存并绑定</button>
     </form>
-    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
+    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? formatBeijingTime(expiresAt) : "10 分钟内")}</p>
     <p class="warning">请勿转发本页面地址。系统不会把密码写入 Prompt、聊天记录或 Git。</p>
   `);
 }
@@ -1554,7 +1568,7 @@ function renderGitHubBindingForm(token: string, expiresAt?: string): string {
       </label>
       <button type="submit">加密保存并绑定</button>
     </form>
-    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? new Date(expiresAt).toLocaleString("zh-CN") : "10 分钟内")}</p>
+    <p class="hint">链接有效期至：${escapeHtmlValue(expiresAt ? formatBeijingTime(expiresAt) : "10 分钟内")}</p>
     <p class="warning">请勿转发本页面地址或在企微对话中发送 Token。Token 只在服务端 Git 操作时临时使用。</p>
   `);
 }
@@ -1626,6 +1640,26 @@ function escapeHtmlValue(value: unknown): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function formatBeijingTime(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    return "-";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 function pageShell(title: string, body: string): string {
@@ -1747,7 +1781,7 @@ function renderBotCapabilitiesPage(
     `<table><thead><tr><th>Key</th><th>状态</th><th>展示值</th><th>更新时间</th></tr></thead><tbody>`,
     ...(envItems.length === 0
       ? [`<tr><td colspan="4" class="muted">暂无环境变量</td></tr>`]
-      : envItems.map((item) => `<tr><td><code>${escapeHtmlValue(item.key)}</code></td><td>${escapeHtmlValue(item.is_set ? "已设置" : "未设置")}</td><td>****</td><td>${escapeHtmlValue(item.updated_at)}</td></tr>`)),
+      : envItems.map((item) => `<tr><td><code>${escapeHtmlValue(item.key)}</code></td><td>${escapeHtmlValue(item.is_set ? "已设置" : "未设置")}</td><td>****</td><td>${escapeHtmlValue(formatBeijingTime(item.updated_at))}</td></tr>`)),
     `</tbody></table>`,
     `</section>`,
     `<section class="card stack">`,
@@ -1799,18 +1833,18 @@ function renderChannelWorkbenchPage(): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Channel 管理 - Bot Control</title>
+  <title>Bot 控制台</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f7f9;
+      --bg: #f2f5f4;
       --surface: #ffffff;
       --surface-soft: #f1f4f7;
       --text: #17202e;
       --muted: #647184;
       --line: #d9e1ea;
-      --primary: #145f53;
-      --primary-strong: #0d493f;
+      --primary: #176b5c;
+      --primary-strong: #105247;
       --accent: #1f9d72;
       --warn: #8a5a10;
       --danger: #a63a32;
@@ -1886,7 +1920,19 @@ function renderChannelWorkbenchPage(): string {
       justify-content: space-between;
       gap: 16px;
     }
-    .brand h1 { margin: 0; font-size: 20px; letter-spacing: 0; }
+    .top a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 11px;
+      border-radius: 8px;
+      color: var(--text);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 650;
+    }
+    .top a:hover { background: var(--surface-soft); }
+    .brand h1 { margin: 0; font-size: 21px; letter-spacing: -.2px; }
     .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
     main {
       width: min(1440px, calc(100vw - 32px));
@@ -2161,23 +2207,47 @@ function renderChannelWorkbenchPage(): string {
     }
     .modal-backdrop.open { display: grid; }
     .modal {
-      width: min(620px, 100%);
+      width: min(760px, 100%);
       max-height: calc(100dvh - 36px);
       overflow: auto;
       background: #fff;
-      border-radius: 8px;
+      border-radius: 14px;
       border: 1px solid var(--line);
-      box-shadow: 0 20px 80px rgba(15, 23, 42, .18);
+      box-shadow: 0 24px 70px rgba(15, 23, 42, .24);
     }
     .modal-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 14px;
+      padding: 18px 20px;
       border-bottom: 1px solid var(--line);
     }
-    .modal-head h2 { margin: 0; font-size: 16px; }
-    .modal-body { padding: 14px; }
+    .modal-head h2 { margin: 0; font-size: 18px; }
+    .modal-body { padding: 20px; background: #f8fafb; }
+    .test-env-summary {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      padding: 16px;
+      border: 1px solid #cfe0dc;
+      border-radius: 12px;
+      background: #f1f8f6;
+    }
+    .test-env-summary strong { display: block; margin-bottom: 4px; font-size: 15px; }
+    .test-env-card { padding: 16px; border-radius: 12px; background: #fff; }
+    .test-env-card textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+    .test-env-actions { justify-content: flex-end; padding-top: 4px; }
+    .trace-filters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-bottom: 12px; }
+    .trace-list { display: grid; gap: 8px; }
+    .trace-row { width: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; text-align: left; padding: 11px; color: var(--text); background: #fff; border: 1px solid var(--line); }
+    .trace-row:hover { background: #f1f8f6; }
+    .trace-meta { color: var(--muted); font-size: 12px; margin-top: 3px; word-break: break-all; }
+    .trace-spans { display: grid; gap: 8px; margin-top: 14px; }
+    .trace-span { border-left: 3px solid var(--primary); background: #fff; border-radius: 8px; padding: 10px 12px; }
+    .trace-span.error { border-left-color: var(--danger); }
+    .trace-span summary { cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
+    .trace-span pre { max-height: 340px; overflow: auto; margin: 9px 0 0; font-size: 12px; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       background: var(--surface-soft);
@@ -2200,26 +2270,26 @@ function renderChannelWorkbenchPage(): string {
   <header>
     <div class="top">
       <div class="brand">
-        <h1>Channel 管理</h1>
-        <p>管理企业微信 Channel、管理员认领、Bot 初始化和文档上下文。</p>
+        <h1>Bot 控制台</h1>
+        <p>企业微信机器人、运行能力与环境配置。</p>
       </div>
       <div class="tools">
         <a href="/admin/global-documents">全局配置</a>
         <a href="/admin/roles">角色管理</a>
         <span class="toast" id="toast">等待操作。</span>
         <button type="button" class="secondary" id="refreshButton">刷新</button>
-        <button type="button" id="newChannelButton">新增 Channel</button>
+        <button type="button" id="newChannelButton">新增 Bot</button>
       </div>
     </div>
   </header>
   <main class="layout">
     <section class="panel">
       <div class="panel-head">
-        <h2>Channel 列表</h2>
-        <span class="subtle" id="channelCount">0 个 Channel</span>
+        <h2>Bot 列表</h2>
+        <span class="subtle" id="channelCount">0 个 Bot</span>
       </div>
       <div class="filters">
-        <input id="searchInput" type="search" placeholder="搜索 Bot、企业微信Bot ID、状态">
+        <input id="searchInput" type="search" placeholder="搜索名称、Bot ID 或状态">
         <select id="statusFilter" aria-label="筛选运行状态">
           <option value="all">全部状态</option>
           <option value="enabled">运行中</option>
@@ -2231,7 +2301,7 @@ function renderChannelWorkbenchPage(): string {
       <div class="channel-list" id="channelList"></div>
     </section>
     <section class="panel detail" id="detailPanel">
-      <div class="empty">选择左侧 Channel 查看详情。</div>
+      <div class="empty">选择左侧 Bot 查看详情。</div>
     </section>
   </main>
 
@@ -2246,7 +2316,7 @@ function renderChannelWorkbenchPage(): string {
           <input name="bot_id" type="hidden">
           <div class="row-2">
             <label>名称<input name="name" required placeholder="PRD Bot"></label>
-            <label>LLM<select name="runtime"><option value="kiro">kiro</option><option value="mock">mock</option></select></label>
+            <label>LLM<select name="runtime"><option value="kiro">Kiro CLI</option><option value="claude-code">Claude Code</option><option value="mock">mock</option></select></label>
           </div>
           <label>企业微信Bot ID<input name="wecom_bot_id" required placeholder="企业微信后台的 Bot ID"></label>
           <label>企业微信 Secret<input name="wecom_secret" type="password" autocomplete="new-password" placeholder="新建必填；更新时留空不修改"></label>
@@ -2291,10 +2361,7 @@ function renderChannelWorkbenchPage(): string {
       "memory.search",
       "memory.stats",
       "search.query",
-      "project.ensure",
-      "project.inspect",
-      "project.read",
-      "project.search",
+      "project.publish",
     ];
 
     function setToast(message, isError = false) {
@@ -2318,6 +2385,22 @@ function renderChannelWorkbenchPage(): string {
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
+    }
+
+    function formatBeijingTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return String(value);
+      return new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(date);
     }
 
     function badge(text, kind = "warn") {
@@ -2371,9 +2454,9 @@ function renderChannelWorkbenchPage(): string {
 
     function renderList() {
       const channels = filteredChannels();
-      channelCount.textContent = channels.length + " 个 Channel";
+      channelCount.textContent = channels.length + " 个 Bot";
       if (channels.length === 0) {
-        channelList.innerHTML = '<div class="empty"><h2>暂无 Channel</h2><p>新增 Channel 后会保存企业微信配置，并立即生成管理员认领码。</p><button type="button" data-action="empty-new">新增 Channel</button></div>';
+        channelList.innerHTML = '<div class="empty"><h2>暂无 Bot</h2><p>创建后即可配置企业微信连接、能力和测试环境。</p><button type="button" data-action="empty-new">新增 Bot</button></div>';
         return;
       }
       channelList.innerHTML = channels.map((channel) => {
@@ -2415,6 +2498,8 @@ function renderChannelWorkbenchPage(): string {
           '</div>',
           '<div class="tools">',
             '<button type="button" class="secondary" data-action="edit-channel">编辑配置</button>',
+            '<button type="button" data-action="edit-project">测试环境</button>',
+            '<button type="button" class="secondary" data-action="view-traces">消息链路</button>',
             '<button type="button" data-action="manage-bot-capabilities">管理 Env / Skills / MCP</button>',
           '</div>',
         '</div>',
@@ -2501,7 +2586,7 @@ function renderChannelWorkbenchPage(): string {
         '<div class="capability-grid">',
           capabilityCard("MCP Tools", tools.length + " 个工具", tools.slice(0, 6).join("、") + (tools.length > 6 ? " 等" : "")),
           capabilityCard("文档能力", documents.count + " 个普通文档", formatTypeStats(documents.by_type)),
-          capabilityCard("记忆索引", memory.memories + " 条记忆 / " + memory.chunks + " 个 chunk", "资产 " + memory.assets + "，记忆文档 " + memory.memory_documents),
+          capabilityCard("记忆索引", (memory.memories ?? 0) + " 条记忆 / " + (memory.chunks ?? 0) + " 个片段", "资产 " + (memory.assets ?? 0) + "，记忆文档 " + (memory.memory_documents ?? 0)),
         '</div>',
         '<div class="chip-list">',
           '<span class="chip">读：' + escapeHtml(readableScopes.join(" / ") || "-") + '</span>',
@@ -2531,8 +2616,8 @@ function renderChannelWorkbenchPage(): string {
 
     function configDocPreview(label, doc) {
       if (!doc) return '<div class="doc-item"><strong>' + escapeHtml(label) + '</strong><div class="subtle">未生成。</div></div>';
-      return '<details class="doc-item" open><summary>' + escapeHtml(label) + '</summary>' +
-        '<div class="subtle">更新时间：' + escapeHtml(doc.updated_at || doc.created_at || "-") + '</div>' +
+      return '<details class="doc-item"><summary>' + escapeHtml(label) + '</summary>' +
+        '<div class="subtle">更新时间：' + escapeHtml(formatBeijingTime(doc.updated_at || doc.created_at)) + '</div>' +
         '<pre>' + escapeHtml(doc.content || "") + '</pre></details>';
     }
 
@@ -2578,12 +2663,14 @@ function renderChannelWorkbenchPage(): string {
       const detail = await requestJson("/v1/bot-channels/" + encodeURIComponent(channelId));
       if (detail?.bot?.bot_id) {
         const botId = encodeURIComponent(detail.bot.bot_id);
-        const [configDocuments, mcpCapabilities] = await Promise.all([
+        const [configDocuments, mcpCapabilities, projectEnv] = await Promise.all([
           requestJson("/v1/bots/" + botId + "/config-documents"),
           requestJson("/v1/bots/" + botId + "/mcp-capabilities"),
+          requestJson("/v1/bots/" + botId + "/project-env"),
         ]);
         detail.config_documents = configDocuments;
         detail.mcp_capabilities = mcpCapabilities;
+        detail.project_env = projectEnv;
       }
       state.details.set(channelId, detail);
       renderDetail(detail);
@@ -2607,7 +2694,7 @@ function renderChannelWorkbenchPage(): string {
         '<input name="bot_id" type="hidden">' +
         '<div class="row-2">' +
           '<label>名称<input name="name" required placeholder="PRD Bot"></label>' +
-          '<label>LLM<select name="runtime"><option value="kiro">kiro</option><option value="mock">mock</option></select></label>' +
+          '<label>LLM<select name="runtime"><option value="kiro">Kiro CLI</option><option value="claude-code">Claude Code</option><option value="mock">mock</option></select></label>' +
         '</div>' +
         '<label>企业微信Bot ID<input name="wecom_bot_id" required placeholder="企业微信后台的 Bot ID"></label>' +
         '<label>企业微信 Secret<input name="wecom_secret" type="password" autocomplete="new-password" placeholder="新建必填；更新时留空不修改"></label>' +
@@ -2624,39 +2711,45 @@ function renderChannelWorkbenchPage(): string {
         setToast("项目配置尚未加载。", true);
         return;
       }
-      modalTitle.textContent = "项目配置 · " + bot.name;
+      modalTitle.textContent = "测试环境 · " + bot.name;
       modalBody.innerHTML = renderProjectConfig(bot, detail.project_env || {});
       modalBackdrop.classList.add("open");
-      document.querySelector("#projectForm input[name='project_repository_url']")?.focus();
+      document.querySelector("#projectEnvForm input[name='python_path']")?.focus();
     }
 
     function renderProjectConfig(bot, projectEnv) {
+      const values = splitProjectEnvContent(projectEnv.content);
       return '<div class="form-grid">' +
-        '<form id="projectForm" class="form-grid">' +
-          '<fieldset class="field-group"><legend>主项目</legend>' +
-            '<div class="subtle">只填 Git 仓库地址也可以保存；项目标识和工作目录默认取仓库名，默认分支为 main。</div>' +
-            '<label>Git 仓库地址<input name="project_repository_url" value="' + escapeHtml(bot.project_repository_url || "") + '" placeholder="https://github.com/org/im-test-hub.git"></label>' +
-            '<div class="row-2">' +
-              '<label>项目标识<input name="project_key" value="' + escapeHtml(bot.project_key || "") + '" placeholder="默认取仓库名"></label>' +
-              '<label>工作目录<input name="project_directory" value="' + escapeHtml(bot.project_directory || "") + '" placeholder="默认取项目标识"></label>' +
-            '</div>' +
-            '<label>默认分支<input name="project_default_branch" value="' + escapeHtml(bot.project_default_branch || "main") + '" placeholder="main"></label>' +
-            '<div class="subtle">清空 Git 仓库地址并保存，会移除该 Bot 的主项目配置。普通聊天不会自动克隆仓库。</div>' +
-          '</fieldset>' +
-          '<div class="tools"><button type="submit">保存项目配置</button></div>' +
-        '</form>' +
-        '<fieldset class="field-group"><legend>项目 .env 文件</legend>' +
-          '<div class="subtle">整份文件按 Bot 加密保存，仅供受控测试运行环境使用；不会写入 Kiro 会话工作目录，已保存内容不会在页面回显。</div>' +
+        '<form id="projectForm" class="form-grid" style="display:none"></form>' +
+        '<div class="test-env-summary"><div><strong>用户仓库</strong><div class="subtle">由用户在企业微信发送 <code>/github bind</code> 绑定个人 Fork。</div></div><span class="badge ok">按用户隔离</span></div>' +
+        '<fieldset class="field-group test-env-card"><legend>本机测试环境</legend>' +
+          '<div class="subtle">仅保存执行测试所需配置。保存后可直接查看和编辑，不会提交到用户仓库。</div>' +
           '<div>' + badge(projectEnv.configured ? "已配置" : "未配置", projectEnv.configured ? "ok" : "warn") +
-            (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(projectEnv.updated_at) + '</span>' : '') + '</div>' +
+            (projectEnv.updated_at ? '<span class="subtle"> 最近更新：' + escapeHtml(formatBeijingTime(projectEnv.updated_at)) + '</span>' : '') + '</div>' +
           '<form id="projectEnvForm" class="form-grid">' +
-            '<label>.env 文件内容<textarea name="content" required spellcheck="false" autocomplete="off" placeholder="PYTHONPATH=.&#10;APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret"></textarea></label>' +
-            '<div class="tools"><button type="submit">' + (projectEnv.configured ? "整体替换 .env" : "保存 .env") + '</button>' +
+            '<label>Python 解释器<input name="python_path" required spellcheck="false" autocomplete="off" value="' + escapeHtml(values.pythonPath) + '" placeholder="/Users/name/work/im-test-hub/.venv/bin/python"></label>' +
+            '<label>环境变量（.env）<textarea name="env_content" required spellcheck="false" autocomplete="off" placeholder="APPKEY=example#app&#10;CLIENT_ID=your-client-id&#10;CLIENT_SECRET=your-client-secret">' + escapeHtml(values.envContent) + '</textarea></label>' +
+            '<div class="tools test-env-actions"><button type="button" class="secondary" data-action="modal-cancel">取消</button><button type="submit">' + (projectEnv.configured ? "更新配置" : "保存配置") + '</button>' +
               (projectEnv.configured ? '<button type="button" class="danger" data-action="delete-project-env">删除 .env</button>' : '') + '</div>' +
           '</form>' +
         '</fieldset>' +
-        '<div class="tools"><button type="button" class="secondary" data-action="modal-cancel">关闭</button></div>' +
       '</div>';
+    }
+
+    function splitProjectEnvContent(content) {
+      const envLines = [];
+      let pythonPath = "";
+      for (const line of String(content || "").split(/\\r?\\n/)) {
+        if (!pythonPath && line.startsWith("IM_TEST_HUB_PYTHON=")) {
+          pythonPath = line.slice("IM_TEST_HUB_PYTHON=".length);
+        } else {
+          envLines.push(line);
+        }
+      }
+      return {
+        pythonPath,
+        envContent: envLines.join("\\n").replace(/^\\n+|\\n+$/g, ""),
+      };
     }
 
     function openCapabilityModal(detail) {
@@ -2697,6 +2790,67 @@ function renderChannelWorkbenchPage(): string {
       return '<label><input type="checkbox" name="' + escapeHtml(name) + '" value="' + escapeHtml(value) + '"' + (checked ? " checked" : "") + '> <span>' + escapeHtml(value) + '</span></label>';
     }
 
+    async function openTraceModal(detail) {
+      const bot = detail?.bot;
+      if (!bot) return;
+      modalTitle.textContent = "消息链路 · " + bot.name;
+      modalBody.innerHTML = '<div class="subtle">正在加载 Trace…</div>';
+      modalBackdrop.classList.add("open");
+      try {
+        const traces = await requestJson("/v1/message-traces?bot_id=" + encodeURIComponent(bot.bot_id) + "&limit=50");
+        renderTraceModal(bot, traces, detail);
+      } catch (error) {
+        modalBody.innerHTML = '<div class="empty">Trace 加载失败。</div>';
+        setToast(error.error || "Trace 加载失败", true);
+      }
+    }
+
+    function renderTraceModal(bot, traces, detail) {
+      const users = [...new Set(traces.map((trace) => trace.wecom_user_id).filter(Boolean))];
+      const conversations = [...new Set(traces.map((trace) => trace.conversation_id).filter(Boolean))];
+      modalBody.innerHTML = [
+        '<div class="trace-filters">',
+          '<select id="traceUserFilter"><option value="">全部用户</option>' + users.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
+          '<select id="traceConversationFilter"><option value="">全部会话</option>' + conversations.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
+          '<button type="button" class="secondary" data-action="refresh-traces">筛选</button>',
+        '</div>',
+        '<div class="subtle">一条 Trace 对应一条企微消息；展开后可查看 Prompt、CLI、MCP 和最终回复。</div>',
+        '<div class="trace-list" id="traceList">' + renderTraceList(traces) + '</div>',
+        '<div class="trace-spans" id="traceSpans"><div class="empty">选择一条消息查看完整链路。</div></div>',
+      ].join("");
+      modalBody.dataset.traceBotId = bot.bot_id;
+      modalBody.dataset.traceChannelId = detail?.channel?.channel_id || "";
+    }
+
+    function renderTraceList(traces) {
+      if (!traces.length) return '<div class="empty">还没有 Trace。重启服务后发送一条普通消息即可出现。</div>';
+      return traces.map((trace) => '<button type="button" class="trace-row" data-trace-id="' + escapeHtml(trace.trace_id) + '">' +
+        '<div><strong>' + escapeHtml(formatBeijingTime(trace.started_at)) + '</strong>' +
+        '<div class="trace-meta">用户：' + escapeHtml(trace.wecom_user_id) + ' · 会话：' + escapeHtml(trace.conversation_id) + '</div>' +
+        '<div class="trace-meta">' + escapeHtml(trace.trace_id) + '</div></div>' +
+        badge(trace.status, statusKind(trace.status)) + '</button>').join("");
+    }
+
+    async function loadTraceSpans(traceId) {
+      const botId = modalBody.dataset.traceBotId;
+      const target = document.querySelector("#traceSpans");
+      if (!botId || !target) return;
+      target.innerHTML = '<div class="subtle">正在加载消息链路…</div>';
+      try {
+        const spans = await requestJson("/v1/trace-spans?bot_id=" + encodeURIComponent(botId) + "&trace_id=" + encodeURIComponent(traceId));
+        target.innerHTML = spans.length ? spans.map((span, index) => {
+          const body = JSON.stringify(span.summary || {}, null, 2);
+          return '<details class="trace-span ' + (span.status === "error" ? "error" : "") + '"' + (index < 2 ? " open" : "") + '>' +
+            '<summary><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
+            '<div class="trace-meta">' + escapeHtml(formatBeijingTime(span.created_at)) + (span.run_id ? ' · ' + escapeHtml(span.run_id) : '') + '</div>' +
+            '<pre>' + escapeHtml(body) + '</pre></details>';
+        }).join("") : '<div class="empty">该消息暂时没有步骤记录。</div>';
+      } catch (error) {
+        target.innerHTML = '<div class="empty">链路加载失败。</div>';
+        setToast(error.error || "链路加载失败", true);
+      }
+    }
+
     function closeModal() {
       modalBackdrop.classList.remove("open");
     }
@@ -2709,7 +2863,7 @@ function renderChannelWorkbenchPage(): string {
         target.innerHTML = '<div class="claim-card"><div><strong>管理员认领码</strong><div class="subtle">复制后发送给企业微信 Bot。</div></div>' +
           '<code>' + escapeHtml(command) + '</code>' +
           '<div class="tools"><button type="button" class="secondary" data-copy="' + escapeHtml(command) + '">复制认领命令</button></div>' +
-          '<div class="subtle">有效期至 ' + escapeHtml(new Date(claim.expires_at).toLocaleString()) + '</div></div>';
+          '<div class="subtle">有效期至 ' + escapeHtml(formatBeijingTime(claim.expires_at)) + '</div></div>';
       }
       return claim;
     }
@@ -2750,6 +2904,10 @@ function renderChannelWorkbenchPage(): string {
           openProjectModal(detail);
           return;
         }
+        if (button.dataset.action === "view-traces") {
+          await openTraceModal(detail);
+          return;
+        }
         if (button.dataset.action === "manage-bot-capabilities") {
           window.location.href = "/admin/bots/" + encodeURIComponent(botId) + "/capabilities";
           return;
@@ -2767,7 +2925,7 @@ function renderChannelWorkbenchPage(): string {
             target.innerHTML = '<div class="claim-card"><div><strong>管理员认领码</strong><div class="subtle">复制后发送给企业微信 Bot。</div></div>' +
               '<code>' + escapeHtml(command) + '</code>' +
               '<div class="tools"><button type="button" class="secondary" data-copy="' + escapeHtml(command) + '">复制认领命令</button></div>' +
-              '<div class="subtle">有效期至 ' + escapeHtml(new Date(claim.expires_at).toLocaleString()) + '</div></div>';
+              '<div class="subtle">有效期至 ' + escapeHtml(formatBeijingTime(claim.expires_at)) + '</div></div>';
           }
           setToast("管理员已重置，新的验证码已生成。");
         }
@@ -2788,16 +2946,38 @@ function renderChannelWorkbenchPage(): string {
     });
 
     modalBody.addEventListener("click", async (event) => {
+      const traceRow = event.target.closest("button[data-trace-id]");
+      if (traceRow) {
+        await loadTraceSpans(traceRow.dataset.traceId);
+        return;
+      }
       const button = event.target.closest("button[data-action]");
       if (!button) return;
       if (button.dataset.action === "modal-cancel") {
         closeModal();
         return;
       }
+      if (button.dataset.action === "refresh-traces") {
+        const botId = modalBody.dataset.traceBotId;
+        if (!botId) return;
+        const userId = document.querySelector("#traceUserFilter")?.value || "";
+        const conversationId = document.querySelector("#traceConversationFilter")?.value || "";
+        const query = new URLSearchParams({ bot_id: botId, limit: "50" });
+        if (userId) query.set("wecom_user_id", userId);
+        if (conversationId) query.set("conversation_id", conversationId);
+        try {
+          const traces = await requestJson("/v1/message-traces?" + query.toString());
+          const list = document.querySelector("#traceList");
+          if (list) list.innerHTML = renderTraceList(traces);
+        } catch (error) {
+          setToast(error.error || "Trace 筛选失败", true);
+        }
+        return;
+      }
       if (button.dataset.action !== "delete-project-env" || !state.selectedChannelId) return;
       const detail = state.details.get(state.selectedChannelId);
       const botId = detail?.bot?.bot_id;
-      if (!botId || !confirm("确认删除该 Bot 的项目 .env 文件配置？现有会话仓库会在下次 project.ensure 时清理。")) return;
+      if (!botId || !confirm("确认删除该 Bot 的项目 .env 文件配置？现有会话仓库会在下次自动准备项目时清理。")) return;
       try {
         await requestJson("/v1/bots/" + encodeURIComponent(botId) + "/project-env", {
           method: "DELETE",
@@ -2894,16 +3074,15 @@ function renderChannelWorkbenchPage(): string {
         await requestJson("/v1/bots/" + encodeURIComponent(botId) + "/project-env", {
           method: "PUT",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            actor_id: detail.admin?.wecom_user_id || "webui",
-            content: form.content,
+        body: JSON.stringify({
+          actor_id: detail.admin?.wecom_user_id || "webui",
+          content: "IM_TEST_HUB_PYTHON=" + String(form.python_path || "").trim() + "\\n" + String(form.env_content || "").trim(),
             updated_by_wecom_user_id: detail.admin?.wecom_user_id || "webui",
           }),
         });
-        formElement.reset();
         await loadDetail(state.selectedChannelId);
         openProjectModal(state.details.get(state.selectedChannelId));
-        setToast("项目 .env 已加密保存。");
+        setToast("测试环境已保存。");
       } catch (error) {
         setToast(error.error || "项目 .env 保存失败", true);
       }

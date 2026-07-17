@@ -53,7 +53,9 @@ describe("skill manager", () => {
     });
 
     const installedRoot = join(workspaceRoot, "bot-a", ".kiro", "skills", "jira-test");
+    const claudeInstalledRoot = join(workspaceRoot, "bot-a", ".claude", "skills", "jira-test");
     expect(readFileSync(join(installedRoot, "SKILL.md"), "utf8")).toContain("name: jira-test");
+    expect(readFileSync(join(claudeInstalledRoot, "SKILL.md"), "utf8")).toContain("name: jira-test");
     expect(existsSync(join(installedRoot, ".venv"))).toBe(false);
     expect(statuses.map((record) => record.status)).toEqual(["installing", "installed"]);
     expect(statuses[1]).toMatchObject({

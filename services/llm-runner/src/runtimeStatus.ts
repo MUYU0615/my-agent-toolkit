@@ -26,39 +26,45 @@ export async function getRuntimeStatuses(
   }
 
   if (config.enabled_runtimes.includes("kiro")) {
-    statuses.push(await getKiroStatus(config));
+    statuses.push(await getCliStatus("kiro", config.kiro));
+  }
+  if (config.enabled_runtimes.includes("claude-code")) {
+    statuses.push(await getCliStatus("claude-code", config.claude_code));
   }
 
   return statuses;
 }
 
-async function getKiroStatus(config: RunnerConfig): Promise<RuntimeStatus> {
-  if (!config.kiro) {
+async function getCliStatus(
+  runtime: "kiro" | "claude-code",
+  cliConfig: RunnerConfig["kiro"],
+): Promise<RuntimeStatus> {
+  if (!cliConfig) {
     return {
-      runtime: "kiro",
+      runtime,
       enabled: true,
       configured: false,
       available: false,
-      error: "kiro runtime is missing configuration",
+      error: `${runtime} runtime is missing configuration`,
     };
   }
 
-  if (config.kiro.command.includes("/")) {
+  if (cliConfig.command.includes("/")) {
     try {
-      await access(config.kiro.command, constants.X_OK);
+      await access(cliConfig.command, constants.X_OK);
     } catch {
       return {
-        runtime: "kiro",
+        runtime,
         enabled: true,
         configured: true,
         available: false,
-        error: `command not found: ${config.kiro.command}`,
+        error: `command not found: ${cliConfig.command}`,
       };
     }
   }
 
   return {
-    runtime: "kiro",
+    runtime,
     enabled: true,
     configured: true,
     available: true,

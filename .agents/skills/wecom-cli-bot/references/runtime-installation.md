@@ -56,7 +56,16 @@ In Docker mode, do not run host-local `npm install` just to validate a Docker bo
 
 ## Kiro CLI Installation
 
-Current runtime support is Kiro-only.
+The standalone scaffold remains Kiro-only. In the managed platform, Claude Code is installed and logged in on the Docker host, then invoked through the same host relay; containers do not mount the host Claude binary.
+
+To enable managed Claude Code, verify the host installation and login first:
+
+```bash
+claude --version
+claude
+```
+
+Set `CLAUDE_CODE_COMMAND` only when the binary is not at `~/.local/bin/claude`. The WebUI can then select `Claude Code` for an individual Bot.
 
 Default Docker/Linux install command:
 

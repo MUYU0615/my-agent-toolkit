@@ -97,7 +97,7 @@ describe("control-api server", () => {
     expect(html).not.toContain("写入 Memory 文档");
   });
 
-  it("renders separate project and project dotenv configuration controls", async () => {
+  it("renders a focused plaintext test environment editor", async () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",
       logServiceUrl: "http://log-service",
@@ -107,12 +107,20 @@ describe("control-api server", () => {
     const html = await (await server.fetch(new Request("http://localhost/"))).text();
 
     expect(html).toContain('data-action="edit-project"');
-    expect(html).toContain("项目配置");
-    expect(html).toContain("项目 .env 文件");
-    expect(html).toContain("整份文件按 Bot 加密保存");
-    expect(html).toContain('id="projectForm"');
+    expect(html).toContain("测试环境");
+    expect(html).toContain("Python 解释器");
+    expect(html).toContain("环境变量（.env）");
+    expect(html).toContain("保存后可直接查看和编辑");
+    expect(html).toContain("splitProjectEnvContent(projectEnv.content)");
+    expect(html).not.toContain("项目 .env 已加密保存");
+    const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
+    expect(script).toBeTruthy();
+    expect(() => new Function(script ?? "")).not.toThrow();
     expect(html).toContain('id="projectEnvForm"');
-    expect(html).toContain("只填 Git 仓库地址也可以保存");
+    expect(html).toContain("/github bind");
+    expect(html).not.toContain('id="projectForm"');
+    expect(html).not.toContain("Git 仓库地址");
+    expect(html).toContain('requestJson("/v1/bots/" + botId + "/project-env")');
   });
 
   it("proxies project dotenv management without auditing its content", async () => {
@@ -1668,6 +1676,27 @@ describe("control-api server", () => {
     ]);
     expect(calls).toEqual([
       "http://log-service/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&limit=10",
+    ]);
+  });
+
+  it("queries message traces and trace spans through log-service", async () => {
+    const calls: string[] = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) throw new Error("expected Request");
+        calls.push(request.url);
+        return Response.json([]);
+      },
+    });
+
+    await server.fetch(new Request("http://localhost/v1/message-traces?bot_id=prd-bot&wecom_user_id=user-a"));
+    await server.fetch(new Request("http://localhost/v1/trace-spans?bot_id=prd-bot&trace_id=trace-1"));
+
+    expect(calls).toEqual([
+      "http://log-service/internal/message-traces?bot_id=prd-bot&wecom_user_id=user-a",
+      "http://log-service/internal/trace-spans?bot_id=prd-bot&trace_id=trace-1",
     ]);
   });
 

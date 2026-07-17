@@ -1,9 +1,11 @@
-export type RuntimeName = "mock" | "kiro";
+export type RuntimeName = "mock" | "kiro" | "claude-code";
 
 export interface ChatRequest {
   bot_id: string;
   user_id: string;
   conversation_id: string;
+  /** Correlates one inbound WeCom message across host, runner and MCP spans. */
+  trace_id?: string;
   runtime: RuntimeName;
   prompt: string;
 }
@@ -34,14 +36,17 @@ export function parseChatRequest(value: unknown): ChatRequest {
     }
   }
 
-  if (record.runtime !== "mock" && record.runtime !== "kiro") {
-    throw new Error("runtime must be mock or kiro");
+  if (record.runtime !== "mock" && record.runtime !== "kiro" && record.runtime !== "claude-code") {
+    throw new Error("runtime must be mock, kiro, or claude-code");
   }
 
   return {
     bot_id: readRequiredString(record, "bot_id").trim(),
     user_id: readRequiredString(record, "user_id").trim(),
     conversation_id: readRequiredString(record, "conversation_id").trim(),
+    ...(typeof record.trace_id === "string" && record.trace_id.trim()
+      ? { trace_id: record.trace_id.trim() }
+      : {}),
     runtime: record.runtime,
     prompt: readRequiredString(record, "prompt"),
   };

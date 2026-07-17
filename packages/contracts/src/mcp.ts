@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export type McpScope = "system" | "shared" | "bot" | "user" | "session";
 export type McpTier = "core" | "reference" | "temp";
-export type McpRuntime = "mock" | "kiro";
+export type McpRuntime = "mock" | "kiro" | "claude-code";
 
 export interface TrustedMcpContext {
   bot_id: string;
@@ -50,7 +50,7 @@ export interface McpCapabilityConfig {
 
 const MCP_SCOPES = ["system", "shared", "bot", "user", "session"] as const;
 const MCP_TIERS = ["core", "reference", "temp"] as const;
-const MCP_RUNTIMES = ["mock", "kiro"] as const;
+const MCP_RUNTIMES = ["mock", "kiro", "claude-code"] as const;
 const DEFAULT_MCP_TOOLS = [
   "document.create",
   "document.ingest_file",
@@ -64,10 +64,7 @@ const DEFAULT_MCP_TOOLS = [
   "memory.search",
   "memory.stats",
   "search.query",
-  "project.ensure",
-  "project.inspect",
-  "project.read",
-  "project.search",
+  "project.publish",
 ] as const;
 const RESERVED_CONFIG_DOCUMENT_TITLES = new Set([
   "soul",
@@ -167,7 +164,8 @@ export function parseMcpCapabilityConfig(value: unknown): McpCapabilityConfig {
       writable_scopes: parseScopeArray(documents.writable_scopes, "writable_scopes"),
     },
     tools: {
-      enabled: parseStringArray(tools.enabled, "enabled"),
+      enabled: parseStringArray(tools.enabled, "enabled")
+        .filter((tool) => tool !== "project.ensure"),
     },
     directory_refs: parseStringArray(record.directory_refs, "directory_refs"),
   };
@@ -228,7 +226,7 @@ function parseMcpRuntime(value: unknown): McpRuntime {
   if (isOneOf(value, MCP_RUNTIMES)) {
     return value;
   }
-  throw new Error("runtime must be mock or kiro");
+  throw new Error("runtime must be mock, kiro, or claude-code");
 }
 
 function parseDocumentVisibility(value: unknown): "private" | "bot" | "shared" {

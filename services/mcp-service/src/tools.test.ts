@@ -17,63 +17,31 @@ describe("document MCP tools", () => {
     runtime: "kiro",
   };
 
-  it("prepares the configured project using trusted conversation context", async () => {
-    const ensure = vi.fn().mockResolvedValue({ path: "projects/im-test-hub" });
+  it("publishes the configured project using trusted user context", async () => {
+    const publish = vi.fn().mockResolvedValue({
+      branch: "bot/add-case",
+      commit: "a".repeat(40),
+    });
     const deps = createNoopDeps();
-    deps.projectClient = {
-      ensure,
-      inspect: vi.fn(),
-      read: vi.fn(),
-      search: vi.fn(),
-    };
+    deps.projectClient = { publish };
 
     const result = await callMcpTool(context, deps, {
-      tool: "project.ensure",
-      input: { project_key: "im-test-hub" },
+      tool: "project.publish",
+      input: {
+        project_key: "im-test-hub",
+        branch: "bot/add-case",
+        commit_message: "test: add case",
+      },
     });
 
     expect(result).toEqual({
       ok: true,
-      result: { path: "projects/im-test-hub" },
+      result: { branch: "bot/add-case", commit: "a".repeat(40) },
     });
-    expect(ensure).toHaveBeenCalledWith(context, "im-test-hub");
-  });
-
-  it("queries the shared project baseline without preparing a user workspace", async () => {
-    const inspect = vi.fn().mockResolvedValue({ entries: [] });
-    const read = vi.fn().mockResolvedValue({ content: "# README" });
-    const search = vi.fn().mockResolvedValue({ results: [] });
-    const deps = createNoopDeps();
-    deps.projectClient = {
-      ensure: vi.fn(),
-      inspect,
-      read,
-      search,
-    };
-
-    await expect(callMcpTool(context, deps, {
-      tool: "project.inspect",
-      input: { project_key: "im-test-hub" },
-    })).resolves.toEqual({ ok: true, result: { entries: [] } });
-    await expect(callMcpTool(context, deps, {
-      tool: "project.read",
-      input: { project_key: "im-test-hub", path: "README.md", start_line: 2 },
-    })).resolves.toEqual({ ok: true, result: { content: "# README" } });
-    await expect(callMcpTool(context, deps, {
-      tool: "project.search",
-      input: { project_key: "im-test-hub", query: "SDK", path: "tests" },
-    })).resolves.toEqual({ ok: true, result: { results: [] } });
-
-    expect(inspect).toHaveBeenCalledWith(context, "im-test-hub");
-    expect(read).toHaveBeenCalledWith(context, {
+    expect(publish).toHaveBeenCalledWith(context, {
       projectKey: "im-test-hub",
-      path: "README.md",
-      startLine: 2,
-    });
-    expect(search).toHaveBeenCalledWith(context, {
-      projectKey: "im-test-hub",
-      query: "SDK",
-      path: "tests",
+      branch: "bot/add-case",
+      commitMessage: "test: add case",
     });
   });
 
@@ -1021,10 +989,7 @@ describe("MCP tool discovery", () => {
       "memory.search",
       "memory.stats",
       "search.query",
-      "project.ensure",
-      "project.inspect",
-      "project.read",
-      "project.search",
+      "project.publish",
     ]);
     expect(manifest.tools.find((tool) => tool.name === "document.create")).toMatchObject({
       category: "document",
@@ -1044,6 +1009,10 @@ describe("MCP tool discovery", () => {
           },
         },
       },
+    });
+    expect(manifest.tools.find((tool) => tool.name === "project.ensure")).toBeUndefined();
+    expect(manifest.tools.find((tool) => tool.name === "project.publish")).toMatchObject({
+      input_schema: { required: ["project_key", "branch", "commit_message"] },
     });
   });
 });

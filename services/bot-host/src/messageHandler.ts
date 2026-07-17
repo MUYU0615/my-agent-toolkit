@@ -1,6 +1,7 @@
 import {
   applyAndConfirmPendingGeneratedDocuments,
   createConversation,
+  syncBotProject,
   getBotRuntimePolicy,
   cancelPendingGeneratedDocuments,
   clearInitializationSession,
@@ -39,8 +40,11 @@ export interface BotHostConfig {
   dataServiceUrl: string;
   llmRunnerUrl: string;
   capabilityRunnerUrl?: string;
+  projectRunnerToken?: string;
   logServiceUrl?: string;
   fetch: typeof fetch;
+  /** Per worker state used to suppress the terminal error from a run stopped by /stop. */
+  runtimeCancellationState?: Set<string>;
   credentialBindPublicUrl?: string;
   credentialInternalToken?: string;
 }
@@ -50,7 +54,7 @@ export interface WeComMessageInput {
   wecom_user_id: string;
   conversation_id?: string;
   text: string;
-  runtime: "mock" | "kiro";
+  runtime: "mock" | "kiro" | "claude-code";
 }
 
 export interface StreamBotMessageConfig extends BotHostConfig {
@@ -102,7 +106,7 @@ interface InstallSkillIntent {
 }
 
 interface ConversationCommand {
-  kind: "history" | "new" | "open" | "name";
+  kind: "history" | "new" | "open" | "name" | "stop";
   index?: number;
   displayName?: string;
 }
@@ -208,6 +212,32 @@ export async function streamBotMessage(
   config: StreamBotMessageConfig,
   wecomConversationId: string,
 ): Promise<void> {
+  const capabilityCommand = parseCapabilityCommand(input.text);
+  if (capabilityCommand) {
+    const context = await resolveMessageContext(config, input);
+    if (!context.allowed) {
+      await config.wecomClient.sendText(wecomConversationId, `处理失败：${context.reason}。`);
+      return;
+    }
+    if (capabilityCommand.kind === "project_sync") {
+      // Keep the WeCom passive reply stream open while a fresh clone runs.
+      // The completed sync result below will replace this progress message and
+      // close the same stream.
+      await config.wecomClient.sendText(wecomConversationId, "正在同步项目，请稍候…", { finish: false });
+      const result = await handleCapabilityCommand(input, config, context, capabilityCommand);
+      const output = String(result.output ?? "");
+      if (output) {
+        await config.wecomClient.sendText(wecomConversationId, output, { finish: true });
+      }
+      return;
+    }
+    const result = await handleCapabilityCommand(input, config, context, capabilityCommand);
+    const output = String(result.output ?? "");
+    if (output) {
+      await config.wecomClient.sendText(wecomConversationId, output, { finish: true });
+    }
+    return;
+  }
   return streamAllowedWeComMessage(input, config, wecomConversationId);
 }
 
@@ -222,6 +252,10 @@ export async function shouldHandleWizardConfirmationAsync(
 
 export function isCapabilityQuery(text: string): boolean {
   return parseCapabilityCommand(text) !== undefined;
+}
+
+export function isProjectSyncCommand(text: string): boolean {
+  return parseCapabilityCommand(text)?.kind === "project_sync";
 }
 
 export async function shouldStreamReply(
@@ -390,31 +424,70 @@ async function processWeComMessage(
       input,
       config,
       context.conversation.conversation_id,
+      context.project_key,
     );
+}
+
+interface ProjectContext {
+  path?: string;
+  branch?: string;
+  key?: string;
 }
 
 function buildPrompt(
   text: string,
   memoryDocuments: ScopedMemoryDocument[],
+  project?: ProjectContext,
 ): string {
-  if (memoryDocuments.length === 0) {
-    return text;
+  const parts: string[] = [];
+
+  if (project) {
+    if (project.path) {
+      parts.push(...[
+        "<project>",
+        `  <root>${project.path}</root>`,
+        ...(project.branch ? [`  <branch>${project.branch}</branch>`] : []),
+        "</project>",
+        "This checkout is prepared by /sync. Work only inside it. If it is unavailable, ask the user to run /sync; never clone, scan parent directories, or infer a host path.",
+        "",
+      ]);
+    } else if (project.key) {
+      parts.push(...[
+        `<project key="${project.key}" />`,
+        "",
+      ]);
+    }
   }
 
-  return [
-    "<memory>",
-    ...memoryDocuments.flatMap((document) => [
-      document.version === undefined
-        ? `[${document.scope}/${document.owner_id}] ${document.title}`
-        : `[${document.scope}/${document.owner_id} v${document.version}] ${document.title}`,
-      document.content,
-    ]),
-    "</memory>",
-    "",
-    "<user-message>",
-    text,
-    "</user-message>",
-  ].join("\n");
+  if (memoryDocuments.length > 0) {
+    parts.push(...[
+      "<memory>",
+      ...memoryDocuments.flatMap((document) => [
+        document.version === undefined
+          ? `[${document.scope}/${document.owner_id}] ${document.title}`
+          : `[${document.scope}/${document.owner_id} v${document.version}] ${document.title}`,
+        document.content,
+      ]),
+      "</memory>",
+      "",
+    ]);
+  }
+
+  parts.push("<user-message>", text, "</user-message>");
+  return parts.join("\n");
+}
+
+function projectContextFromKey(projectKey?: string): ProjectContext | undefined {
+  const key = projectKey?.trim();
+  if (!key || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(key)) {
+    return undefined;
+  }
+  // The host relay runs from users/<user>/conversations/<conversation>.
+  // `/sync` writes the shared checkout to the sibling projects directory.
+  return {
+    key,
+    path: `../../projects/${key}`,
+  };
 }
 
 export async function startInitializationWizard(
@@ -779,6 +852,7 @@ async function processAllowedWeComMessage(
   input: WeComMessageInput,
   config: BotHostConfig,
   conversationId?: string,
+  projectKey?: string,
 ): Promise<{
   conversation_id: string;
   run_id: string;
@@ -802,17 +876,38 @@ async function processAllowedWeComMessage(
     input,
     resolvedConversationId,
   );
-  const prompt = buildPrompt(input.text, memoryDocuments);
+  const projectContext = projectContextFromKey(projectKey);
+  const prompt = buildPrompt(input.text, memoryDocuments, projectContext);
+  const traceId = `trace_${crypto.randomUUID()}`;
+  await startMessageTrace(config, input, resolvedConversationId, traceId);
+  await recordPromptAssemblyTrace(
+    config, input, resolvedConversationId, traceId, prompt, memoryDocuments, projectContext,
+  );
+  const runnerStartedAt = Date.now();
 
-  const result = await postJson<{
-    run_id: string;
-    output: string;
-  }>(config, `${config.llmRunnerUrl}/v1/chat`, {
-    bot_id: input.bot_id,
-    user_id: input.wecom_user_id,
-    conversation_id: resolvedConversationId,
-    runtime: input.runtime,
-    prompt,
+  let result: { run_id: string; output: string };
+  try {
+    result = await postJson(config, `${config.llmRunnerUrl}/v1/chat`, {
+      bot_id: input.bot_id,
+      user_id: input.wecom_user_id,
+      conversation_id: resolvedConversationId,
+      runtime: input.runtime,
+      prompt,
+    }, "POST", { "x-trace-id": traceId });
+  } catch (error) {
+    await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+      stage: "runner.request", status: "error", duration_ms: Date.now() - runnerStartedAt,
+      summary: { runtime: input.runtime },
+    });
+    await finishMessageTrace(config, traceId, "error");
+    throw error;
+  }
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "runner.request",
+    status: "ok",
+    run_id: result.run_id,
+    duration_ms: Date.now() - runnerStartedAt,
+    summary: { runtime: input.runtime },
   });
 
   const presentation = presentRuntimeOutput(result.output);
@@ -820,13 +915,23 @@ async function processAllowedWeComMessage(
   const presentedOutput = presentation.visibleText || INVALID_RUNTIME_OUTPUT_MESSAGE;
   const processed = await processAssistantOutput(config, input, presentedOutput, resolvedConversationId);
   const output = selectVisibleAssistantOutput(input.text, presentedOutput, processed);
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "response.prepare", status: "ok", run_id: result.run_id,
+    summary: { input: result.output, output },
+  });
   await recordChatEvent(
     config,
     input,
     resolvedConversationId,
     { ...result, output },
     memoryDocuments,
+    traceId,
   );
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "wecom.reply", status: "ok", run_id: result.run_id,
+    summary: { output, character_count: output.length },
+  });
+  await finishMessageTrace(config, traceId, "ok");
 
   return {
     conversation_id: resolvedConversationId,
@@ -1018,11 +1123,23 @@ async function streamAllowedWeComMessage(
     input,
     resolvedConversationId,
   );
-  const prompt = buildPrompt(input.text, memoryDocuments);
+  const context = await resolveMessageContext(config, input);
+  const projectContext = projectContextFromKey(context.project_key);
+  const prompt = buildPrompt(
+    input.text,
+    memoryDocuments,
+    projectContext,
+  );
+  const traceId = `trace_${crypto.randomUUID()}`;
+  await startMessageTrace(config, input, resolvedConversationId, traceId);
+  await recordPromptAssemblyTrace(
+    config, input, resolvedConversationId, traceId, prompt, memoryDocuments, projectContext,
+  );
+  const runnerStartedAt = Date.now();
   const response = await config.fetch(
     new Request(`${config.llmRunnerUrl}/v1/chat/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-trace-id": traceId },
       body: JSON.stringify({
         bot_id: input.bot_id,
         user_id: input.wecom_user_id,
@@ -1066,7 +1183,21 @@ async function streamAllowedWeComMessage(
           resolvedConversationId,
           { run_id: runId, output: visibleOutput },
           memoryDocuments,
+          traceId,
         );
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "runner.request", status: "ok", run_id: runId,
+          duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+        });
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "response.prepare", status: "ok", run_id: runId,
+          summary: { input: rawOutput, output: visibleOutput },
+        });
+        await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+          stage: "wecom.reply", status: "ok", run_id: runId,
+          summary: { output: visibleOutput, character_count: visibleOutput.length },
+        });
+        await finishMessageTrace(config, traceId, "ok");
         return;
       }
       sentAnyVisibleChunk = true;
@@ -1074,6 +1205,10 @@ async function streamAllowedWeComMessage(
       continue;
     }
     if (event.type === "error") {
+      if (consumeRuntimeCancellation(config, input, resolvedConversationId)) {
+        await presentationStream.finish();
+        return;
+      }
       const output = formatRuntimeUnavailableMessage(
         typeof event.error === "string" ? event.error : undefined,
       );
@@ -1085,7 +1220,17 @@ async function streamAllowedWeComMessage(
         resolvedConversationId,
         { run_id: runId, output },
         memoryDocuments,
+        traceId,
       );
+      await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+        stage: "runner.request", status: "error", run_id: runId,
+        duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+      });
+      await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+        stage: "wecom.reply", status: "error", run_id: runId,
+        summary: { output, character_count: output.length },
+      });
+      await finishMessageTrace(config, traceId, "error");
       return;
     }
     if (event.type === "done") {
@@ -1110,7 +1255,21 @@ async function streamAllowedWeComMessage(
     resolvedConversationId,
     { run_id: runId, output: finalOutput },
     memoryDocuments,
+    traceId,
   );
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "runner.request", status: "ok", run_id: runId,
+    duration_ms: Date.now() - runnerStartedAt, summary: { runtime: input.runtime },
+  });
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "response.prepare", status: "ok", run_id: runId,
+    summary: { input: rawOutput, output: finalOutput },
+  });
+  await recordTraceSpan(config, input, resolvedConversationId, traceId, {
+    stage: "wecom.reply", status: "ok", run_id: runId,
+    summary: { output: finalOutput, character_count: finalOutput.length },
+  });
+  await finishMessageTrace(config, traceId, "ok");
 }
 
 async function getJson<T>(
@@ -1421,6 +1580,9 @@ function isPromptEchoOutput(output: string): boolean {
 
 function formatRuntimeUnavailableMessage(error: string | undefined): string {
   const reason = error?.trim() || "runtime unavailable";
+  if (/runtime timed out|超过时间限制/.test(reason)) {
+    return "任务执行超过 15 分钟，已自动停止并丢弃本次产生的代码更改。";
+  }
   return `LLM 运行器暂不可用：${reason}。请检查 Kiro relay 或 runtime 配置后重试。`;
 }
 
@@ -1547,6 +1709,9 @@ function parseConversationCommand(text: string): ConversationCommand | undefined
   if (trimmed === "/new") {
     return { kind: "new" };
   }
+  if (trimmed === "/stop") {
+    return { kind: "stop" };
+  }
   const openMatch = trimmed.match(/^\/open\s+(\d+)$/);
   if (openMatch) {
     return { kind: "open", index: Number(openMatch[1]) };
@@ -1572,6 +1737,7 @@ function parseCapabilityCommand(
   | { kind: "mcps_summary" }
   | { kind: "mcp_install"; name: string }
   | { kind: "mcp_delete"; name: string }
+  | { kind: "project_sync" }
   | { kind: "capability_summary" }
   | { kind: "install_skill"; intent: InstallSkillIntent }
   | undefined {
@@ -1644,6 +1810,9 @@ function parseCapabilityCommand(
       kind: "mcp_delete",
       name: mcpDeleteMatch[1],
     };
+  }
+  if (trimmed === "/sync" || trimmed === "/project sync") {
+    return { kind: "project_sync" };
   }
   if (trimmed === "/capability") {
     return { kind: "capability_summary" };
@@ -1802,6 +1971,9 @@ async function handleCapabilityCommand(
   config: BotHostConfig,
   context: {
     is_admin?: boolean;
+    conversation?: {
+      conversation_id: string;
+    };
   },
   command:
     | { kind: "help" }
@@ -1815,6 +1987,7 @@ async function handleCapabilityCommand(
     | { kind: "mcps_summary" }
     | { kind: "mcp_install"; name: string }
     | { kind: "mcp_delete"; name: string }
+    | { kind: "project_sync" }
     | { kind: "capability_summary" }
     | { kind: "install_skill"; intent: InstallSkillIntent },
 ): Promise<Record<string, unknown>> {
@@ -1902,6 +2075,24 @@ async function handleCapabilityCommand(
     ]);
     return {
       output: buildCapabilitySummary(policy, skills, mcps, logs),
+    };
+  }
+
+  if (command.kind === "project_sync") {
+    const result = await syncBotProject(
+      config,
+      input.bot_id,
+      input.wecom_user_id,
+      context.conversation?.conversation_id ?? "",
+    );
+    if (!result) {
+      return { output: "当前 Bot 未配置项目或 GitHub fork 尚未绑定。请先发送 /github bind 绑定你的 fork。" };
+    }
+    if ("error" in result) {
+      return { output: `项目同步失败：${result.error}。请重新 /github bind。` };
+    }
+    return {
+      output: `项目已同步：\n- 路径：${result.path}\n- 分支：${result.branch}\n- 提交：${result.base_commit.slice(0, 7)}`,
     };
   }
 
@@ -2006,6 +2197,20 @@ async function handleConversationCommand(
     purpose: "normal_chat" as const,
   };
 
+  if (command.kind === "stop") {
+    const cancelled = await requestRuntimeCancellation(config, {
+      bot_id: input.bot_id,
+      user_id: input.wecom_user_id,
+      conversation_id: context.conversation.conversation_id,
+      runtime: input.runtime,
+    });
+    if (cancelled) {
+      markRuntimeCancellation(config, input, context.conversation.conversation_id);
+      return { output: "已停止当前任务。" };
+    }
+    return { output: "当前没有正在执行的任务。" };
+  }
+
   if (command.kind === "history") {
     const conversations = await listConversations(config, baseInput);
     return {
@@ -2059,6 +2264,57 @@ async function handleConversationCommand(
   };
 }
 
+async function requestRuntimeCancellation(
+  config: BotHostConfig,
+  input: {
+    bot_id: string;
+    user_id: string;
+    conversation_id: string;
+    runtime: "mock" | "kiro" | "claude-code";
+  },
+): Promise<boolean> {
+  const response = await config.fetch(
+    new Request(`${config.llmRunnerUrl}/v1/runs/cancel`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+  if (!response.ok) {
+    throw new Error("runtime cancellation failed");
+  }
+  const payload = await response.json() as { cancelled?: unknown };
+  return payload.cancelled === true;
+}
+
+function runtimeCancellationKey(
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): string {
+  return `${input.bot_id}:${input.wecom_user_id}:${conversationId}`;
+}
+
+function markRuntimeCancellation(
+  config: BotHostConfig,
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): void {
+  config.runtimeCancellationState?.add(runtimeCancellationKey(input, conversationId));
+}
+
+function consumeRuntimeCancellation(
+  config: BotHostConfig,
+  input: Pick<WeComMessageInput, "bot_id" | "wecom_user_id">,
+  conversationId: string,
+): boolean {
+  const key = runtimeCancellationKey(input, conversationId);
+  if (!config.runtimeCancellationState?.has(key)) {
+    return false;
+  }
+  config.runtimeCancellationState.delete(key);
+  return true;
+}
+
 function buildHelpTable(): string {
   return [
     "| 指令 | 功能 |",
@@ -2079,6 +2335,7 @@ function buildHelpTable(): string {
     "| `/github status` | 查看个人 GitHub fork 绑定状态 |",
     "| `/github unbind` | 解除个人 GitHub fork 绑定 |",
     "| `/claim_admin <认领码>` | 认领管理员身份 |",
+    "| `/sync` | 克隆/同步项目代码 |",
     "| `/help` | 显示本帮助 |",
   ].join("\n");
 }
@@ -2787,6 +3044,7 @@ async function recordChatEvent(
   conversationId: string,
   result: { run_id: string; output: string },
   memoryDocuments: ScopedMemoryDocument[],
+  traceId?: string,
 ): Promise<void> {
   if (!config.logServiceUrl) {
     return;
@@ -2800,6 +3058,7 @@ async function recordChatEvent(
     prompt: input.text,
     output: result.output,
     run_id: result.run_id,
+    ...(traceId ? { trace_id: traceId } : {}),
     memory_refs: memoryDocuments
       .filter((document) => document.memory_doc_id)
       .map((document) => ({
@@ -2810,6 +3069,112 @@ async function recordChatEvent(
         ...(document.version === undefined ? {} : { version: document.version }),
       })),
   });
+}
+
+async function recordPromptAssemblyTrace(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+  renderedPrompt: string,
+  documents: ScopedMemoryDocument[],
+  project?: ProjectContext,
+): Promise<void> {
+  const configDocuments = documents.filter((document) => document.scope === "bot-config");
+  const memoryDocuments = documents.filter((document) => document.scope !== "bot-config");
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "wecom.received", status: "ok",
+    summary: { output: input.text, character_count: input.text.length },
+  });
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "bot.authorize", status: "ok", summary: { output: "allowed" },
+  });
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "conversation.resolve", status: "ok",
+    summary: { output: { conversation_id: conversationId } },
+  });
+  if (project) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.project", status: "ok", summary: { output: project },
+    });
+  }
+  if (memoryDocuments.length > 0) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.memory", status: "ok",
+      summary: { output: memoryDocuments.map(traceDocument) },
+    });
+  }
+  if (configDocuments.length > 0) {
+    await recordTraceSpan(config, input, conversationId, traceId, {
+      stage: "context.config", status: "ok",
+      summary: { output: configDocuments.map(traceDocument) },
+    });
+  }
+  await recordTraceSpan(config, input, conversationId, traceId, {
+    stage: "prompt.rendered", status: "ok",
+    summary: { input: input.text, output: renderedPrompt, character_count: renderedPrompt.length },
+  });
+}
+
+function traceDocument(document: ScopedMemoryDocument): Record<string, unknown> {
+  return {
+    scope: document.scope,
+    owner_id: document.owner_id,
+    title: document.title,
+    ...(document.memory_doc_id ? { memory_doc_id: document.memory_doc_id } : {}),
+    ...(document.version === undefined ? {} : { version: document.version }),
+    content: document.content,
+  };
+}
+
+async function startMessageTrace(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/message-traces`, {
+      trace_id: traceId, bot_id: input.bot_id, wecom_user_id: input.wecom_user_id,
+      conversation_id: conversationId, runtime: input.runtime,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
+}
+
+async function finishMessageTrace(
+  config: BotHostConfig,
+  traceId: string,
+  status: "ok" | "error" | "cancelled",
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/message-traces/finish`, {
+      trace_id: traceId, status,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
+}
+
+async function recordTraceSpan(
+  config: BotHostConfig,
+  input: WeComMessageInput,
+  conversationId: string,
+  traceId: string,
+  span: Record<string, unknown>,
+): Promise<void> {
+  if (!config.logServiceUrl) return;
+  try {
+    await postJson(config, `${config.logServiceUrl}/internal/trace-spans`, {
+      trace_id: traceId, bot_id: input.bot_id, wecom_user_id: input.wecom_user_id,
+      conversation_id: conversationId, ...span,
+    });
+  } catch {
+    // Trace collection is best-effort and must not interrupt a user message.
+  }
 }
 
 function parseClaimAdminCommand(text: string): string | undefined {
@@ -2841,6 +3206,7 @@ export async function resolveMessageContext(
   conversation?: {
     conversation_id: string;
   };
+  project_key?: string;
 }> {
   return postJson(config, `${config.dataServiceUrl}/v1/message-context/resolve`, {
     bot_id: input.bot_id,
@@ -2855,12 +3221,14 @@ async function postJson<T>(
   url: string,
   body: unknown,
   method = "POST",
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const response = await config.fetch(
     new Request(url, {
       method,
       headers: {
         "content-type": "application/json",
+        ...extraHeaders,
       },
       body: body === undefined ? undefined : JSON.stringify(body),
     }),

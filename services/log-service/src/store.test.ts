@@ -70,11 +70,47 @@ describe("log-service store", () => {
       created_to: second.created_at,
       limit: 1,
       offset: 1,
+      order: "asc",
+    })).toEqual([second]);
+    expect(store.listChatEvents({
+      bot_id: "prd-bot",
+      conversation_id: "conv-1",
+      limit: 1,
     })).toEqual([second]);
     expect(store.listChatEvents({
       bot_id: "prd-bot",
       run_id: "run-1",
     })).toEqual([first]);
+  });
+
+  it("filters chat events by WeCom user and trace", () => {
+    const store = createLogStore();
+    const first = store.recordChatEvent({
+      bot_id: "prd-bot", wecom_user_id: "user-a", conversation_id: "conv-1",
+      runtime: "mock", prompt: "first", output: "first", run_id: "run-1", trace_id: "trace-1", memory_refs: [],
+    });
+    store.recordChatEvent({
+      bot_id: "prd-bot", wecom_user_id: "user-b", conversation_id: "conv-1",
+      runtime: "mock", prompt: "second", output: "second", run_id: "run-2", trace_id: "trace-2", memory_refs: [],
+    });
+    expect(store.listChatEvents({ bot_id: "prd-bot", wecom_user_id: "user-a", trace_id: "trace-1" }))
+      .toEqual([first]);
+  });
+
+  it("records a message trace and its redacted spans", () => {
+    const store = createLogStore();
+    store.recordMessageTrace({
+      trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+      conversation_id: "conv-1", runtime: "kiro",
+    });
+    const span = store.recordTraceSpan({
+      trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+      conversation_id: "conv-1", stage: "mcp.call", status: "ok",
+      summary: { tool_name: "project.inspect", token: "should-not-leak" }, duration_ms: 20,
+    });
+    expect(store.finishMessageTrace("trace-1", "ok")?.status).toBe("ok");
+    expect(store.listTraceSpans({ trace_id: "trace-1", bot_id: "prd-bot" })).toEqual([span]);
+    expect(span.summary.token).toBe("[REDACTED]");
   });
 
   it("records and lists audit events by target", () => {

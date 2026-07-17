@@ -489,14 +489,14 @@ describe("data-service server", () => {
     await expect(emptyListResponse.json()).resolves.toEqual({ items: [] });
   });
 
-  it("encrypts a Bot project .env and exposes plaintext only to the internal runner", async () => {
+  it("stores a Bot project .env as plaintext and returns it to WebUI and the internal runner", async () => {
     const store = createDataStore();
     store.createBot({ bot_id: "qa-bot", name: "QA Bot", runtime: "kiro" });
     const server = createDataServiceServer(store, {
       credentialVault: createCredentialVault(Buffer.alloc(32, 4).toString("base64")),
       credentialInternalToken: "internal-token",
     });
-    const content = "APPKEY=example#app\nCLIENT_SECRET=private-value\n";
+    const content = "APPKEY=example#app\nCLIENT_SECRET=private-value";
 
     const saveResponse = await server.fetch(new Request(
       "http://localhost/v1/bots/qa-bot/project-env",
@@ -510,12 +510,12 @@ describe("data-service server", () => {
     ));
 
     expect(saveResponse.status).toBe(200);
-    expect(JSON.stringify(await saveResponse.json())).not.toContain("private-value");
+    await expect(saveResponse.json()).resolves.toMatchObject({ configured: true, content });
     expect(store.getBotEnvVar("qa-bot", "__PROJECT_DOTENV_FILE__")?.value_ciphertext)
-      .not.toContain("private-value");
+      .toBe(content);
     await expect((await server.fetch(new Request(
       "http://localhost/v1/bots/qa-bot/project-env",
-    ))).json()).resolves.toMatchObject({ configured: true });
+    ))).json()).resolves.toMatchObject({ configured: true, content });
     await expect((await server.fetch(new Request(
       "http://localhost/v1/bots/qa-bot/env",
     ))).json()).resolves.toEqual({ items: [] });
@@ -535,6 +535,26 @@ describe("data-service server", () => {
       { method: "DELETE" },
     ));
     await expect(deleteResponse.json()).resolves.toEqual({ configured: false });
+  });
+
+  it("keeps legacy encrypted project .env readable until it is saved again", async () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "qa-bot", name: "QA Bot", runtime: "kiro" });
+    const vault = createCredentialVault(Buffer.alloc(32, 4).toString("base64"));
+    const content = "IM_TEST_HUB_PYTHON=/tmp/.venv/bin/python\nAPPKEY=example#app\n";
+    store.upsertBotEnvVar("qa-bot", {
+      key: "__PROJECT_DOTENV_FILE__",
+      value_ciphertext: vault.encryptText(content),
+      updated_by_wecom_user_id: "admin-a",
+    });
+    const server = createDataServiceServer(store, {
+      credentialVault: vault,
+      credentialInternalToken: "internal-token",
+    });
+
+    await expect((await server.fetch(new Request(
+      "http://localhost/v1/bots/qa-bot/project-env",
+    ))).json()).resolves.toMatchObject({ configured: true, content });
   });
 
   it("lists bot skills mcps and capability audit logs over HTTP", async () => {

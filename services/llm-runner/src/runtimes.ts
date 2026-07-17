@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import type { ChatRequest, RuntimeName } from "@my-agent-toolkit/contracts";
 import { redactStreamText, redactText } from "./redact.js";
 
@@ -15,6 +16,7 @@ export interface RuntimeStreamResult {
 }
 
 export interface CliRuntimeConfig {
+  provider?: "kiro" | "claude-code";
   command: string;
   args: string[];
   timeout_ms: number;
@@ -102,7 +104,8 @@ function runProcess(
 ): Promise<{ output: string; provider_session_id?: string }> {
   return new Promise((resolve, reject) => {
     const exactSecrets = credentialSecretValues(config.env);
-    const args = argsForRunnerSession(config.args, config.provider_session_id);
+    const session = runtimeSession(config);
+    const args = argsForRunnerSession(config.args, session.id, session.resume, config.provider);
     const child = spawn(config.command, args, {
       env: { ...process.env, ...config.env },
       stdio: ["pipe", "pipe", "pipe"],
@@ -153,6 +156,16 @@ function runProcess(
 
       const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
       if (code !== 0) {
+        if (isRuntimeTimeoutDiagnostic(runtimeStderr.diagnostics)) {
+          reject(
+            new RuntimeExecutionError(
+              "runtime_timeout",
+              504,
+              "任务执行超过时间限制，已自动停止并丢弃本次更改",
+            ),
+          );
+          return;
+        }
         reject(
           new RuntimeExecutionError(
             "runtime_exit",
@@ -168,8 +181,8 @@ function runProcess(
 
       resolve({
         output: redactText(Buffer.concat(stdout).toString(), exactSecrets),
-        ...(runtimeStderr.provider_session_id ?? config.provider_session_id
-          ? { provider_session_id: runtimeStderr.provider_session_id ?? config.provider_session_id }
+        ...(runtimeStderr.provider_session_id ?? session.id
+          ? { provider_session_id: runtimeStderr.provider_session_id ?? session.id }
           : {}),
       });
     });
@@ -189,7 +202,8 @@ function streamProcess(
   const exactSecrets = credentialSecretValues(config.env);
   const stream = new ReadableStream<string>({
     start(controller) {
-      const args = argsForRunnerSession(config.args, config.provider_session_id);
+      const session = runtimeSession(config);
+      const args = argsForRunnerSession(config.args, session.id, session.resume, config.provider);
       const child = spawn(config.command, args, {
         env: { ...process.env, ...config.env },
         stdio: ["pipe", "pipe", "pipe"],
@@ -234,6 +248,16 @@ function streamProcess(
         const runtimeStderr = parseRuntimeStderr(Buffer.concat(stderr).toString());
         if (code !== 0) {
           resolveProviderSessionId(undefined);
+          if (isRuntimeTimeoutDiagnostic(runtimeStderr.diagnostics)) {
+            controller.error(
+              new RuntimeExecutionError(
+                "runtime_timeout",
+                504,
+                "任务执行超过时间限制，已自动停止并丢弃本次更改",
+              ),
+            );
+            return;
+          }
           controller.error(
             new RuntimeExecutionError(
               "runtime_exit",
@@ -247,7 +271,7 @@ function streamProcess(
           return;
         }
         resolveProviderSessionId(
-          runtimeStderr.provider_session_id ?? config.provider_session_id,
+          runtimeStderr.provider_session_id ?? session.id,
         );
         controller.close();
       });
@@ -266,11 +290,44 @@ function credentialSecretValues(env: Record<string, string> | undefined): string
     return [];
   }
   return Object.entries(env)
-    .filter(([key, value]) => key.startsWith("EASEMOB_JIRA_") && value.length > 0)
+    .filter(([key, value]) => value.length >= 6 && (
+      key === "EASEMOB_JIRA_PASSWORD"
+      || key === "EASEMOB_JIRA_REDIRECT_PASSWORD"
+      || key === "MY_AGENT_PROJECT_DOTENV_B64"
+      || /(?:^|_)(?:SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL)(?:_|$)/.test(key)
+    ))
     .map(([, value]) => value);
 }
 
-function argsForRunnerSession(args: string[], providerSessionId?: string): string[] {
+function runtimeSession(config: CliRuntimeConfig): { id?: string; resume: boolean } {
+  if (config.provider === "claude-code") {
+    return {
+      id: config.provider_session_id ?? randomUUID(),
+      resume: Boolean(config.provider_session_id),
+    };
+  }
+  return { id: config.provider_session_id, resume: Boolean(config.provider_session_id) };
+}
+
+function argsForRunnerSession(
+  args: string[],
+  providerSessionId: string | undefined,
+  resume: boolean,
+  provider: CliRuntimeConfig["provider"] = "kiro",
+): string[] {
+  if (provider === "claude-code") {
+    if (args.includes("--resume") || args.includes("--session-id")) {
+      throw new RuntimeExecutionError(
+        "runtime_session_error",
+        500,
+        "claude runtime args must not contain a fixed session",
+      );
+    }
+    if (!providerSessionId || !isProviderSessionId(providerSessionId)) {
+      throw new RuntimeExecutionError("runtime_session_error", 500, "invalid provider session id");
+    }
+    return [...args, resume ? "--resume" : "--session-id", providerSessionId];
+  }
   if (args.includes("--resume")) {
     throw new RuntimeExecutionError(
       "runtime_session_error",
@@ -288,7 +345,7 @@ function argsForRunnerSession(args: string[], providerSessionId?: string): strin
   if (!providerSessionId) {
     return [...args];
   }
-  if (!isKiroSessionId(providerSessionId)) {
+  if (!isProviderSessionId(providerSessionId)) {
     throw new RuntimeExecutionError(
       "runtime_session_error",
       500,
@@ -328,7 +385,7 @@ function parseRuntimeStderr(stderr: string): {
       const metadata = JSON.parse(line.slice(runtimeMetadataPrefix.length)) as {
         provider_session_id?: unknown;
       };
-      if (isKiroSessionId(metadata.provider_session_id)) {
+      if (isProviderSessionId(metadata.provider_session_id)) {
         providerSessionId = metadata.provider_session_id;
       }
     } catch {
@@ -341,6 +398,10 @@ function parseRuntimeStderr(stderr: string): {
   };
 }
 
-function isKiroSessionId(value: unknown): value is string {
+function isRuntimeTimeoutDiagnostic(diagnostics: string): boolean {
+  return /runtime timed out|超过时间限制/.test(diagnostics);
+}
+
+function isProviderSessionId(value: unknown): value is string {
   return typeof value === "string" && kiroSessionIdPattern.test(value);
 }

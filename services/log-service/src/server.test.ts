@@ -106,7 +106,7 @@ describe("log-service server", () => {
 
     const filteredResponse = await server.fetch(
       new Request(
-        `http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&created_from=${encodeURIComponent(first.created_at)}&created_to=${encodeURIComponent(second.created_at)}&limit=1&offset=1`,
+        `http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&created_from=${encodeURIComponent(first.created_at)}&created_to=${encodeURIComponent(second.created_at)}&limit=1&offset=1&order=asc`,
       ),
     );
 
@@ -117,6 +117,13 @@ describe("log-service server", () => {
         conversation_id: "conv-1",
         run_id: "run-2",
       },
+    ]);
+
+    const latestResponse = await server.fetch(
+      new Request("http://localhost/v1/chat-events?bot_id=prd-bot&conversation_id=conv-1&limit=1"),
+    );
+    await expect(latestResponse.json()).resolves.toMatchObject([
+      { run_id: "run-2" },
     ]);
 
     const runResponse = await server.fetch(
@@ -218,5 +225,30 @@ describe("log-service server", () => {
         status: "ok",
       },
     ]);
+  });
+
+  it("records a trace timeline over the internal API", async () => {
+    const server = createLogServiceServer();
+    expect((await server.fetch(new Request("http://localhost/internal/message-traces", {
+      method: "POST",
+      body: JSON.stringify({
+        trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+        conversation_id: "conv-1", runtime: "kiro",
+      }),
+    }))).status).toBe(201);
+    expect((await server.fetch(new Request("http://localhost/internal/trace-spans", {
+      method: "POST",
+      body: JSON.stringify({
+        trace_id: "trace-1", bot_id: "prd-bot", wecom_user_id: "user-a",
+        conversation_id: "conv-1", stage: "runner.request", status: "ok",
+        summary: { runtime: "kiro", secret: "not-visible" }, duration_ms: 12,
+      }),
+    }))).status).toBe(201);
+    const listed = await server.fetch(new Request(
+      "http://localhost/internal/trace-spans?trace_id=trace-1&bot_id=prd-bot",
+    ));
+    await expect(listed.json()).resolves.toMatchObject([{
+      stage: "runner.request", summary: { secret: "[REDACTED]" },
+    }]);
   });
 });

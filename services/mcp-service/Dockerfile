@@ -16,8 +16,9 @@ RUN npx tsc -b packages/contracts services/mcp-service
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=8700
+ENV PORT=8800
 COPY --from=deps /app/node_modules ./node_modules
+COPY packages/contracts/package.json ./node_modules/@my-agent-toolkit/contracts/package.json
 COPY --from=build /app/packages/contracts/dist ./node_modules/@my-agent-toolkit/contracts/dist
 COPY --from=build /app/services/mcp-service/dist ./services/mcp-service/dist
 EXPOSE 8700

@@ -8,6 +8,7 @@ const userId = process.env.KIRO_RELAY_USER_ID?.trim();
 const conversationId = process.env.KIRO_RELAY_CONVERSATION_ID?.trim();
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const runtimeEnv = collectRuntimeEnv(process.env);
+const provider = process.env.MY_AGENT_CLI_PROVIDER === "claude-code" ? "claude-code" : "kiro";
 const forwardedArgs = process.argv.slice(2);
 const chunks = [];
 const runtimeMetadataPrefix = "__MY_AGENT_TOOLKIT_RUNTIME_META__";
@@ -43,6 +44,7 @@ try {
       bot_id: botId,
       user_id: userId,
       conversation_id: conversationId,
+      provider,
       prompt: Buffer.concat(chunks).toString(),
       args: forwardedArgs,
       runtime_env: runtimeEnv,
@@ -65,8 +67,8 @@ try {
     process.stderr.write("kiro relay returned invalid output");
     process.exit(1);
   }
-  if (!isKiroSessionId(payload?.provider_session_id)) {
-    process.stderr.write("kiro relay returned invalid session id");
+  if (!isProviderSessionId(payload?.provider_session_id)) {
+    process.stderr.write("cli relay returned invalid session id");
     process.exit(1);
   }
 
@@ -85,6 +87,7 @@ async function runStream(prompt) {
       bot_id: botId,
       user_id: userId,
       conversation_id: conversationId,
+      provider,
       prompt,
       args: forwardedArgs,
       runtime_env: runtimeEnv,
@@ -115,8 +118,8 @@ async function runStream(prompt) {
   if (buffer.trim()) {
     providerSessionId = handleStreamLine(buffer, providerSessionId);
   }
-  if (!isKiroSessionId(providerSessionId)) {
-    throw new Error("kiro relay stream returned invalid session id");
+  if (!isProviderSessionId(providerSessionId)) {
+    throw new Error("cli relay stream returned invalid session id");
   }
   writeRuntimeMetadata(providerSessionId);
 }
@@ -130,7 +133,7 @@ function handleStreamLine(line, providerSessionId) {
     process.stdout.write(event.content);
     return providerSessionId;
   }
-  if (event.type === "session" && isKiroSessionId(event.provider_session_id)) {
+  if (event.type === "session" && isProviderSessionId(event.provider_session_id)) {
     return event.provider_session_id;
   }
   if (event.type === "done") {
@@ -148,7 +151,7 @@ function writeRuntimeMetadata(providerSessionId) {
   })}\n`);
 }
 
-function isKiroSessionId(value) {
+function isProviderSessionId(value) {
   return typeof value === "string" && kiroSessionIdPattern.test(value);
 }
 
@@ -167,6 +170,7 @@ function collectRuntimeEnv(env) {
     "EASEMOB_JIRA_REDIRECT_USERNAME",
     "EASEMOB_JIRA_REDIRECT_PASSWORD",
     "MY_AGENT_JIRA_CREDENTIAL_VERSION",
+    "MY_AGENT_PROJECT_DOTENV_B64",
   ]) {
     if (typeof env[key] === "string" && env[key].length > 0) {
       result[key] = env[key];

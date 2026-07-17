@@ -602,6 +602,7 @@ export interface MessageContext {
   allowed: boolean;
   reason: MessageContextReason;
   conversation?: ConversationRecord;
+  project_key?: string;
 }
 
 export interface UpsertMemoryDocumentInput {
@@ -1661,10 +1662,15 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       const admin = admins.get(input.bot_id);
       const isAdmin = admin?.wecom_user_id === input.wecom_user_id;
 
+      const projectKey = bot.project_key;
+      const contextBase = {
+        bot_id: bot.bot_id,
+        wecom_user_id: input.wecom_user_id,
+        ...(projectKey ? { project_key: projectKey } : {}),
+      };
       if (!admin) {
         return {
-          bot_id: bot.bot_id,
-          wecom_user_id: input.wecom_user_id,
+          ...contextBase,
           is_admin: false,
           allowed: false,
           reason: "admin_unclaimed",
@@ -1674,8 +1680,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       if (bot.status !== "ready") {
         if (isAdmin) {
           return {
-            bot_id: bot.bot_id,
-            wecom_user_id: input.wecom_user_id,
+            ...contextBase,
             is_admin: true,
             allowed: true,
             reason: "initializing",
@@ -1687,8 +1692,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         }
 
         return {
-          bot_id: bot.bot_id,
-          wecom_user_id: input.wecom_user_id,
+          ...contextBase,
           is_admin: isAdmin,
           allowed: false,
           reason: "initialization_required",
@@ -1696,8 +1700,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       }
 
       return {
-        bot_id: bot.bot_id,
-        wecom_user_id: input.wecom_user_id,
+        ...contextBase,
         is_admin: isAdmin,
         allowed: true,
         reason: "ready",

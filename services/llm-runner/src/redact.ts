@@ -5,7 +5,7 @@ const secretPatterns = [
   /\bpassword=([^\s]+)/gi,
 ];
 
-const pathPattern = /(?:\/[A-Za-z0-9._-]+){2,}/g;
+const pathPattern = /(?<![A-Za-z0-9._:/-])\/(?:[A-Za-z0-9._-]+\/)+[A-Za-z0-9._-]+/g;
 
 export function redactText(value: string, exactSecrets: string[] = []): string {
   return redactValue(value, exactSecrets).trim();

@@ -4,12 +4,16 @@ import type { CliRuntimeConfig } from "./runtimes.js";
 export interface RunnerConfig {
   enabled_runtimes: RuntimeName[];
   data_service_url?: string;
+  log_service_url?: string;
   kiro?: CliRuntimeConfig;
+  claude_code?: CliRuntimeConfig;
   mcp?: McpRunnerConfig;
   fetch?: typeof fetch;
   resolveBotEnvVars?: BotEnvResolver;
   resolveUserEnvVars?: UserEnvResolver;
   credential_internal_token?: string;
+  kiro_relay_cancel_url?: string;
+  kiro_relay_auth_token?: string;
 }
 
 export type BotEnvResolver = (botId: string) => Promise<Record<string, string>>;
@@ -41,6 +45,11 @@ export function loadRunnerConfig(
     config.data_service_url = dataServiceUrl.replace(/\/+$/, "");
   }
 
+  const logServiceUrl = env.LOG_SERVICE_URL?.trim();
+  if (logServiceUrl) {
+    config.log_service_url = logServiceUrl.replace(/\/+$/, "");
+  }
+
   const credentialInternalToken = env.USER_CREDENTIALS_INTERNAL_TOKEN?.trim();
   if (credentialInternalToken) {
     config.credential_internal_token = credentialInternalToken;
@@ -53,10 +62,41 @@ export function loadRunnerConfig(
     }
 
     config.kiro = {
+      provider: "kiro",
       command,
       args: parseArgs(env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools"),
-      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 300_000),
+      timeout_ms: parsePositiveInteger(env.KIRO_TIMEOUT_MS, 900_000),
     };
+    const relayUrl = env.KIRO_RELAY_URL?.trim();
+    if (relayUrl) {
+      config.kiro_relay_cancel_url = (env.KIRO_RELAY_CANCEL_URL?.trim()
+        ?? relayUrl.replace(/\/v1\/kiro\/chat$/, "/v1/kiro/cancel"))
+        .replace(/\/+$/, "");
+    }
+    const relayAuthToken = env.KIRO_RELAY_AUTH_TOKEN?.trim();
+    if (relayAuthToken) {
+      config.kiro_relay_auth_token = relayAuthToken;
+    }
+  }
+
+  if (enabledRuntimes.includes("claude-code")) {
+    config.claude_code = {
+      provider: "claude-code",
+      command: env.CLAUDE_CODE_COMMAND?.trim() || "node",
+      args: parseArgs(env.CLAUDE_CODE_ARGS
+        ?? "services/llm-runner/scripts/kiro-relay-cli.mjs -p --output-format text --permission-mode bypassPermissions --setting-sources project,local,user"),
+      timeout_ms: parsePositiveInteger(env.CLAUDE_CODE_TIMEOUT_MS, 900_000),
+    };
+    const relayUrl = env.KIRO_RELAY_URL?.trim();
+    if (relayUrl && !config.kiro_relay_cancel_url) {
+      config.kiro_relay_cancel_url = (env.KIRO_RELAY_CANCEL_URL?.trim()
+        ?? relayUrl.replace(/\/v1\/kiro\/chat$/, "/v1/kiro/cancel"))
+        .replace(/\/+$/, "");
+    }
+    const relayAuthToken = env.KIRO_RELAY_AUTH_TOKEN?.trim();
+    if (relayAuthToken && !config.kiro_relay_auth_token) {
+      config.kiro_relay_auth_token = relayAuthToken;
+    }
   }
 
   const mcpServiceUrl = env.MCP_SERVICE_URL?.trim();
@@ -83,7 +123,7 @@ function parseEnabledRuntimes(value: string): RuntimeName[] {
   }
 
   return runtimes.map((runtime) => {
-    if (runtime !== "mock" && runtime !== "kiro") {
+    if (runtime !== "mock" && runtime !== "kiro" && runtime !== "claude-code") {
       throw new Error(`unsupported runtime: ${runtime}`);
     }
     return runtime;
