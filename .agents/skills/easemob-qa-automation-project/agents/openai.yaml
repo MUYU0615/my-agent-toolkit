@@ -1,0 +1,3 @@
+display_name: Easemob QA Automation Project
+short_description: Generate isolated pytest projects.
+default_prompt: Use $easemob-qa-automation-project to create an isolated Python pytest automation project for an Easemob Jira task.

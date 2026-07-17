@@ -14,7 +14,9 @@ PID_FILE="${KIRO_HOST_RELAY_PID_FILE:-$ROOT_DIR/runtime/kiro-host-relay.pid}"
 LOG_FILE="${KIRO_HOST_RELAY_LOG_FILE:-$ROOT_DIR/runtime/kiro-host-relay.log}"
 COMMAND="${KIRO_COMMAND:-$HOME/.local/bin/kiro-cli}"
 WORKSPACE_ROOT="${KIRO_WORKSPACE_ROOT:-$HOME/Documents/KiroBotWorkspaces}"
-TIMEOUT_MS="${KIRO_TIMEOUT_MS:-900000}"
+# Keep the host relay limit independent from a runner-side KIRO_TIMEOUT_MS.
+TIMEOUT_MS="${KIRO_HOST_RELAY_TIMEOUT_MS:-900000}"
+HEARTBEAT_INTERVAL_MS="${KIRO_RELAY_HEARTBEAT_INTERVAL_MS:-25000}"
 
 mkdir -p "$(dirname "$PID_FILE")" "$(dirname "$LOG_FILE")"
 
@@ -45,6 +47,7 @@ fi
     KIRO_COMMAND="$COMMAND" \
     KIRO_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
     KIRO_TIMEOUT_MS="$TIMEOUT_MS" \
+    KIRO_RELAY_HEARTBEAT_INTERVAL_MS="$HEARTBEAT_INTERVAL_MS" \
     node services/llm-runner/scripts/kiro-host-relay.mjs \
     >>"$LOG_FILE" 2>&1 </dev/null &
   relay_pid="$!"
@@ -59,6 +62,7 @@ for _ in $(seq 1 20); do
     echo "log: $LOG_FILE"
     echo "workspace root: $WORKSPACE_ROOT"
     echo "timeout: ${TIMEOUT_MS}ms"
+    echo "stream heartbeat: ${HEARTBEAT_INTERVAL_MS}ms"
     exit 0
   fi
   sleep 0.5

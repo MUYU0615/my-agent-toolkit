@@ -192,6 +192,8 @@ describe("control-api server", () => {
     const html = await response.text();
 
     expect(response.status).toBe(200);
+    expect(html).toContain("编辑 Soul / Agents / rules");
+    expect(html).toContain("edit-bot-config");
     expect(html).toContain("管理 Env / Skills / MCP");
     expect(html).toContain("manage-bot-capabilities");
     expect(html).toContain('window.location.href = "/admin/bots/"');
@@ -2575,6 +2577,7 @@ describe("control-api server", () => {
           return Response.json([
             { title: "soul", content: "# Soul\n我是 PRD 助手" },
             { title: "agents.md", content: "# AGENTS\n按产品经理规则工作" },
+            { title: "rules.md", content: "# Rules\n只在当前会话目录中工作" },
           ]);
         }
         return Response.json({ error: "unexpected" }, { status: 500 });
@@ -2589,8 +2592,12 @@ describe("control-api server", () => {
     expect(html).toContain("PRD Bot");
     expect(html).toContain("# Soul");
     expect(html).toContain("# AGENTS");
+    expect(html).toContain("# Rules");
     expect(html).toContain("保存 Soul");
     expect(html).toContain("保存 Agents");
+    expect(html).toContain("运行规则（rules.md）");
+    expect(html).toContain("保存 rules.md");
+    expect(html).toContain("/admin/bots/prd-bot/config/rules");
     expect(html).toContain("/v1/bot-config-documents");
     expect(calls).toEqual([
       "http://data-service/v1/bots/prd-bot",
@@ -3144,6 +3151,72 @@ describe("control-api server", () => {
           target_id: "prd-bot",
           metadata: {
             title: "agents.md",
+          },
+        },
+      },
+    ]);
+  });
+
+  it("saves rules.md from the bot config editor page", async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) {
+          throw new Error("expected Request");
+        }
+        const bodyText = request.method === "POST" ? await request.text() : "";
+        const body = bodyText ? JSON.parse(bodyText) : undefined;
+        calls.push({ url: request.url, method: request.method, body });
+        if (request.url === "http://data-service/v1/bot-config-documents") {
+          return Response.json({
+            bot_id: "test-jira-bot",
+            title: "rules.md",
+            content: "只在当前会话目录中工作。",
+          }, { status: 201 });
+        }
+        if (request.url === "http://log-service/v1/audit-events") {
+          return Response.json({ event_id: "audit-1" }, { status: 201 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/admin/bots/test-jira-bot/config/rules", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        actor_id: "admin-a",
+        content: "只在当前会话目录中工作。",
+      }),
+    }));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/admin/bots/test-jira-bot/config");
+    expect(calls).toEqual([
+      {
+        url: "http://data-service/v1/bot-config-documents",
+        method: "POST",
+        body: {
+          actor_id: "admin-a",
+          bot_id: "test-jira-bot",
+          title: "rules.md",
+          content: "只在当前会话目录中工作。",
+        },
+      },
+      {
+        url: "http://log-service/v1/audit-events",
+        method: "POST",
+        body: {
+          actor_id: "admin-a",
+          action: "bot_config_document.upsert",
+          target_type: "bot",
+          target_id: "test-jira-bot",
+          metadata: {
+            title: "rules.md",
           },
         },
       },

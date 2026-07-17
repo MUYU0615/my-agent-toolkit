@@ -986,6 +986,34 @@ describe("sqlite data store", () => {
     store.close?.();
   });
 
+  it("persists rules.md as a per-Bot configuration document in sqlite", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const store = createSqliteDataStore(dbPath);
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const rule = store.upsertBotConfigDocument({
+      bot_id: "prd-bot",
+      title: "instructions/rules.md",
+      content: "只在当前会话目录工作。",
+    });
+
+    expect(rule).toMatchObject({
+      bot_id: "prd-bot",
+      title: "rules.md",
+      content: "只在当前会话目录工作。",
+    });
+    expect(store.listBotConfigDocuments("prd-bot")).toMatchObject([rule]);
+    expect(() => store.upsertMemoryDocument({
+      scope: "bot",
+      owner_id: "prd-bot",
+      title: "rules.md",
+      content: "not allowed",
+    })).toThrow("bot config documents must use /v1/bot-config-documents");
+    store.close?.();
+  });
+
   it("rejects non-boolean runtime config stream values", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);
@@ -1863,6 +1891,52 @@ describe("sqlite data store", () => {
     expect(second.listBotEnvVars("prd-bot")).toEqual(listed);
     second.deleteBotEnvVar("prd-bot", "OPENAI_API_KEY");
     expect(second.listBotEnvVars("prd-bot")).toEqual([]);
+    second.close?.();
+  });
+
+  it("persists user env vars per bot and WeCom user without exposing ciphertext in metadata", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    const saved = first.upsertUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      key: "HIM22187_AUTH_TOKEN",
+      value_ciphertext: "ciphertext-user-a",
+    });
+    first.upsertUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-b",
+      key: "HIM22187_AUTH_TOKEN",
+      value_ciphertext: "ciphertext-user-b",
+    });
+    const listed = first.listUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" });
+    first.close?.();
+
+    expect(listed).toEqual([{
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      key: "HIM22187_AUTH_TOKEN",
+      is_set: true,
+      updated_at: saved.updated_at,
+    }]);
+    expect(JSON.stringify(listed)).not.toContain("ciphertext-user-a");
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" }))
+      .toMatchObject([{ value_ciphertext: "ciphertext-user-a" }]);
+    expect(second.getUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-b" }))
+      .toMatchObject([{ value_ciphertext: "ciphertext-user-b" }]);
+    second.deleteUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      key: "HIM22187_AUTH_TOKEN",
+    });
+    expect(second.listUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" })).toEqual([]);
+    expect(second.listUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-b" })).toHaveLength(1);
     second.close?.();
   });
 

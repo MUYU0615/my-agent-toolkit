@@ -267,7 +267,8 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
       });
       await workerConfig.wecomClient.sendText(
         message.conversationId,
-        "机器人处理失败，请稍后重试。",
+        "任务执行或回复通道异常。若已生成代码或报告，请发送“读取当前会话报告”获取结果；否则请重试。",
+        { forceActive: true },
       );
     }
   };

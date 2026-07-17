@@ -971,6 +971,40 @@ describe("data-service server", () => {
     ]);
   });
 
+  it("accepts rules.md as a Bot configuration document", async () => {
+    const server = createDataServiceServer();
+    await server.fetch(
+      new Request("http://localhost/v1/bots", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "test-jira-bot",
+          name: "Test Jira Bot",
+          runtime: "claude-code",
+        }),
+      }),
+    );
+
+    const saveResponse = await server.fetch(
+      new Request("http://localhost/v1/bot-config-documents", {
+        method: "POST",
+        body: JSON.stringify({
+          bot_id: "test-jira-bot",
+          title: "rules.md",
+          content: "没有测试环境时向用户索取。",
+        }),
+      }),
+    );
+
+    expect(saveResponse.status).toBe(201);
+    await expect(saveResponse.json()).resolves.toMatchObject({ title: "rules.md" });
+    const listed = await server.fetch(
+      new Request("http://localhost/v1/bots/test-jira-bot/config-documents"),
+    );
+    await expect(listed.json()).resolves.toMatchObject([
+      { title: "rules.md", content: "没有测试环境时向用户索取。" },
+    ]);
+  });
+
   it("lists and updates bot records over HTTP", async () => {
     const server = createDataServiceServer();
     await server.fetch(
@@ -3030,5 +3064,63 @@ describe("data-service server", () => {
       },
     });
     await expect(envB.json()).resolves.toEqual({ env: {} });
+  });
+
+  it("stores user env secrets encrypted and exposes them only to that user's runtime", async () => {
+    const internalToken = "internal-test-token";
+    const server = createDataServiceServer(createDataStore(), {
+      credentialVault: createCredentialVault(Buffer.alloc(32, 6).toString("base64")),
+      credentialInternalToken: internalToken,
+    });
+    await server.fetch(new Request("http://localhost/v1/bots", {
+      method: "POST",
+      body: JSON.stringify({ bot_id: "test-jira", name: "Test Jira", runtime: "claude-code" }),
+    }));
+    const headers = {
+      "content-type": "application/json",
+      authorization: `Bearer ${internalToken}`,
+    };
+    const scope = (userId: string) => new URLSearchParams({
+      bot_id: "test-jira",
+      wecom_user_id: userId,
+    });
+
+    const setResponse = await server.fetch(new Request(`http://localhost/internal/user-env?${scope("user-a")}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ key: "HIM22187_AUTH_TOKEN", value: "real-token-value" }),
+    }));
+    expect(setResponse.status).toBe(201);
+    expect(JSON.stringify(await setResponse.json())).not.toContain("real-token-value");
+
+    const listResponse = await server.fetch(new Request(
+      `http://localhost/internal/user-env?${scope("user-a")}`,
+      { headers: { authorization: `Bearer ${internalToken}` } },
+    ));
+    await expect(listResponse.json()).resolves.toEqual({
+      items: [expect.objectContaining({ key: "HIM22187_AUTH_TOKEN", is_set: true })],
+    });
+
+    const runtimeA = await server.fetch(new Request(
+      `http://localhost/internal/user-env/runtime-env?${scope("user-a")}`,
+      { headers: { authorization: `Bearer ${internalToken}` } },
+    ));
+    const runtimeB = await server.fetch(new Request(
+      `http://localhost/internal/user-env/runtime-env?${scope("user-b")}`,
+      { headers: { authorization: `Bearer ${internalToken}` } },
+    ));
+    await expect(runtimeA.json()).resolves.toEqual({ env: { HIM22187_AUTH_TOKEN: "real-token-value" } });
+    await expect(runtimeB.json()).resolves.toEqual({ env: {} });
+
+    const deleteResponse = await server.fetch(new Request(
+      `http://localhost/internal/user-env/HIM22187_AUTH_TOKEN?${scope("user-a")}`,
+      { method: "DELETE", headers: { authorization: `Bearer ${internalToken}` } },
+    ));
+    expect(deleteResponse.status).toBe(200);
+    const afterDelete = await server.fetch(new Request(
+      `http://localhost/internal/user-env/runtime-env?${scope("user-a")}`,
+      { headers: { authorization: `Bearer ${internalToken}` } },
+    ));
+    await expect(afterDelete.json()).resolves.toEqual({ env: {} });
   });
 });

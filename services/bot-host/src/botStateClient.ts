@@ -44,6 +44,19 @@ export interface UpsertBotEnvVarInput {
   updated_by_wecom_user_id: string;
 }
 
+export interface UserEnvVarMetadataDto {
+  bot_id: string;
+  wecom_user_id: string;
+  key: string;
+  is_set: true;
+  updated_at: string;
+}
+
+export interface UserEnvScopeDto {
+  bot_id: string;
+  wecom_user_id: string;
+}
+
 export interface BotSkillDto {
   bot_id: string;
   name: string;
@@ -127,6 +140,13 @@ function credentialScopeQuery(input: UserCredentialScopeDto): string {
     bot_id: input.bot_id,
     wecom_user_id: input.wecom_user_id,
     provider: input.provider,
+  }).toString();
+}
+
+function userEnvScopeQuery(input: UserEnvScopeDto): string {
+  return new URLSearchParams({
+    bot_id: input.bot_id,
+    wecom_user_id: input.wecom_user_id,
   }).toString();
 }
 
@@ -335,6 +355,47 @@ export async function listBotEnvVars(
   }
   const payload = await response.json() as { items?: BotEnvVarMetadataDto[] };
   return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function listUserEnvVars(
+  config: BotHostConfig,
+  input: UserEnvScopeDto,
+): Promise<UserEnvVarMetadataDto[]> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-env?${userEnvScopeQuery(input)}`,
+    { headers: credentialInternalHeaders(config, false) },
+  ));
+  const payload = await credentialResponse<{ items?: UserEnvVarMetadataDto[] }>(
+    response,
+    "list user environment variables",
+  );
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
+export async function upsertUserEnvVar(
+  config: BotHostConfig,
+  input: UserEnvScopeDto & { key: string; value: string },
+): Promise<UserEnvVarMetadataDto> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-env?${userEnvScopeQuery(input)}`,
+    {
+      method: "POST",
+      headers: credentialInternalHeaders(config),
+      body: JSON.stringify({ key: input.key, value: input.value }),
+    },
+  ));
+  return credentialResponse<UserEnvVarMetadataDto>(response, "set user environment variable");
+}
+
+export async function deleteUserEnvVar(
+  config: BotHostConfig,
+  input: UserEnvScopeDto & { key: string },
+): Promise<void> {
+  const response = await config.fetch(new Request(
+    `${config.dataServiceUrl}/internal/user-env/${encodeURIComponent(input.key)}?${userEnvScopeQuery(input)}`,
+    { method: "DELETE", headers: credentialInternalHeaders(config, false) },
+  ));
+  await credentialResponse(response, "delete user environment variable");
 }
 
 export async function getBotRuntimePolicy(

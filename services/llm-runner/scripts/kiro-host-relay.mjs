@@ -24,6 +24,10 @@ const command = process.env.KIRO_COMMAND ?? "/Users/dujiepeng/.local/bin/kiro-cl
 const claudeCommand = process.env.CLAUDE_CODE_COMMAND ?? join(homedir(), ".local", "bin", "claude");
 const args = parseArgs(process.env.KIRO_ARGS ?? "chat --no-interactive --trust-all-tools");
 const timeoutMs = Number.parseInt(process.env.KIRO_TIMEOUT_MS ?? "900000", 10);
+const streamHeartbeatIntervalMs = Number.parseInt(
+  process.env.KIRO_RELAY_HEARTBEAT_INTERVAL_MS ?? "25000",
+  10,
+);
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const workspaceRoot = initializeWorkspaceRoot(
   process.env.KIRO_WORKSPACE_ROOT ?? join(homedir(), "Documents", "KiroBotWorkspaces"),
@@ -62,6 +66,8 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/v1/kiro/chat/stream") {
+    let heartbeat;
+    let removeDisconnectHandler = () => {};
     try {
       assertRelayAuthorized(request);
       const payload = JSON.parse(await readBody(request));
@@ -74,20 +80,34 @@ const server = createServer(async (request, response) => {
       const { botRoot, userRoot, workspaceDir, kiroHome } = runtimeWorkspace;
       const runtimeEnv = prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome);
       const projectCheckpoint = createProjectCheckpoint(userRoot);
+      const runKey = runKeyFromPayload(payload);
+      const cancelOnDisconnect = () => {
+        if (response.writableEnded) return;
+        cancelActiveRun(runKey);
+      };
+      response.once("close", cancelOnDisconnect);
+      removeDisconnectHandler = () => response.off("close", cancelOnDisconnect);
 
       response.writeHead(200, {
         "content-type": "application/x-ndjson",
         "cache-control": "no-cache",
       });
+      response.flushHeaders();
+      heartbeat = setInterval(() => {
+        if (!response.destroyed && !response.writableEnded) {
+          response.write(`${JSON.stringify({ type: "heartbeat" })}\n`);
+        }
+      }, streamHeartbeatIntervalMs);
+      heartbeat.unref?.();
       const requestArgs = argsFromPayload(payload, provider);
       const onEvent = (event) => response.write(`${JSON.stringify(event)}\n`);
       const runtimeResult = provider === "claude-code"
-        ? await streamClaude(payload.prompt, requestArgs, onEvent, botRoot, workspaceDir, runtimeEnv, runKeyFromPayload(payload), projectCheckpoint)
+        ? await streamClaude(payload.prompt, requestArgs, onEvent, botRoot, workspaceDir, runtimeEnv, runKey, projectCheckpoint)
         : await runWithSessionDiscovery(
           requestArgs,
           workspaceDir,
           runtimeEnv,
-          (effectiveArgs, sessionsBefore) => streamKiro(payload.prompt, effectiveArgs, onEvent, sessionsBefore, workspaceDir, runtimeEnv, runKeyFromPayload(payload), projectCheckpoint),
+          (effectiveArgs, sessionsBefore) => streamKiro(payload.prompt, effectiveArgs, onEvent, sessionsBefore, workspaceDir, runtimeEnv, runKey, projectCheckpoint),
         );
       response.write(`${JSON.stringify({
         type: "session",
@@ -95,21 +115,26 @@ const server = createServer(async (request, response) => {
       })}\n`);
       response.end(`${JSON.stringify({ type: "done" })}\n`);
     } catch (error) {
-      if (!response.headersSent) {
+      if (!response.headersSent && !response.destroyed) {
         response.writeHead(200, {
           "content-type": "application/x-ndjson",
           "cache-control": "no-cache",
         });
       }
-      response.end(`${JSON.stringify({
-        type: "error",
-        error: error instanceof Error ? error.message : "kiro relay failed",
-        ...(error instanceof RelayCancelledError
-          ? { code: "runtime_cancelled" }
-          : error instanceof RelayTimeoutError
-            ? { code: "runtime_timeout" }
-            : {}),
-      })}\n`);
+      if (!response.destroyed && !response.writableEnded) {
+        response.end(`${JSON.stringify({
+          type: "error",
+          error: error instanceof Error ? error.message : "kiro relay failed",
+          ...(error instanceof RelayCancelledError
+            ? { code: "runtime_cancelled" }
+            : error instanceof RelayTimeoutError
+              ? { code: "runtime_timeout" }
+              : {}),
+        })}\n`);
+      }
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+      removeDisconnectHandler();
     }
     return;
   }
@@ -584,6 +609,14 @@ function clearActiveRun(runKey, activeRun) {
   if (runKey && activeRuns.get(runKey) === activeRun) {
     activeRuns.delete(runKey);
   }
+}
+
+function cancelActiveRun(runKey) {
+  const activeRun = activeRuns.get(runKey);
+  if (!activeRun) return false;
+  activeRun.cancelled = true;
+  activeRun.child.kill("SIGTERM");
+  return true;
 }
 
 function assertRelayAuthorized(request) {

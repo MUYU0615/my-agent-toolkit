@@ -9,6 +9,35 @@ const runtimeMetadata = `__MY_AGENT_TOOLKIT_RUNTIME_META__${JSON.stringify({
 })}`;
 
 describe("llm-runner server", () => {
+  it("emits heartbeat events while a CLI turn has no user-visible output", async () => {
+    const command = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => setTimeout(() => process.stdout.write('done'), 60));",
+    ].join(" ");
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: { command: process.execPath, args: ["-e", command], timeout_ms: 1_000 },
+      stream_heartbeat_interval_ms: 10,
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/chat/stream", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-heartbeat",
+        runtime: "kiro",
+        prompt: "run the test",
+      }),
+    }));
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+
+    expect(events[0].type).toBe("run");
+    expect(events.some((event) => event.type === "heartbeat")).toBe(true);
+    expect(events.at(-2)).toEqual({ type: "chunk", content: "done" });
+    expect(events.at(-1)).toEqual({ type: "done" });
+  });
+
   it("responds to health checks", async () => {
     const previousSha = process.env.APP_BUILD_SHA;
     const previousBuildTime = process.env.APP_BUILD_TIME;
@@ -688,6 +717,9 @@ describe("llm-runner server", () => {
       if (request.method === "GET" && url.pathname === "/internal/user-credentials/runtime-env") {
         return new Response(JSON.stringify({ env: {} }), { status: 200 });
       }
+      if (request.method === "GET" && url.pathname === "/internal/user-env/runtime-env") {
+        return new Response(JSON.stringify({ env: { HIM22187_AUTH_TOKEN: "user-private-token" } }), { status: 200 });
+      }
       if (request.method === "GET" && url.pathname.startsWith("/internal/runtime-sessions/")) {
         return new Response(JSON.stringify({ error: "runtime session not found" }), { status: 404 });
       }
@@ -710,6 +742,7 @@ describe("llm-runner server", () => {
             "python: process.env.IM_TEST_HUB_PYTHON,",
             "secret: process.env.IM_TEST_HUB_API_SECRET,",
             "target: process.env.IM_TEST_HUB_TARGET,",
+            "token: process.env.HIM22187_AUTH_TOKEN,",
             "dotenv: process.env.MY_AGENT_PROJECT_DOTENV_B64,",
             "}), 'utf8');",
             "process.stdout.write(process.env.IM_TEST_HUB_API_SECRET);",
@@ -740,6 +773,7 @@ describe("llm-runner server", () => {
       python: "/opt/im-test-hub/.venv/bin/python",
       secret: "project-secret-value",
       target: "staging",
+      token: "user-private-token",
       dotenv: Buffer.from(projectDotenv, "utf8").toString("base64"),
     });
   });

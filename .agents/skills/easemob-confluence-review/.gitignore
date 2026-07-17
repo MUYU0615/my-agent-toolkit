@@ -1,0 +1,4 @@
+.DS_Store
+scripts/.venv/
+scripts/.pytest_cache/
+scripts/**/__pycache__/

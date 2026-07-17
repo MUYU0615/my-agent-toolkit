@@ -14,6 +14,8 @@ export interface RunnerConfig {
   credential_internal_token?: string;
   kiro_relay_cancel_url?: string;
   kiro_relay_auth_token?: string;
+  /** Internal NDJSON keepalive interval for long-running CLI turns. */
+  stream_heartbeat_interval_ms?: number;
 }
 
 export type BotEnvResolver = (botId: string) => Promise<Record<string, string>>;

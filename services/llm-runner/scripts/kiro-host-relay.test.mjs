@@ -191,6 +191,121 @@ test("host relay emits a session event for streaming calls", async () => {
   ]);
 });
 
+test("host relay flushes stream headers and emits internal heartbeats before CLI output", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "kiro-relay-heartbeat-"));
+  const port = await reservePort();
+  const isolatedRelay = spawn(process.execPath, ["services/llm-runner/scripts/kiro-host-relay.mjs"], {
+    env: {
+      ...process.env,
+      KIRO_COMMAND: process.execPath,
+      KIRO_HOST_RELAY_HOST: "127.0.0.1",
+      KIRO_HOST_RELAY_PORT: String(port),
+      KIRO_TIMEOUT_MS: "2000",
+      KIRO_RELAY_HEARTBEAT_INTERVAL_MS: "20",
+      KIRO_WORKSPACE_ROOT: join(directory, "workspaces"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  try {
+    const isolatedRelayUrl = `http://127.0.0.1:${port}`;
+    await waitForRelay(isolatedRelayUrl, isolatedRelay);
+    const script = [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => setTimeout(() => {",
+      "  process.stdout.write('delayed answer');",
+      `  process.stderr.write('Resume with: kiro-cli chat --resume-id ${providerSessionId}\\n');`,
+      "}, 250));",
+    ].join(" ");
+    const response = await Promise.race([
+      fetch(`${isolatedRelayUrl}/v1/kiro/chat/stream`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          bot_id: "bot-heartbeat",
+          user_id: userId,
+          conversation_id: "conv-heartbeat",
+          prompt: "slow task",
+          args: ["-e", script],
+        }),
+      }),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error("stream response headers were not flushed")),
+        150,
+      )),
+    ]);
+
+    assert.equal(response.status, 200);
+    const events = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(events[0]?.type, "heartbeat");
+    assert(events.some((event) => event.type === "heartbeat"));
+    assert(events.some((event) => event.type === "chunk" && event.content === "delayed answer"));
+    assert.deepEqual(events.slice(-2), [
+      { type: "session", provider_session_id: providerSessionId },
+      { type: "done" },
+    ]);
+  } finally {
+    if (isolatedRelay.exitCode === null) {
+      isolatedRelay.kill("SIGTERM");
+      await once(isolatedRelay, "close");
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("host relay cancels and rolls back a run when the stream client disconnects", async () => {
+  const projectRoot = join(
+    workspaceRoot,
+    "bot-a",
+    "users",
+    createHash("sha256").update(userId, "utf8").digest("hex").slice(0, 32),
+    "projects",
+    "disconnect-rollback",
+  );
+  await initializeGitProject(projectRoot);
+  const script = [
+    "const { writeFileSync } = require('node:fs');",
+    "process.stdin.resume();",
+    "process.stdin.on('end', () => {",
+    "  writeFileSync('../../projects/disconnect-rollback/tracked.txt', 'changed');",
+    "  writeFileSync('../../projects/disconnect-rollback/created.txt', 'remove me');",
+    "  process.stdout.write('started');",
+    "  setInterval(() => {}, 1000);",
+    "});",
+  ].join(" ");
+  const response = await fetch(`${relayUrl}/v1/kiro/chat/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      bot_id: "bot-a",
+      user_id: userId,
+      conversation_id: "conv-disconnect",
+      prompt: "long task",
+      args: ["-e", script],
+    }),
+  });
+  assert(response.body);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = "";
+  while (!received.includes("started")) {
+    const { done, value } = await reader.read();
+    assert.equal(done, false);
+    received += decoder.decode(value, { stream: true });
+  }
+  await reader.cancel();
+
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    const tracked = await readFile(join(projectRoot, "tracked.txt"), "utf8");
+    const createdExists = await access(join(projectRoot, "created.txt")).then(() => true, () => false);
+    if (tracked === "baseline" && !createdExists) break;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.equal(await readFile(join(projectRoot, "tracked.txt"), "utf8"), "baseline");
+  await assert.rejects(access(join(projectRoot, "created.txt")));
+});
+
 test("host relay immediately cancels only the matching active Kiro run", async () => {
   const projectRoot = join(
     workspaceRoot,
@@ -224,7 +339,15 @@ test("host relay immediately cancels only the matching active Kiro run", async (
       args: ["-e", script],
     }),
   });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert(streamResponse.body);
+  const streamReader = streamResponse.body.getReader();
+  const streamDecoder = new TextDecoder();
+  let streamText = "";
+  while (!streamText.includes("started")) {
+    const { done, value } = await streamReader.read();
+    assert.equal(done, false);
+    streamText += streamDecoder.decode(value, { stream: true });
+  }
 
   const cancelResponse = await fetch(`${relayUrl}/v1/kiro/cancel`, {
     method: "POST",
@@ -238,7 +361,13 @@ test("host relay immediately cancels only the matching active Kiro run", async (
 
   assert.equal(cancelResponse.status, 200);
   assert.deepEqual(await cancelResponse.json(), { cancelled: true });
-  const events = (await streamResponse.text()).trim().split("\n").map((line) => JSON.parse(line));
+  while (true) {
+    const { done, value } = await streamReader.read();
+    if (done) break;
+    streamText += streamDecoder.decode(value, { stream: true });
+  }
+  streamText += streamDecoder.decode();
+  const events = streamText.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(events, [{ type: "chunk", content: "started" }, {
     type: "error",
     error: "kiro runtime cancelled",

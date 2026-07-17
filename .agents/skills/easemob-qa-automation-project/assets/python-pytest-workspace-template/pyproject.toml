@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "easemob-auto-test"
+version = "0.1.0"
+description = "由 Test-Jira Bot 在用户隔离工作区维护的环信自动化测试项目"
+requires-python = ">=3.10"
+dependencies = [
+  "pytest>=8.0",
+  "python-dotenv>=1.0",
+  "requests>=2.31",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

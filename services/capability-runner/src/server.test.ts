@@ -121,6 +121,41 @@ describe("capability-runner server", () => {
     });
   });
 
+  it("publishes only the current conversation Jira project", async () => {
+    const publishJiraProject = vi.fn().mockResolvedValue({
+      branch: "bot/HIM-22187-case",
+      commit: "a".repeat(40),
+    });
+    const server = createCapabilityRunnerServer({
+      publishJiraProject,
+      projectRunnerToken: "runner-secret",
+    });
+    const response = await server.fetch(new Request(
+      "http://localhost/internal/bots/qa-bot/jira-projects/publish",
+      {
+        method: "POST",
+        headers: { "x-project-runner-token": "runner-secret" },
+        body: JSON.stringify({
+          user_id: "user-a",
+          conversation_id: "conv-1",
+          jira_key: "HIM-22187",
+          branch: "bot/HIM-22187-case",
+          commit_message: "test: add HIM-22187 automation",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(publishJiraProject).toHaveBeenCalledWith({
+      botId: "qa-bot",
+      userId: "user-a",
+      conversationId: "conv-1",
+      jiraKey: "HIM-22187",
+      branch: "bot/HIM-22187-case",
+      commitMessage: "test: add HIM-22187 automation",
+    });
+  });
+
   it("dispatches bot skill install requests with structured payload", async () => {
     const dispatch = vi.fn().mockResolvedValue(undefined);
     const server = createCapabilityRunnerServer({ dispatch });

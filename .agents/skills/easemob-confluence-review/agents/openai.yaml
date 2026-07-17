@@ -1,0 +1,4 @@
+interface:
+  display_name: "Easemob Confluence Review"
+  short_description: "审查内部 Confluence 页面并生成汇总与回复"
+  default_prompt: "Use $easemob-confluence-review to review a specified Easemob Confluence page or post a confirmed single-page reply."

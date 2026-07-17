@@ -4719,12 +4719,13 @@ describe("bot-host server", () => {
     expect(calls).toEqual(["http://data-service/v1/message-context/resolve"]);
   });
 
-  it("shows env metadata only for admins", async () => {
+  it("shows only the current user's env metadata", async () => {
     const calls: string[] = [];
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
       capabilityRunnerUrl: "http://capability-runner",
+      credentialInternalToken: "internal-token",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -4735,19 +4736,20 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "ready",
-            is_admin: true,
+            is_admin: false,
             conversation: {
               conversation_id: "conv-admin",
             },
           });
         }
 
-        if (request.url === "http://data-service/v1/bots/prd-bot/env") {
+        if (request.url === "http://data-service/internal/user-env?bot_id=prd-bot&wecom_user_id=admin-a") {
           return Response.json({
             items: [
               {
                 bot_id: "prd-bot",
-                key: "OPENAI_API_KEY",
+                wecom_user_id: "admin-a",
+                key: "HIM22187_AUTH_TOKEN",
                 is_set: true,
                 updated_at: "2026-06-24T00:00:00.000Z",
               },
@@ -4765,7 +4767,7 @@ describe("bot-host server", () => {
         body: JSON.stringify({
           bot_id: "prd-bot",
           wecom_user_id: "admin-a",
-          text: "/env",
+          text: "/env status",
           runtime: "mock",
         }),
       }),
@@ -4774,21 +4776,22 @@ describe("bot-host server", () => {
     expect(response.status).toBe(200);
     const payload = await response.json();
     expect(payload).toMatchObject({
-      output: expect.stringContaining("OPENAI_API_KEY"),
+      output: expect.stringContaining("HIM22187_AUTH_TOKEN"),
     });
     expect(payload.output).toContain("已设置");
     expect(calls).toEqual([
       "http://data-service/v1/message-context/resolve",
-      "http://data-service/v1/bots/prd-bot/env",
+      "http://data-service/internal/user-env?bot_id=prd-bot&wecom_user_id=admin-a",
     ]);
   });
 
-  it("allows admins to set env vars through the env command", async () => {
+  it("allows every user to set a private env var through the env command", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
       capabilityRunnerUrl: "http://capability-runner",
+      credentialInternalToken: "internal-token",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -4800,17 +4803,18 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "ready",
-            is_admin: true,
+            is_admin: false,
             conversation: {
               conversation_id: "conv-admin",
             },
           });
         }
 
-        if (request.url === "http://data-service/v1/bots/prd-bot/env") {
+        if (request.url === "http://data-service/internal/user-env?bot_id=prd-bot&wecom_user_id=admin-a") {
           return Response.json({
             bot_id: "prd-bot",
-            key: "OPENAI_API_KEY",
+          wecom_user_id: "admin-a",
+          key: "HIM22187_AUTH_TOKEN",
             is_set: true,
             updated_at: "2026-06-24T00:00:00.000Z",
           }, { status: 201 });
@@ -4826,7 +4830,7 @@ describe("bot-host server", () => {
         body: JSON.stringify({
           bot_id: "prd-bot",
           wecom_user_id: "admin-a",
-          text: "/env set OPENAI_API_KEY ciphertext-secret",
+          text: "/env set HIM22187_AUTH_TOKEN token-value",
           runtime: "mock",
         }),
       }),
@@ -4834,25 +4838,25 @@ describe("bot-host server", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      output: "已设置环境变量：OPENAI_API_KEY。",
+      output: "已设置环境变量：HIM22187_AUTH_TOKEN。",
     });
     expect(calls.map((call) => call.url)).toEqual([
       "http://data-service/v1/message-context/resolve",
-      "http://data-service/v1/bots/prd-bot/env",
+      "http://data-service/internal/user-env?bot_id=prd-bot&wecom_user_id=admin-a",
     ]);
     expect(calls[1].body).toEqual({
-      key: "OPENAI_API_KEY",
-      value_ciphertext: "ciphertext-secret",
-      updated_by_wecom_user_id: "admin-a",
+      key: "HIM22187_AUTH_TOKEN",
+      value: "token-value",
     });
   });
 
-  it("allows admins to delete env vars through the env command", async () => {
+  it("allows a user to unset a private env var through the env command", async () => {
     const calls: Array<{ url: string; method: string }> = [];
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
       capabilityRunnerUrl: "http://capability-runner",
+      credentialInternalToken: "internal-token",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -4863,15 +4867,15 @@ describe("bot-host server", () => {
           return Response.json({
             allowed: true,
             reason: "ready",
-            is_admin: true,
+            is_admin: false,
             conversation: {
               conversation_id: "conv-admin",
             },
           });
         }
 
-        if (request.url === "http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY") {
-          return new Response(null, { status: 204 });
+        if (request.url === "http://data-service/internal/user-env/HIM22187_AUTH_TOKEN?bot_id=prd-bot&wecom_user_id=admin-a") {
+          return Response.json({ deleted: true });
         }
 
         return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
@@ -4884,7 +4888,7 @@ describe("bot-host server", () => {
         body: JSON.stringify({
           bot_id: "prd-bot",
           wecom_user_id: "admin-a",
-          text: "/env delete OPENAI_API_KEY",
+          text: "/env unset HIM22187_AUTH_TOKEN",
           runtime: "mock",
         }),
       }),
@@ -4892,19 +4896,20 @@ describe("bot-host server", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      output: "已删除环境变量：OPENAI_API_KEY。",
+      output: "已删除环境变量：HIM22187_AUTH_TOKEN。",
     });
     expect(calls).toEqual([
       { url: "http://data-service/v1/message-context/resolve", method: "POST" },
-      { url: "http://data-service/v1/bots/prd-bot/env/OPENAI_API_KEY", method: "DELETE" },
+      { url: "http://data-service/internal/user-env/HIM22187_AUTH_TOKEN?bot_id=prd-bot&wecom_user_id=admin-a", method: "DELETE" },
     ]);
   });
 
-  it("rejects env inspection for non-admin users with a clear message", async () => {
+  it("lets non-admin users inspect only their own env metadata", async () => {
     const server = createBotHostServer({
       dataServiceUrl: "http://data-service",
       llmRunnerUrl: "http://llm-runner",
       capabilityRunnerUrl: "http://capability-runner",
+      credentialInternalToken: "internal-token",
       fetch: async (request) => {
         if (!(request instanceof Request)) {
           throw new Error("expected Request");
@@ -4921,6 +4926,9 @@ describe("bot-host server", () => {
           });
         }
 
+        if (request.url === "http://data-service/internal/user-env?bot_id=prd-bot&wecom_user_id=user-a") {
+          return Response.json({ items: [] });
+        }
         return Response.json({ error: "unexpected", url: request.url }, { status: 500 });
       },
     } as Parameters<typeof createBotHostServer>[0]);
@@ -4937,11 +4945,9 @@ describe("bot-host server", () => {
       }),
     );
 
-    expect(response.status).toBe(403);
-    await expect(response.json()).resolves.toEqual({
-      blocked: true,
-      reason: "capability_admin_required",
-      output: "只有管理员可以查看环境变量和管理 capability。",
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      output: "你在当前 Bot 中还没有已配置的环境变量。",
     });
   });
 
@@ -5589,7 +5595,7 @@ describe("bot-host server", () => {
     await expect(response.json()).resolves.toEqual({
       blocked: true,
       reason: "capability_admin_required",
-      output: "只有管理员可以查看环境变量和管理 capability。",
+      output: "只有管理员可以管理 capability。",
     });
   });
 

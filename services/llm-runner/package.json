@@ -12,6 +12,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@my-agent-toolkit/contracts": "0.1.0"
+    "@my-agent-toolkit/contracts": "0.1.0",
+    "undici": "^7.28.0"
   }
 }

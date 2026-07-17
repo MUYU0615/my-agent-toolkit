@@ -83,6 +83,7 @@ test("kiro relay cli forwards streamed chunks to stdout", async () => {
     });
 
     response.writeHead(200, { "content-type": "application/x-ndjson" });
+    response.write(`${JSON.stringify({ type: "heartbeat" })}\n`);
     response.write(`${JSON.stringify({ type: "chunk", content: "he" })}\n`);
     setTimeout(() => {
       response.write(`${JSON.stringify({ type: "chunk", content: "llo" })}\n`);
@@ -121,6 +122,42 @@ test("kiro relay cli forwards streamed chunks to stdout", async () => {
   assert.equal(Buffer.concat(stderr).toString(), metadataLine);
 });
 
+test("kiro relay cli reports its configured response-header timeout", async () => {
+  const server = createServer(async (request, _response) => {
+    for await (const _chunk of request) {
+      // Consume the request but intentionally never send response headers.
+    }
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert(address && typeof address === "object");
+
+  const child = spawn(process.execPath, ["services/llm-runner/scripts/kiro-relay-cli.mjs", "chat"], {
+    env: {
+      ...process.env,
+      KIRO_RELAY_BOT_ID: "prd-bot",
+      KIRO_RELAY_USER_ID: "user-a",
+      KIRO_RELAY_CONVERSATION_ID: "conv-timeout",
+      KIRO_RELAY_URL: `http://127.0.0.1:${address.port}/v1/kiro/chat`,
+      KIRO_RELAY_CLIENT_TIMEOUT_MS: "50",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  child.stdin.end("hello");
+  const stderr = [];
+  child.stderr.on("data", (chunk) => stderr.push(chunk));
+  const [code] = await once(child, "close");
+  server.closeAllConnections();
+  server.close();
+
+  assert.equal(code, 1);
+  assert.equal(
+    Buffer.concat(stderr).toString(),
+    "relay response headers timed out after 50 ms",
+  );
+});
+
 test("kiro relay cli forwards only allowlisted user credentials with relay auth", async () => {
   const server = createServer(async (request, response) => {
     assert.equal(request.headers.authorization, "Bearer relay-token");
@@ -133,6 +170,7 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
       EASEMOB_JIRA_USERNAME: "jira-user-a",
       EASEMOB_JIRA_PASSWORD: "jira-password-a",
       MY_AGENT_PROJECT_DOTENV_B64: "cHJvamVjdC1lbnY=",
+      HIM22187_AUTH_TOKEN: "user-token-value",
     });
     assert.equal(payload.user_id, "user-a");
     assert.equal(payload.conversation_id, "conv-1");
@@ -155,6 +193,11 @@ test("kiro relay cli forwards only allowlisted user credentials with relay auth"
       EASEMOB_JIRA_USERNAME: "jira-user-a",
       EASEMOB_JIRA_PASSWORD: "jira-password-a",
       MY_AGENT_PROJECT_DOTENV_B64: "cHJvamVjdC1lbnY=",
+      MY_AGENT_USER_RUNTIME_ENV_KEYS_B64: Buffer.from(
+        JSON.stringify(["HIM22187_AUTH_TOKEN"]),
+        "utf8",
+      ).toString("base64"),
+      HIM22187_AUTH_TOKEN: "user-token-value",
       SHOULD_NOT_BE_FORWARDED: "private-value",
     },
     stdio: ["pipe", "pipe", "pipe"],

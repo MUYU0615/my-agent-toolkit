@@ -77,6 +77,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return handleBotConfigDocumentSave(request, config, botAgentsSaveMatch[1], "agents.md");
       }
 
+      const botRulesSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/rules$/);
+      if (request.method === "POST" && botRulesSaveMatch) {
+        return handleBotConfigDocumentSave(request, config, botRulesSaveMatch[1], "rules.md");
+      }
+
       const botCapabilityEnvSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/env\/save$/);
       if (request.method === "POST" && botCapabilityEnvSaveMatch) {
         return handleBotEnvSave(request, config, botCapabilityEnvSaveMatch[1]);
@@ -764,7 +769,7 @@ async function handleBotConfigDocumentSave(
   request: Request,
   config: ControlApiConfig,
   botId: string,
-  title: "soul" | "agents.md",
+  title: "soul" | "agents.md" | "rules.md",
 ): Promise<Response> {
   const form = await readUrlEncodedForm(request);
   await proxyJsonRequest(
@@ -1727,6 +1732,7 @@ function renderBotConfigEditorPage(
   bot: Record<string, unknown>,
   documents: Array<Record<string, unknown>>,
 ): string {
+  const encodedBotId = encodeURIComponent(botId);
   const soul = documents.find((document) => {
     const title = String(document.title ?? "").toLowerCase();
     return title === "soul" || title === "soul.md";
@@ -1735,6 +1741,7 @@ function renderBotConfigEditorPage(
     const title = String(document.title ?? "").toLowerCase();
     return title === "agents" || title === "agents.md";
   });
+  const rules = documents.find((document) => String(document.title ?? "").toLowerCase() === "rules.md");
   return pageShell("Bot 配置编辑", [
     `<section class="card stack">`,
     `<div class="actions"><a class="btn" href="/">返回 Channel 管理</a></div>`,
@@ -1745,14 +1752,29 @@ function renderBotConfigEditorPage(
     `<section class="card stack">`,
     `<h2>Soul</h2>`,
     `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
-    `<div class="actions"><span class="btn">保存 Soul</span></div>`,
-    `<textarea>${escapeHtmlValue(soul?.content ?? "")}</textarea>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/soul">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content">${escapeHtmlValue(soul?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 Soul</button></div>`,
+    `</form>`,
     `</section>`,
     `<section class="card stack">`,
     `<h2>Agents</h2>`,
     `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
-    `<div class="actions"><span class="btn">保存 Agents</span></div>`,
-    `<textarea>${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/agents">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content">${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 Agents</button></div>`,
+    `</form>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>运行规则（rules.md）</h2>`,
+    `<div class="muted">管理员规则会在每次运行时优先注入，不会作为记忆参与检索。</div>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/rules">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content" placeholder="例如：只在当前会话工作目录中创建文件；没有环境变量时向用户索取，不得猜测已有项目或环境。">${escapeHtmlValue(rules?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 rules.md</button></div>`,
+    `</form>`,
     `</section>`,
   ].join(""));
 }
@@ -2371,6 +2393,7 @@ function renderChannelWorkbenchPage(): string {
       "memory.stats",
       "search.query",
       "project.publish",
+      "jira.project.publish",
     ];
 
     function setToast(message, isError = false) {
@@ -2507,6 +2530,7 @@ function renderChannelWorkbenchPage(): string {
           '</div>',
           '<div class="tools">',
             '<button type="button" class="secondary" data-action="edit-channel">编辑配置</button>',
+            '<button type="button" data-action="edit-bot-config">编辑 Soul / Agents / rules</button>',
             '<button type="button" data-action="edit-project">测试环境</button>',
             '<button type="button" class="secondary" data-action="view-traces">消息链路</button>',
             '<button type="button" data-action="manage-bot-capabilities">管理 Env / Skills / MCP</button>',
@@ -2954,6 +2978,10 @@ function renderChannelWorkbenchPage(): string {
       try {
         if (button.dataset.action === "edit-channel") {
           openModal(detail.bot);
+          return;
+        }
+        if (button.dataset.action === "edit-bot-config") {
+          window.location.href = "/admin/bots/" + encodeURIComponent(botId) + "/config";
           return;
         }
         if (button.dataset.action === "edit-project") {

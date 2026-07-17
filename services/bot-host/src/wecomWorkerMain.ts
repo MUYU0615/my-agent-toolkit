@@ -1,4 +1,5 @@
 import { createNodeServer } from "./nodeServer.js";
+import { createLlmStreamFetch, DEFAULT_LLM_STREAM_BODY_TIMEOUT_MS } from "./llmStreamFetch.js";
 import { type RestartInitializationResult } from "./server.js";
 import { createBotHostSupervisor } from "./server.js";
 import { WeComLongConnectionClient } from "./wecomClient.js";
@@ -26,6 +27,11 @@ function healthResponse(service: string): {
   };
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export function createWeComWorkerApp() {
   const hostConfig = {
     dataServiceUrl: process.env.DATA_SERVICE_URL ?? "http://data-service:8300",
@@ -35,6 +41,14 @@ export function createWeComWorkerApp() {
     logServiceUrl: process.env.LOG_SERVICE_URL,
     credentialBindPublicUrl: process.env.CREDENTIAL_BIND_PUBLIC_URL,
     credentialInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN,
+    wecomPassiveReplyMaxMs: parsePositiveInteger(
+      process.env.WECOM_PASSIVE_REPLY_MAX_MS,
+      180_000,
+    ),
+    streamFetch: createLlmStreamFetch(parsePositiveInteger(
+      process.env.LLM_STREAM_BODY_TIMEOUT_MS,
+      DEFAULT_LLM_STREAM_BODY_TIMEOUT_MS,
+    )),
     fetch,
   };
 

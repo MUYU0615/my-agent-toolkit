@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { Agent } from "undici";
+
 const relayUrl = process.env.KIRO_RELAY_URL ?? "http://host.docker.internal:8210/v1/kiro/chat";
 const relayStreamUrl = process.env.KIRO_RELAY_STREAM_URL ?? relayUrl.replace(/\/v1\/kiro\/chat$/, "/v1/kiro/chat/stream");
 const streamEnabled = process.env.KIRO_RELAY_STREAM === "true";
@@ -9,6 +11,14 @@ const conversationId = process.env.KIRO_RELAY_CONVERSATION_ID?.trim();
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const runtimeEnv = collectRuntimeEnv(process.env);
 const provider = process.env.MY_AGENT_CLI_PROVIDER === "claude-code" ? "claude-code" : "kiro";
+const relayClientTimeoutMs = Number.parseInt(
+  process.env.KIRO_RELAY_CLIENT_TIMEOUT_MS ?? "960000",
+  10,
+);
+const relayDispatcher = new Agent({
+  headersTimeout: relayClientTimeoutMs,
+  bodyTimeout: relayClientTimeoutMs,
+});
 const forwardedArgs = process.argv.slice(2);
 const chunks = [];
 const runtimeMetadataPrefix = "__MY_AGENT_TOOLKIT_RUNTIME_META__";
@@ -34,6 +44,7 @@ try {
 
   if (streamEnabled) {
     await runStream(Buffer.concat(chunks).toString());
+    await relayDispatcher.close();
     process.exit(0);
   }
 
@@ -49,6 +60,7 @@ try {
       args: forwardedArgs,
       runtime_env: runtimeEnv,
     }),
+    dispatcher: relayDispatcher,
   });
   const text = await response.text();
   let payload;
@@ -74,8 +86,10 @@ try {
 
   process.stdout.write(payload.output);
   writeRuntimeMetadata(payload.provider_session_id);
+  await relayDispatcher.close();
 } catch (error) {
-  process.stderr.write(error instanceof Error ? error.message : "kiro relay request failed");
+  await relayDispatcher.close().catch(() => {});
+  process.stderr.write(formatRelayError(error));
   process.exit(1);
 }
 
@@ -92,6 +106,7 @@ async function runStream(prompt) {
       args: forwardedArgs,
       runtime_env: runtimeEnv,
     }),
+    dispatcher: relayDispatcher,
   });
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => "");
@@ -139,10 +154,26 @@ function handleStreamLine(line, providerSessionId) {
   if (event.type === "done") {
     return providerSessionId;
   }
+  if (event.type === "heartbeat") {
+    return providerSessionId;
+  }
   if (event.type === "error") {
     throw new Error(event.error ?? "kiro relay stream failed");
   }
   return providerSessionId;
+}
+
+function formatRelayError(error) {
+  const cause = error && typeof error === "object" ? error.cause : undefined;
+  if (cause && typeof cause === "object") {
+    if (cause.code === "UND_ERR_HEADERS_TIMEOUT") {
+      return `relay response headers timed out after ${relayClientTimeoutMs} ms`;
+    }
+    if (cause.code === "UND_ERR_BODY_TIMEOUT") {
+      return `relay response body timed out after ${relayClientTimeoutMs} ms`;
+    }
+  }
+  return error instanceof Error ? error.message : "kiro relay request failed";
 }
 
 function writeRuntimeMetadata(providerSessionId) {
@@ -176,5 +207,22 @@ function collectRuntimeEnv(env) {
       result[key] = env[key];
     }
   }
+  const userRuntimeKeys = parseUserRuntimeEnvKeys(env.MY_AGENT_USER_RUNTIME_ENV_KEYS_B64);
+  for (const key of userRuntimeKeys) {
+    if (typeof env[key] === "string" && env[key].length > 0) {
+      result[key] = env[key];
+    }
+  }
   return result;
+}
+
+function parseUserRuntimeEnvKeys(encodedKeys) {
+  if (typeof encodedKeys !== "string" || encodedKeys.length === 0) return [];
+  try {
+    const keys = JSON.parse(Buffer.from(encodedKeys, "base64").toString("utf8"));
+    if (!Array.isArray(keys)) return [];
+    return keys.filter((key) => /^[A-Z][A-Z0-9_]{0,127}$/.test(key));
+  } catch {
+    return [];
+  }
 }
