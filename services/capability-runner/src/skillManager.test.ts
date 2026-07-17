@@ -93,6 +93,62 @@ describe("skill manager", () => {
     expect(statuses[1].last_error).toContain("skill name does not match");
   });
 
+  it("installs a local uploaded skill directory into both CLI provider roots", async () => {
+    const root = createTempRoot();
+    const manager = createSkillManager({
+      dataServiceUrl: "http://data-service",
+      kiroWorkspaceRoot: join(root, "workspaces"),
+      skillCatalogRoot: join(root, "catalog"),
+      fetch: async () => Response.json({ ok: true }, { status: 201 }),
+    });
+    const skill = [
+      "---",
+      "name: local-review",
+      "description: Review a local artifact",
+      "---",
+      "# Local review",
+    ].join("\n");
+
+    await manager.dispatch({
+      action: "skills/install",
+      botId: "bot-a",
+      payload: {
+        name: "local-review",
+        source_type: "local_upload",
+        files: [
+          { path: "local-review/SKILL.md", content_base64: Buffer.from(skill).toString("base64") },
+          { path: "local-review/references/usage.md", content_base64: Buffer.from("# Usage\n").toString("base64") },
+        ],
+      },
+    });
+
+    for (const provider of [".kiro", ".claude"]) {
+      const installed = join(root, "workspaces", "bot-a", provider, "skills", "local-review");
+      expect(readFileSync(join(installed, "SKILL.md"), "utf8")).toContain("name: local-review");
+      expect(readFileSync(join(installed, "references", "usage.md"), "utf8")).toBe("# Usage\n");
+    }
+  });
+
+  it("rejects local uploaded skill paths that escape the package", async () => {
+    const root = createTempRoot();
+    const manager = createSkillManager({
+      dataServiceUrl: "http://data-service",
+      kiroWorkspaceRoot: join(root, "workspaces"),
+      skillCatalogRoot: join(root, "catalog"),
+      fetch: async () => Response.json({ ok: true }, { status: 201 }),
+    });
+
+    await expect(manager.dispatch({
+      action: "skills/install",
+      botId: "bot-a",
+      payload: {
+        name: "local-review",
+        source_type: "local_upload",
+        files: [{ path: "../SKILL.md", content_base64: Buffer.from("bad").toString("base64") }],
+      },
+    })).rejects.toThrow("file path is invalid");
+  });
+
   it("deletes the package and its bot_skills record", async () => {
     const root = createTempRoot();
     const catalogRoot = join(root, "catalog");

@@ -756,6 +756,9 @@ describe("control-api server", () => {
     expect(html).toContain("easemob-jira-testcase");
     expect(html).toContain("安装 Skill");
     expect(html).toContain("/admin/bots/prd-bot/capabilities/skills/install");
+    expect(html).toContain("添加 Skill");
+    expect(html).toContain("目录名会自动作为 Skill 名称");
+    expect(html).toContain("/admin/bots/prd-bot/capabilities/skills/upload");
     expect(html).toContain("/admin/bots/prd-bot/capabilities/skills/delete");
     expect(html).toContain("search-mcp");
     expect(html).toContain("skill_install_policy");
@@ -873,6 +876,49 @@ describe("control-api server", () => {
       "POST http://capability-runner/internal/bots/prd-bot/mcps/delete",
     ]));
     expect(callUrls.filter((url) => url === "POST http://log-service/v1/audit-events")).toHaveLength(6);
+  });
+
+  it("uploads a local skill directory through the capability runner", async () => {
+    const calls: Array<{ url: string; body?: Record<string, unknown> }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      capabilityRunnerUrl: "http://capability-runner",
+      fetch: async (request) => {
+        if (!(request instanceof Request)) throw new Error("expected Request");
+        const body = request.method === "POST" ? await request.json() as Record<string, unknown> : undefined;
+        calls.push({ url: request.url, body });
+        if (request.url === "http://capability-runner/internal/bots/prd-bot/skills/install") {
+          return Response.json({ accepted: true }, { status: 202 });
+        }
+        if (request.url === "http://log-service/v1/audit-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+    const form = new FormData();
+    form.set("actor_id", "admin-a");
+    form.append("files", new Blob(["---\nname: local-review\ndescription: Local review\n---\n"]), "SKILL.md");
+    form.append("paths", "local-review/SKILL.md");
+
+    const response = await server.fetch(new Request("http://localhost/admin/bots/prd-bot/capabilities/skills/upload", {
+      method: "POST",
+      body: form,
+    }));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/admin/bots/prd-bot/capabilities");
+    expect(calls[0]).toMatchObject({
+      url: "http://capability-runner/internal/bots/prd-bot/skills/install",
+      body: {
+        name: "local-review",
+        source_ref: "webui-local-upload",
+        source_type: "local_upload",
+        actor_id: "admin-a",
+        files: [{ path: "local-review/SKILL.md" }],
+      },
+    });
   });
 
   it("surfaces env save failures instead of redirecting", async () => {

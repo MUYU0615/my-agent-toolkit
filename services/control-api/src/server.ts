@@ -97,6 +97,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return handleBotSkillInstall(request, config, botCapabilitySkillInstallMatch[1]);
       }
 
+      const botCapabilitySkillUploadMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/upload$/);
+      if (request.method === "POST" && botCapabilitySkillUploadMatch) {
+        return handleBotSkillUpload(request, config, botCapabilitySkillUploadMatch[1]);
+      }
+
       const botCapabilitySkillDeleteMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/delete$/);
       if (request.method === "POST" && botCapabilitySkillDeleteMatch) {
         return handleBotSkillDelete(request, config, botCapabilitySkillDeleteMatch[1]);
@@ -901,6 +906,105 @@ async function handleBotSkillInstall(
     },
   });
   return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+const MAX_LOCAL_SKILL_FILES = 500;
+const MAX_LOCAL_SKILL_BYTES = 25 * 1024 * 1024;
+
+async function handleBotSkillUpload(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+    return jsonResponse({ error: "local skill upload requires multipart/form-data" }, 400);
+  }
+
+  const form = await request.formData();
+  const actorId = optionalFormText(form, "actor_id") || "webui";
+  const files = form.getAll("files");
+  const paths = form.getAll("paths");
+  if (files.length === 0) {
+    return jsonResponse({ error: "select a local skill directory containing SKILL.md" }, 400);
+  }
+  if (files.length > MAX_LOCAL_SKILL_FILES || paths.length !== files.length) {
+    return jsonResponse({ error: "invalid local skill file list" }, 400);
+  }
+  const name = localSkillNameFromPaths(paths);
+
+  let totalBytes = 0;
+  const uploadedFiles: Array<{ path: string; content_base64: string }> = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const path = paths[index];
+    if (!isUploadedFile(file) || typeof path !== "string" || !path.trim()) {
+      return jsonResponse({ error: "invalid local skill file" }, 400);
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_LOCAL_SKILL_BYTES) {
+      return jsonResponse({ error: "local skill package exceeds the allowed size" }, 400);
+    }
+    uploadedFiles.push({ path: path.trim(), content_base64: bytes.toString("base64") });
+  }
+
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/skills/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        source_ref: "webui-local-upload",
+        source_type: "local_upload",
+        files: uploadedFiles,
+        actor_id: actorId,
+      }),
+    }),
+  );
+  if (!response.ok) return cloneJsonResponse(response);
+  await recordAuditEvent(config, {
+    actor_id: actorId,
+    action: "bot.skill.upload",
+    target_type: "bot",
+    target_id: botId,
+    metadata: { name, file_count: uploadedFiles.length, source_type: "local_upload" },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+function isUploadedFile(value: FormDataEntryValue): value is File {
+  return typeof value !== "string" && typeof value.arrayBuffer === "function";
+}
+
+function requiredFormText(form: FormData, key: string): string {
+  const value = form.get(key);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${key} is required`);
+  return value.trim();
+}
+
+function optionalFormText(form: FormData, key: string): string | undefined {
+  const value = form.get(key);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function localSkillNameFromPaths(paths: FormDataEntryValue[]): string {
+  const directoryNames = new Set<string>();
+  for (const path of paths) {
+    if (typeof path !== "string") throw new Error("invalid local skill file path");
+    const normalized = path.trim().replaceAll("\\", "/");
+    const [directoryName, ...rest] = normalized.split("/");
+    if (!directoryName || rest.length === 0 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(directoryName)) {
+      throw new Error("select one valid local skill directory");
+    }
+    directoryNames.add(directoryName);
+  }
+  if (directoryNames.size !== 1) throw new Error("select exactly one local skill directory");
+  const name = [...directoryNames][0];
+  if (!name) throw new Error("select one valid local skill directory");
+  return name;
 }
 
 async function handleBotSkillDelete(
@@ -1820,6 +1924,23 @@ function renderBotCapabilitiesPage(
       ? [`<div class="muted">暂无可安装的内置 Skill，请检查 capability-runner 的 Skill 目录。</div>`]
       : []),
     `</form>`,
+    `<form class="stack" id="local-skill-upload-form" method="post" action="/admin/bots/${encodedBotId}/capabilities/skills/upload" enctype="multipart/form-data">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<label>选择本地 Skill 目录<input id="local-skill-upload-files" name="files" type="file" webkitdirectory directory multiple required></label>`,
+    `<div class="muted">选择包含 <code>SKILL.md</code> 的一个目录。目录名会自动作为 Skill 名称；最多 500 个文件、25 MB。</div>`,
+    `<div class="actions"><button type="submit">添加 Skill</button></div>`,
+    `</form>`,
+    `<script>`,
+    `document.getElementById("local-skill-upload-form")?.addEventListener("submit", async (event) => {`,
+    `  const form = event.currentTarget; const input = document.getElementById("local-skill-upload-files");`,
+    `  if (!(form instanceof HTMLFormElement) || !(input instanceof HTMLInputElement) || input.files.length === 0) return;`,
+    `  event.preventDefault(); const data = new FormData(form); data.delete("files");`,
+    `  for (const file of input.files) { data.append("files", file, file.name); data.append("paths", file.webkitRelativePath || file.name); }`,
+    `  const response = await fetch(form.action, { method: "POST", body: data });`,
+    `  if (response.redirected) { window.location.assign(response.url); return; }`,
+    `  alert(await response.text());`,
+    `});`,
+    `</script>`,
     `<table><thead><tr><th>名称</th><th>来源</th><th>状态</th><th>错误</th><th>操作</th></tr></thead><tbody>`,
     ...(skills.length === 0
       ? [`<tr><td colspan="5" class="muted">暂无 Skills</td></tr>`]
