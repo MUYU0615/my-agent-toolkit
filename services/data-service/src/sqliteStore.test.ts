@@ -63,6 +63,215 @@ describe("sqlite data store", () => {
     }
   });
 
+  it("persists AgentLattice users, personal agents, work stages, and events", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const first = createSqliteDataStore(dbPath);
+    first.createBot({ bot_id: "bot-b", name: "Bob Bot", runtime: "claude-code" });
+    first.createPlatformUser({ user_id: "user-a", wecom_user_id: "wecom-a", display_name: "Alice" });
+    first.createPlatformUser({ user_id: "user-b", wecom_user_id: "wecom-b", display_name: "Bob" });
+    first.createPersonalAgent({ agent_id: "agent-b", name: "Bob Agent", runtime: "claude-code" });
+    first.bindUserAgent({ user_id: "user-b", agent_id: "agent-b" });
+    first.bindAgentBot({ agent_id: "agent-b", bot_id: "bot-b" });
+    first.createWorkItem({
+      work_id: "work-1",
+      title: "实现服务",
+      created_by_user_id: "user-a",
+      assigned_user_id: "user-b",
+      assigned_agent_id: "agent-b",
+    });
+    first.createWorkStage({
+      stage_id: "stage-1",
+      work_id: "work-1",
+      name: "代码实现",
+      intent: "根据 HLD 在独立工作区完成代码实现",
+    });
+    const runtimeSession = first.createWorkRuntimeSession({
+      stage_id: "stage-1",
+      agent_id: "agent-b",
+      runtime: "claude-code",
+      provider_session_id: "provider-session-1",
+    });
+    first.createArtifact({
+      artifact_id: "artifact-code",
+      stage_id: "stage-1",
+      artifact_type: "source.commit",
+      title: "实现代码",
+      content_ref: "src/index.ts",
+      integrity_sha256: "a".repeat(64),
+      summary: "第一版实现",
+      created_by_type: "agent",
+      created_by_id: "agent-b",
+    });
+    first.publishArtifactVersion("artifact-code", {
+      content_ref: "src/index-v2.ts",
+      integrity_sha256: "b".repeat(64),
+      summary: "修复评审问题",
+      created_by_type: "agent",
+      created_by_id: "agent-b",
+    });
+    first.transitionWorkStage("stage-1", { status: "queued", actor_type: "system" });
+    first.transitionWorkStage("stage-1", { status: "running", actor_type: "system" });
+    first.close?.();
+
+    const second = createSqliteDataStore(dbPath);
+    expect(second.getPlatformUser("user-b")?.display_name).toBe("Bob");
+    expect(second.getUserAgentBinding("user-b")).toMatchObject({ agent_id: "agent-b" });
+    expect(second.getAgentBotBinding("agent-b")).toMatchObject({ bot_id: "bot-b" });
+    expect(second.getWorkItem("work-1")).toMatchObject({
+      assigned_user_id: "user-b",
+      current_stage_id: "stage-1",
+      status: "active",
+    });
+    expect(second.listWorkStages("work-1")).toMatchObject([{
+      stage_id: "stage-1",
+      status: "running",
+      assigned_user_id: "user-b",
+      assigned_agent_id: "agent-b",
+    }]);
+    expect(second.getWorkConversation("stage-1")).toMatchObject({
+      stage_id: "stage-1",
+      status: "active",
+    });
+    expect(second.getWorkRuntimeSession(runtimeSession.runtime_session_id)).toMatchObject({
+      stage_id: "stage-1",
+      provider_session_id: "provider-session-1",
+      workspace_ref: "workspaces/work-1/stage-1/files",
+    });
+    expect(second.getArtifact("artifact-code")).toMatchObject({ latest_version: 2 });
+    expect(second.listArtifactVersions("artifact-code")).toMatchObject([
+      { version: 1, content_ref: "workspaces/work-1/stage-1/files/src/index.ts" },
+      { version: 2, content_ref: "workspaces/work-1/stage-1/files/src/index-v2.ts" },
+    ]);
+    expect(second.listWorkEvents("work-1").map((event) => event.event_type)).toEqual([
+      "work.created",
+      "stage.created",
+      "runtime_session.created",
+      "artifact.published",
+      "artifact.version_published",
+      "stage.status_changed",
+      "stage.status_changed",
+    ]);
+    expect(() => second.createPlatformUser({
+      user_id: "user-c",
+      wecom_user_id: "wecom-b",
+      display_name: "Duplicate",
+    })).toThrow("already");
+    second.close?.();
+  });
+
+  it("persists the execution queue and enforces one leased run per Personal Agent", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T00:00:00.000Z"));
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const store = createSqliteDataStore(dbPath);
+    store.createBot({ bot_id: "bot-a", name: "Agent Bot", runtime: "claude-code" });
+    store.createPlatformUser({ user_id: "user-a", wecom_user_id: "wecom-a", display_name: "Alice" });
+    store.createPersonalAgent({ agent_id: "agent-a", name: "Alice Agent", runtime: "claude-code" });
+    store.bindUserAgent({ user_id: "user-a", agent_id: "agent-a" });
+    store.bindAgentBot({ agent_id: "agent-a", bot_id: "bot-a" });
+    for (const number of [1, 2]) {
+      store.createWorkItem({
+        work_id: `work-${number}`,
+        title: `任务 ${number}`,
+        created_by_user_id: "user-a",
+        assigned_user_id: "user-a",
+        assigned_agent_id: "agent-a",
+      });
+      store.createWorkStage({
+        stage_id: `stage-${number}`,
+        work_id: `work-${number}`,
+        name: "执行",
+        intent: `完成任务 ${number}`,
+      });
+      store.enqueueWorkStage({ stage_id: `stage-${number}`, actor_id: "user-a" });
+    }
+
+    const first = store.leaseNextExecution({ worker_id: "worker-a" });
+    expect(first?.runtime_request).toMatchObject({
+      bot_id: "bot-a",
+      user_id: "wecom-a",
+      runtime: "claude-code",
+    });
+    expect(store.leaseNextExecution({ worker_id: "worker-b" })).toBeUndefined();
+    vi.advanceTimersByTime(1_201_000);
+    const retry = store.leaseNextExecution({ worker_id: "worker-b" });
+    expect(retry?.queue_item).toMatchObject({ stage_id: "stage-1", attempt: 2 });
+    expect(store.listWorkExecutions("work-1").find((run) => run.attempt === 1)).toMatchObject({
+      status: "failed",
+      error_code: "lease_expired",
+    });
+    store.completeExecution(retry!.execution.execution_id, {
+      status: "succeeded",
+      runner_session_id: "claude:bot-a:wecom-a:stage-1",
+      output: "完成",
+    });
+    const second = store.leaseNextExecution({ worker_id: "worker-b" });
+    expect(second?.queue_item.stage_id).toBe("stage-2");
+    store.completeExecution(second!.execution.execution_id, {
+      status: "failed",
+      error_code: "runtime_exit",
+      error_message: "CLI exited",
+    });
+    store.close?.();
+
+    const reopened = createSqliteDataStore(dbPath);
+    expect(reopened.listWorkQueueItems("work-1")).toMatchObject([{ status: "completed", attempt: 2 }]);
+    expect(reopened.listWorkExecutions("work-1").find((run) => run.status === "succeeded")).toMatchObject({
+      status: "succeeded",
+      output: "完成",
+    });
+    expect(reopened.getWorkItem("work-2")?.status).toBe("failed");
+    reopened.close?.();
+  });
+
+  it("persists Gate Results and automatically queues a minimal Handoff", () => {
+    const dir = mkdtempSync(join(tmpdir(), "data-service-"));
+    dirs.push(dir);
+    const dbPath = join(dir, "data.db");
+    const store = createSqliteDataStore(dbPath);
+    for (const suffix of ["a", "b"]) {
+      store.createBot({ bot_id: `bot-${suffix}`, name: `Bot ${suffix}`, runtime: "claude-code" });
+      store.createPlatformUser({ user_id: `user-${suffix}`, wecom_user_id: `wecom-${suffix}`, display_name: `User ${suffix}` });
+      store.createPersonalAgent({ agent_id: `agent-${suffix}`, name: `Agent ${suffix}`, runtime: "claude-code" });
+      store.bindUserAgent({ user_id: `user-${suffix}`, agent_id: `agent-${suffix}` });
+      store.bindAgentBot({ agent_id: `agent-${suffix}`, bot_id: `bot-${suffix}` });
+    }
+    store.createWorkItem({ work_id: "work-gate", title: "交付功能", created_by_user_id: "user-a",
+      assigned_user_id: "user-a", assigned_agent_id: "agent-a" });
+    store.createWorkStage({ stage_id: "stage-source", work_id: "work-gate", name: "设计", intent: "输出设计" });
+    store.transitionWorkStage("stage-source", { status: "queued", actor_type: "system" });
+    store.transitionWorkStage("stage-source", { status: "running", actor_type: "system" });
+    store.transitionWorkStage("stage-source", { status: "succeeded", actor_type: "system" });
+    const artifact = store.createArtifact({ stage_id: "stage-source", artifact_type: "architecture.hld", title: "HLD",
+      content_ref: "docs/HLD.md", integrity_sha256: "a".repeat(64), summary: "可实施设计",
+      created_by_type: "agent", created_by_id: "agent-a" });
+    const gate = store.createGateDefinition({ stage_id: "stage-source", name: "设计评审", kind: "human_review",
+      criteria: "可实施且可验证", actor_id: "user-a" });
+    const result = store.createGateResult({ gate_id: gate.gate_id,
+      artifact_version_id: artifact.version.artifact_version_id, outcome: "passed", evidence: "通过",
+      actor_type: "user", actor_id: "user-a" });
+    const completed = store.createHandoff({ work_id: "work-gate", source_stage_id: "stage-source",
+      gate_result_id: result.gate_result_id, target_user_id: "user-b", target_agent_id: "agent-b",
+      target_stage_name: "开发", target_stage_intent: "完成实现", acceptance_criteria: "测试通过",
+      expected_output: "代码和验证结果", created_by_user_id: "user-a" });
+    expect(completed.queue_item.prompt_snapshot).not.toContain("execution_runs");
+    store.close?.();
+
+    const reopened = createSqliteDataStore(dbPath);
+    expect(reopened.listWorkGateResults("work-gate")).toMatchObject([{ outcome: "passed" }]);
+    expect(reopened.listWorkHandoffs("work-gate")).toMatchObject([{
+      source_stage_id: "stage-source", target_stage_id: completed.stage.stage_id,
+      context_snapshot: { approved_artifacts: [{ version: 1 }] },
+    }]);
+    expect(reopened.listWorkQueueItems("work-gate")).toMatchObject([{ stage_id: completed.stage.stage_id, status: "queued" }]);
+    expect(reopened.leaseNextExecution({ worker_id: "worker-b" })?.runtime_request).toMatchObject({ user_id: "wecom-b", bot_id: "bot-b" });
+    reopened.close?.();
+  });
+
   it("persists Bot main project configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "data-service-"));
     dirs.push(dir);

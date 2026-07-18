@@ -9,6 +9,23 @@ import {
 } from "./store.js";
 import type { CredentialVault, UserCredentialPayload } from "./credentialVault.js";
 import { timingSafeEqual } from "node:crypto";
+import {
+  requireWorkStatus,
+  type CompleteExecutionInput,
+  type CreateGateDefinitionInput,
+  type CreateGateResultInput,
+  type CreateHandoffInput,
+  type CreateArtifactInput,
+  type CreatePersonalAgentInput,
+  type CreatePlatformUserInput,
+  type CreateWorkItemInput,
+  type CreateWorkRuntimeSessionInput,
+  type CreateWorkStageInput,
+  type EnqueueWorkStageInput,
+  type LeaseExecutionInput,
+  type PublishArtifactVersionInput,
+  type TransitionWorkStageInput,
+} from "./agentLattice.js";
 
 const PROJECT_DOTENV_ENV_KEY = "__PROJECT_DOTENV_FILE__";
 const MAX_PROJECT_DOTENV_BYTES = 256 * 1024;
@@ -20,6 +37,7 @@ export interface DataServiceServer {
 export interface DataServiceServerConfig {
   credentialVault?: CredentialVault;
   credentialInternalToken?: string;
+  internalServiceToken?: string;
 }
 
 export function createDataServiceServer(
@@ -32,6 +50,143 @@ export function createDataServiceServer(
 
       if (request.method === "GET" && url.pathname === "/health") {
         return jsonResponse(healthResponse("data-service"));
+      }
+
+      if (url.pathname === "/v1/users") {
+        if (request.method === "GET") return handleListPlatformUsers(store);
+        if (request.method === "POST") return handleCreatePlatformUser(request, store);
+      }
+
+      const platformUserMatch = url.pathname.match(/^\/v1\/users\/([^/]+)$/);
+      if (request.method === "GET" && platformUserMatch) {
+        return handleGetPlatformUser(store, decodeURIComponent(platformUserMatch[1]));
+      }
+
+      if (url.pathname === "/v1/personal-agents") {
+        if (request.method === "GET") return handleListPersonalAgents(store);
+        if (request.method === "POST") return handleCreatePersonalAgent(request, store);
+      }
+
+      const personalAgentMatch = url.pathname.match(/^\/v1\/personal-agents\/([^/]+)$/);
+      if (request.method === "GET" && personalAgentMatch) {
+        return handleGetPersonalAgent(store, decodeURIComponent(personalAgentMatch[1]));
+      }
+
+      if (url.pathname === "/v1/user-agent-bindings") {
+        if (request.method === "GET") return handleListUserAgentBindings(url, store);
+        if (request.method === "POST") return handleBindUserAgent(request, store);
+      }
+
+      if (url.pathname === "/v1/agent-bot-bindings") {
+        if (request.method === "GET") return handleListAgentBotBindings(url, store);
+        if (request.method === "POST") return handleBindAgentBot(request, store);
+      }
+
+      if (url.pathname === "/v1/works") {
+        if (request.method === "GET") return handleListWorkItems(url, store);
+        if (request.method === "POST") return handleCreateWorkItem(request, store);
+      }
+
+      const workStagesMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/stages$/);
+      if (workStagesMatch) {
+        const workId = decodeURIComponent(workStagesMatch[1]);
+        if (request.method === "GET") return handleListWorkStages(store, workId);
+        if (request.method === "POST") return handleCreateWorkStage(request, store, workId);
+      }
+
+      const workEventsMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/events$/);
+      if (request.method === "GET" && workEventsMatch) {
+        return handleListWorkEvents(store, decodeURIComponent(workEventsMatch[1]));
+      }
+
+      const workArtifactsMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/artifacts$/);
+      if (request.method === "GET" && workArtifactsMatch) {
+        return handleListWorkArtifacts(store, decodeURIComponent(workArtifactsMatch[1]));
+      }
+
+      const stageConversationMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/conversation$/);
+      if (request.method === "GET" && stageConversationMatch) {
+        return handleGetWorkConversation(store, decodeURIComponent(stageConversationMatch[1]));
+      }
+
+      const stageArtifactsMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/artifacts$/);
+      if (request.method === "POST" && stageArtifactsMatch) {
+        return handleCreateArtifact(request, store, decodeURIComponent(stageArtifactsMatch[1]));
+      }
+
+      const artifactVersionsMatch = url.pathname.match(/^\/v1\/artifacts\/([^/]+)\/versions$/);
+      if (artifactVersionsMatch) {
+        const artifactId = decodeURIComponent(artifactVersionsMatch[1]);
+        if (request.method === "GET") return handleListArtifactVersions(store, artifactId);
+        if (request.method === "POST") return handlePublishArtifactVersion(request, store, artifactId);
+      }
+
+      const artifactMatch = url.pathname.match(/^\/v1\/artifacts\/([^/]+)$/);
+      if (request.method === "GET" && artifactMatch) {
+        return handleGetArtifact(store, decodeURIComponent(artifactMatch[1]));
+      }
+
+      const stageRuntimeSessionsMatch = url.pathname.match(/^\/internal\/work-stages\/([^/]+)\/runtime-sessions$/);
+      if (stageRuntimeSessionsMatch) {
+        const accessError = internalServiceAccessError(request, config);
+        if (accessError) return accessError;
+        const stageId = decodeURIComponent(stageRuntimeSessionsMatch[1]);
+        if (request.method === "GET") return handleListWorkRuntimeSessions(store, stageId);
+        if (request.method === "POST") return handleCreateWorkRuntimeSession(request, store, stageId);
+      }
+
+      const workStageEnqueueMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/enqueue$/);
+      if (request.method === "POST" && workStageEnqueueMatch) {
+        return handleEnqueueWorkStage(request, store, decodeURIComponent(workStageEnqueueMatch[1]));
+      }
+
+      const workExecutionsMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/executions$/);
+      if (request.method === "GET" && workExecutionsMatch) {
+        return handleListWorkExecutions(store, decodeURIComponent(workExecutionsMatch[1]));
+      }
+
+      const stageGatesMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/gates$/);
+      if (request.method === "POST" && stageGatesMatch) {
+        return handleCreateGateDefinition(request, store, decodeURIComponent(stageGatesMatch[1]));
+      }
+
+      const gateResultsMatch = url.pathname.match(/^\/v1\/gates\/([^/]+)\/results$/);
+      if (request.method === "POST" && gateResultsMatch) {
+        return handleCreateGateResult(request, store, decodeURIComponent(gateResultsMatch[1]));
+      }
+
+      const workHandoffsMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/handoffs$/);
+      if (request.method === "POST" && workHandoffsMatch) {
+        return handleCreateHandoff(request, store, decodeURIComponent(workHandoffsMatch[1]));
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/execution-queue/lease") {
+        const accessError = internalServiceAccessError(request, config);
+        if (accessError) return accessError;
+        return handleLeaseExecution(request, store);
+      }
+
+      const executionCompleteMatch = url.pathname.match(/^\/internal\/execution-runs\/([^/]+)\/complete$/);
+      if (request.method === "POST" && executionCompleteMatch) {
+        const accessError = internalServiceAccessError(request, config);
+        if (accessError) return accessError;
+        return handleCompleteExecution(request, store, decodeURIComponent(executionCompleteMatch[1]));
+      }
+
+      const workItemMatch = url.pathname.match(/^\/v1\/works\/([^/]+)$/);
+      if (request.method === "GET" && workItemMatch) {
+        return handleGetWorkItemDetail(store, decodeURIComponent(workItemMatch[1]));
+      }
+
+      const workStageTransitionMatch = url.pathname.match(
+        /^\/v1\/work-stages\/([^/]+)\/transitions$/,
+      );
+      if (request.method === "POST" && workStageTransitionMatch) {
+        return handleTransitionWorkStage(
+          request,
+          store,
+          decodeURIComponent(workStageTransitionMatch[1]),
+        );
       }
 
       if (
@@ -657,6 +812,354 @@ function healthResponse(service: string): {
     git_sha: process.env.APP_BUILD_SHA ?? "unknown",
     build_time: process.env.APP_BUILD_TIME ?? "unknown",
   };
+}
+
+async function handleCreatePlatformUser(request: Request, store: DataStore): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.createPlatformUser(await request.json() as CreatePlatformUserInput),
+      201,
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListPlatformUsers(store: DataStore): Response {
+  try {
+    return jsonResponse(store.listPlatformUsers());
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetPlatformUser(store: DataStore, userId: string): Response {
+  try {
+    const record = store.getPlatformUser(userId);
+    return record ? jsonResponse(record) : jsonResponse({ error: `user not found: ${userId}` }, 404);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreatePersonalAgent(request: Request, store: DataStore): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.createPersonalAgent(await request.json() as CreatePersonalAgentInput),
+      201,
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListPersonalAgents(store: DataStore): Response {
+  try {
+    return jsonResponse(store.listPersonalAgents());
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetPersonalAgent(store: DataStore, agentId: string): Response {
+  try {
+    const record = store.getPersonalAgent(agentId);
+    return record ? jsonResponse(record) : jsonResponse({ error: `agent not found: ${agentId}` }, 404);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleBindUserAgent(request: Request, store: DataStore): Promise<Response> {
+  try {
+    return jsonResponse(store.bindUserAgent(await request.json()), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListUserAgentBindings(url: URL, store: DataStore): Response {
+  try {
+    const userId = url.searchParams.get("user_id");
+    if (userId) {
+      const record = store.getUserAgentBinding(userId);
+      return record ? jsonResponse([record]) : jsonResponse([]);
+    }
+    return jsonResponse(store.listUserAgentBindings());
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleBindAgentBot(request: Request, store: DataStore): Promise<Response> {
+  try {
+    return jsonResponse(store.bindAgentBot(await request.json()), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListAgentBotBindings(url: URL, store: DataStore): Response {
+  try {
+    const agentId = url.searchParams.get("agent_id");
+    if (agentId) {
+      const record = store.getAgentBotBinding(agentId);
+      return record ? jsonResponse([record]) : jsonResponse([]);
+    }
+    return jsonResponse(store.listAgentBotBindings());
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateWorkItem(request: Request, store: DataStore): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.createWorkItem(await request.json() as CreateWorkItemInput),
+      201,
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkItems(url: URL, store: DataStore): Response {
+  try {
+    const rawStatus = url.searchParams.get("status");
+    return jsonResponse(store.listWorkItems({
+      created_by_user_id: url.searchParams.get("created_by_user_id") ?? undefined,
+      assigned_user_id: url.searchParams.get("assigned_user_id") ?? undefined,
+      assigned_agent_id: url.searchParams.get("assigned_agent_id") ?? undefined,
+      status: rawStatus ? requireWorkStatus(rawStatus) : undefined,
+    }));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetWorkItemDetail(store: DataStore, workId: string): Response {
+  try {
+    const work = store.getWorkItem(workId);
+    if (!work) return jsonResponse({ error: `work not found: ${workId}` }, 404);
+    return jsonResponse({
+      work,
+      stages: store.listWorkStages(workId),
+      events: store.listWorkEvents(workId),
+      artifacts: store.listWorkArtifacts(workId),
+      queue: store.listWorkQueueItems(workId),
+      executions: store.listWorkExecutions(workId),
+      gates: store.listWorkGateDefinitions(workId),
+      gate_results: store.listWorkGateResults(workId),
+      handoffs: store.listWorkHandoffs(workId),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateWorkStage(
+  request: Request,
+  store: DataStore,
+  workId: string,
+): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateWorkStageInput, "work_id">;
+    return jsonResponse(store.createWorkStage({ ...body, work_id: workId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkStages(store: DataStore, workId: string): Response {
+  try {
+    return jsonResponse(store.listWorkStages(workId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleTransitionWorkStage(
+  request: Request,
+  store: DataStore,
+  stageId: string,
+): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.transitionWorkStage(stageId, await request.json() as TransitionWorkStageInput),
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkEvents(store: DataStore, workId: string): Response {
+  try {
+    return jsonResponse(store.listWorkEvents(workId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetWorkConversation(store: DataStore, stageId: string): Response {
+  try {
+    const record = store.getWorkConversation(stageId);
+    return record
+      ? jsonResponse(record)
+      : jsonResponse({ error: `work conversation not found: ${stageId}` }, 404);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateWorkRuntimeSession(
+  request: Request,
+  store: DataStore,
+  stageId: string,
+): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateWorkRuntimeSessionInput, "stage_id">;
+    return jsonResponse(store.createWorkRuntimeSession({ ...body, stage_id: stageId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkRuntimeSessions(store: DataStore, stageId: string): Response {
+  try {
+    return jsonResponse(store.listWorkRuntimeSessions(stageId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateArtifact(
+  request: Request,
+  store: DataStore,
+  stageId: string,
+): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateArtifactInput, "stage_id">;
+    const result = store.createArtifact({ ...body, stage_id: stageId });
+    return jsonResponse({ ...result.artifact, version: result.version }, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkArtifacts(store: DataStore, workId: string): Response {
+  try {
+    return jsonResponse(store.listWorkArtifacts(workId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetArtifact(store: DataStore, artifactId: string): Response {
+  try {
+    const artifact = store.getArtifact(artifactId);
+    if (!artifact) return jsonResponse({ error: `artifact not found: ${artifactId}` }, 404);
+    return jsonResponse({ artifact, versions: store.listArtifactVersions(artifactId) });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListArtifactVersions(store: DataStore, artifactId: string): Response {
+  try {
+    return jsonResponse(store.listArtifactVersions(artifactId));
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handlePublishArtifactVersion(
+  request: Request,
+  store: DataStore,
+  artifactId: string,
+): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.publishArtifactVersion(artifactId, await request.json() as PublishArtifactVersionInput),
+      201,
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleEnqueueWorkStage(
+  request: Request,
+  store: DataStore,
+  stageId: string,
+): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<EnqueueWorkStageInput, "stage_id">;
+    return jsonResponse(store.enqueueWorkStage({ ...body, stage_id: stageId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleLeaseExecution(request: Request, store: DataStore): Promise<Response> {
+  try {
+    const leased = store.leaseNextExecution(await request.json() as LeaseExecutionInput);
+    return leased ? jsonResponse(leased) : new Response(null, { status: 204 });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCompleteExecution(
+  request: Request,
+  store: DataStore,
+  executionId: string,
+): Promise<Response> {
+  try {
+    return jsonResponse(
+      store.completeExecution(executionId, await request.json() as CompleteExecutionInput),
+    );
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleListWorkExecutions(store: DataStore, workId: string): Response {
+  try {
+    return jsonResponse({
+      queue: store.listWorkQueueItems(workId),
+      executions: store.listWorkExecutions(workId),
+    });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateGateDefinition(request: Request, store: DataStore, stageId: string): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateGateDefinitionInput, "stage_id">;
+    return jsonResponse(store.createGateDefinition({ ...body, stage_id: stageId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateGateResult(request: Request, store: DataStore, gateId: string): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateGateResultInput, "gate_id">;
+    return jsonResponse(store.createGateResult({ ...body, gate_id: gateId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCreateHandoff(request: Request, store: DataStore, workId: string): Promise<Response> {
+  try {
+    const body = await request.json() as Omit<CreateHandoffInput, "work_id">;
+    const completed = store.createHandoff({ ...body, work_id: workId });
+    return jsonResponse({ ...completed, handoff_id: completed.handoff.handoff_id }, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
 }
 
 async function handleCreateBot(
@@ -2419,6 +2922,27 @@ function internalCredentialAccessError(
   if (!expected) {
     return jsonResponse({ error: "user credential internal token is not configured" }, 503);
   }
+  const authorization = request.headers.get("authorization") ?? "";
+  const actual = authorization.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length)
+    : "";
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(actual);
+  if (
+    expectedBuffer.length !== actualBuffer.length
+    || !timingSafeEqual(expectedBuffer, actualBuffer)
+  ) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+  return undefined;
+}
+
+function internalServiceAccessError(
+  request: Request,
+  config: DataServiceServerConfig,
+): Response | undefined {
+  const expected = config.internalServiceToken?.trim();
+  if (!expected) return jsonResponse({ error: "data service internal token is not configured" }, 503);
   const authorization = request.headers.get("authorization") ?? "";
   const actual = authorization.startsWith("Bearer ")
     ? authorization.slice("Bearer ".length)

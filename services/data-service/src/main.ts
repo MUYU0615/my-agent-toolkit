@@ -20,6 +20,9 @@ const app = createDataServiceServer(store, {
   ...(process.env.USER_CREDENTIALS_INTERNAL_TOKEN?.trim()
     ? { credentialInternalToken: process.env.USER_CREDENTIALS_INTERNAL_TOKEN.trim() }
     : {}),
+  ...(process.env.DATA_SERVICE_INTERNAL_TOKEN?.trim()
+    ? { internalServiceToken: process.env.DATA_SERVICE_INTERNAL_TOKEN.trim() }
+    : {}),
 });
 
 const server = createServer(async (req, res) => {

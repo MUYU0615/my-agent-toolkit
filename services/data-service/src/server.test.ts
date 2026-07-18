@@ -23,6 +23,188 @@ describe("data-service server", () => {
     process.env.APP_BUILD_TIME = previousBuildTime;
   });
 
+  it("serves the AgentLattice user, agent, and work API", async () => {
+    const server = createDataServiceServer(undefined, { internalServiceToken: "internal-test-token" });
+    for (const user of [
+      { user_id: "user-a", wecom_user_id: "wecom-a", display_name: "Alice" },
+      { user_id: "user-b", wecom_user_id: "wecom-b", display_name: "Bob" },
+    ]) {
+      expect((await server.fetch(new Request("http://localhost/v1/users", {
+        method: "POST",
+        body: JSON.stringify(user),
+      }))).status).toBe(201);
+    }
+    expect((await server.fetch(new Request("http://localhost/v1/personal-agents", {
+      method: "POST",
+      body: JSON.stringify({
+        agent_id: "agent-b",
+        name: "Bob Agent",
+        runtime: "claude-code",
+      }),
+    }))).status).toBe(201);
+    expect((await server.fetch(new Request("http://localhost/v1/user-agent-bindings", {
+      method: "POST",
+      body: JSON.stringify({ user_id: "user-b", agent_id: "agent-b" }),
+    }))).status).toBe(201);
+
+    const workResponse = await server.fetch(new Request("http://localhost/v1/works", {
+      method: "POST",
+      body: JSON.stringify({
+        work_id: "work-1",
+        title: "生成 HLD",
+        created_by_user_id: "user-a",
+        assigned_user_id: "user-b",
+        assigned_agent_id: "agent-b",
+      }),
+    }));
+    expect(workResponse.status).toBe(201);
+    const stageResponse = await server.fetch(new Request("http://localhost/v1/works/work-1/stages", {
+      method: "POST",
+      body: JSON.stringify({
+        stage_id: "stage-1",
+        name: "HLD 设计",
+        intent: "architecture.design",
+        assigned_user_id: "user-b",
+        assigned_agent_id: "agent-b",
+      }),
+    }));
+    expect(stageResponse.status).toBe(201);
+    const stage = await stageResponse.json() as Record<string, unknown>;
+    expect(stage.conversation_id).toMatch(/^work_conv_/);
+    expect(stage.workspace_ref).toBe("workspaces/work-1/stage-1/files");
+    expect((await server.fetch(new Request("http://localhost/internal/work-stages/stage-1/runtime-sessions"))).status)
+      .toBe(401);
+    expect((await server.fetch(new Request("http://localhost/internal/work-stages/stage-1/runtime-sessions", {
+      method: "POST",
+      headers: { authorization: "Bearer internal-test-token" },
+      body: JSON.stringify({ agent_id: "agent-b", runtime: "claude-code" }),
+    }))).status).toBe(201);
+    const artifactResponse = await server.fetch(new Request("http://localhost/v1/work-stages/stage-1/artifacts", {
+      method: "POST",
+      body: JSON.stringify({
+        artifact_id: "artifact-hld",
+        artifact_type: "architecture.hld",
+        title: "HLD",
+        content_ref: "docs/HLD.md",
+        integrity_sha256: "a".repeat(64),
+        summary: "HLD 初版",
+        created_by_type: "agent",
+        created_by_id: "agent-b",
+      }),
+    }));
+    expect(artifactResponse.status).toBe(201);
+    expect((await server.fetch(new Request("http://localhost/v1/work-stages/stage-1/transitions", {
+      method: "POST",
+      body: JSON.stringify({ status: "queued", actor_type: "system" }),
+    }))).status).toBe(200);
+    expect((await server.fetch(new Request("http://localhost/v1/work-stages/stage-1/transitions", {
+      method: "POST",
+      body: JSON.stringify({ status: "running", actor_type: "system" }),
+    }))).status).toBe(200);
+
+    const listResponse = await server.fetch(
+      new Request("http://localhost/v1/works?assigned_user_id=user-b"),
+    );
+    expect(await listResponse.json()).toMatchObject([{ work_id: "work-1" }]);
+    const detailResponse = await server.fetch(new Request("http://localhost/v1/works/work-1"));
+    expect(await detailResponse.json()).toMatchObject({
+      work: { work_id: "work-1", current_stage_id: "stage-1" },
+      stages: [{ stage_id: "stage-1", status: "running" }],
+      artifacts: [{ artifact_id: "artifact-hld", latest_version: 1 }],
+      events: [
+        { event_type: "work.created" },
+        { event_type: "stage.created" },
+        { event_type: "runtime_session.created" },
+        { event_type: "artifact.published" },
+        { event_type: "stage.status_changed" },
+        { event_type: "stage.status_changed" },
+      ],
+    });
+  });
+
+  it("serves the protected AgentLattice execution queue API", async () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "bot-a", name: "Agent Bot", runtime: "claude-code" });
+    store.createPlatformUser({ user_id: "user-a", wecom_user_id: "wecom-a", display_name: "Alice" });
+    store.createPersonalAgent({ agent_id: "agent-a", name: "Alice Agent", runtime: "claude-code" });
+    store.bindUserAgent({ user_id: "user-a", agent_id: "agent-a" });
+    store.bindAgentBot({ agent_id: "agent-a", bot_id: "bot-a" });
+    store.createWorkItem({
+      work_id: "work-queue",
+      title: "执行任务",
+      created_by_user_id: "user-a",
+      assigned_user_id: "user-a",
+      assigned_agent_id: "agent-a",
+    });
+    store.createWorkStage({
+      stage_id: "stage-queue",
+      work_id: "work-queue",
+      name: "执行",
+      intent: "完成任务",
+    });
+    const server = createDataServiceServer(store, { internalServiceToken: "internal-token" });
+
+    expect((await server.fetch(new Request("http://localhost/v1/work-stages/stage-queue/enqueue", {
+      method: "POST",
+      body: JSON.stringify({ actor_id: "user-a" }),
+    }))).status).toBe(201);
+    expect((await server.fetch(new Request("http://localhost/internal/execution-queue/lease", {
+      method: "POST",
+      body: JSON.stringify({ worker_id: "worker-a" }),
+    }))).status).toBe(401);
+    const leaseResponse = await server.fetch(new Request("http://localhost/internal/execution-queue/lease", {
+      method: "POST",
+      headers: { authorization: "Bearer internal-token" },
+      body: JSON.stringify({ worker_id: "worker-a" }),
+    }));
+    expect(leaseResponse.status).toBe(200);
+    const lease = await leaseResponse.json() as {
+      execution: { execution_id: string };
+      runtime_request: Record<string, unknown>;
+    };
+    expect(lease.runtime_request).toMatchObject({
+      bot_id: "bot-a",
+      user_id: "wecom-a",
+      runtime: "claude-code",
+    });
+    expect((await server.fetch(new Request(
+      `http://localhost/internal/execution-runs/${lease.execution.execution_id}/complete`,
+      {
+        method: "POST",
+        headers: { authorization: "Bearer internal-token" },
+        body: JSON.stringify({ status: "succeeded", output: "完成" }),
+      },
+    ))).status).toBe(200);
+    const executions = await server.fetch(new Request("http://localhost/v1/works/work-queue/executions"));
+    expect(await executions.json()).toMatchObject({
+      queue: [{ status: "completed" }],
+      executions: [{ status: "succeeded", output: "完成" }],
+    });
+    const artifact = await (await server.fetch(new Request("http://localhost/v1/work-stages/stage-queue/artifacts", {
+      method: "POST", body: JSON.stringify({ artifact_type: "result.document", title: "结果",
+        content_ref: "result.md", integrity_sha256: "a".repeat(64), summary: "可交接结果",
+        created_by_type: "agent", created_by_id: "agent-a" }),
+    }))).json() as { version: { artifact_version_id: string } };
+    const gate = await (await server.fetch(new Request("http://localhost/v1/work-stages/stage-queue/gates", {
+      method: "POST", body: JSON.stringify({ name: "结果门禁", kind: "human_review", criteria: "结果完整" }),
+    }))).json() as { gate_id: string };
+    const gateResultResponse = await server.fetch(new Request(`http://localhost/v1/gates/${gate.gate_id}/results`, {
+      method: "POST", body: JSON.stringify({ artifact_version_id: artifact.version.artifact_version_id,
+        outcome: "passed", evidence: "通过", actor_type: "user", actor_id: "user-a" }),
+    }));
+    expect(gateResultResponse.status).toBe(201);
+    const gateResult = await gateResultResponse.json() as { gate_result_id: string };
+    const handoffResponse = await server.fetch(new Request("http://localhost/v1/works/work-queue/handoffs", {
+      method: "POST", body: JSON.stringify({ source_stage_id: "stage-queue", gate_result_id: gateResult.gate_result_id,
+        target_user_id: "user-a", target_agent_id: "agent-a", target_stage_name: "下一步",
+        target_stage_intent: "继续处理", acceptance_criteria: "完成", expected_output: "结果",
+        created_by_user_id: "user-a" }),
+    }));
+    expect(handoffResponse.status).toBe(201);
+    expect(await handoffResponse.json()).toMatchObject({ handoff_id: expect.any(String),
+      stage: { status: "queued" }, queue_item: { status: "queued" } });
+  });
+
   it("creates bots and resolves conversations over HTTP", async () => {
     const server = createDataServiceServer();
     const createResponse = await server.fetch(

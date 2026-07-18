@@ -45,6 +45,7 @@ services:
       MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
       CREDENTIAL_BIND_PUBLIC_URL: "${CREDENTIAL_BIND_PUBLIC_URL:-http://localhost:8600}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
+      DATA_SERVICE_INTERNAL_TOKEN: "${DATA_SERVICE_INTERNAL_TOKEN:-}"
     ports:
       - "8400:8400"
     depends_on:
@@ -121,6 +122,7 @@ services:
       DATA_SERVICE_DB_PATH: "/data/data-service.db"
       USER_CREDENTIALS_MASTER_KEY: "${USER_CREDENTIALS_MASTER_KEY:-}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
+      DATA_SERVICE_INTERNAL_TOKEN: "${DATA_SERVICE_INTERNAL_TOKEN:-}"
     ports:
       - "8300:8300"
     volumes:
@@ -197,6 +199,40 @@ services:
           "node",
           "-e",
           "fetch('http://127.0.0.1:8200/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  work-dispatcher:
+    build:
+      context: ../..
+      dockerfile: services/work-dispatcher/Dockerfile
+    environment:
+      PORT: "8900"
+      DATA_SERVICE_URL: "http://data-service:8300"
+      LLM_RUNNER_URL: "http://llm-runner:8200"
+      DATA_SERVICE_INTERNAL_TOKEN: "${DATA_SERVICE_INTERNAL_TOKEN:-}"
+      WORK_DISPATCHER_ID: "work-dispatcher-1"
+      WORK_DISPATCHER_POLL_MS: "${WORK_DISPATCHER_POLL_MS:-1000}"
+      WORK_DISPATCHER_MAX_CONCURRENCY: "${WORK_DISPATCHER_MAX_CONCURRENCY:-4}"
+      WORK_DISPATCHER_LEASE_SECONDS: "${WORK_DISPATCHER_LEASE_SECONDS:-1200}"
+      WORK_DISPATCHER_EXECUTION_TIMEOUT_MS: "${WORK_DISPATCHER_EXECUTION_TIMEOUT_MS:-910000}"
+    ports:
+      - "8900:8900"
+    depends_on:
+      data-service:
+        condition: service_healthy
+      llm-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8900/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
         ]
       interval: 10s
       timeout: 3s

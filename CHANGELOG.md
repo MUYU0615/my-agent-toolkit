@@ -1,5 +1,30 @@
 # 更新日志
 
+## 2026-07-18
+
+### AgentLattice Foundation MVP
+
+- 新增 AgentLattice Foundation Spec 与分阶段实施计划，平台流程不绑定 Jira 或固定部门
+- Data Service 新增 User、Personal Agent、一对一用户绑定、Agent-Bot 绑定、Work、Stage 和 Work Event 模型及 SQLite 迁移
+- 新增 Work/Stage 状态机、分配关系校验和结构化事件记录，为后续独立 CLI Session、Workspace、Handoff 与 Gate 奠定基础
+- Control API 新增 AgentLattice 受控 API 与写操作审计
+- WebUI 新增 `/agent-lattice` 工作台和独立 Work 页面，支持导入用户、创建 Personal Agent、复用现有 Bot 消息入口、创建 Work、拆分 Stage 和推进状态
+- 保持现有 Bot、Channel、Skill/MCP、Env 和普通聊天入口兼容；MVP 当前采用管理员导入用户模式
+- 每个 Work Stage 现在由服务端生成独立 Conversation 与 Workspace 引用，禁止客户端指定或跨 Stage 复用运行目录
+- 新增 Artifact 与不可变 Artifact Version，记录类型、可见范围、Stage 内内容引用、SHA-256、摘要和创建者
+- Artifact 路径拒绝绝对路径、空路径及 `.`/`..` 目录穿越，并在 Work 页面展示版本历史
+- 新增 Work Runtime Session 归属记录，绑定确定的 Work、Stage、Conversation、Agent、Runtime 与 Workspace
+- Runtime Session 内部接口使用独立 `DATA_SERVICE_INTERNAL_TOKEN`，开发环境凭据初始化脚本自动生成并补齐该令牌
+- 新增持久化 Execution Queue 与 Execution Run；Stage 只有显式入队后才进入 `queued`，避免队列与页面状态不一致
+- 新增 `work-dispatcher` 服务，复用现有 LLM Runner 启动 Claude Code/Kiro，并将真实输出或失败原因回写 Work
+- 每个 Personal Agent 同时只租用一个执行槽；多个 Work 按入队顺序串行执行，过期租约可自动恢复
+- AgentLattice Work 页面新增自动入队、队列状态和执行结果；新 Stage 默认创建后自动开始，也可取消自动执行
+- 新增 Gate Definition 与不可变 Gate Result，门禁结论绑定确定的 Artifact Version，旧版本批准不会授权新版本转交
+- `revision_required` 强制记录证据、阻断规则、责任人和最小修改要求，模糊退回无法写入
+- 新增最小 Handoff Package，仅携带工作目标、已批准产物元数据、验收、约束、风险和证据引用，不复制上游聊天或 CLI 原始输出
+- Gate 通过后可由来源负责人或 Work 创建者选择下一用户及其 Personal Agent；系统创建独立 Stage 并直接自动入队，无需接收方 Accept
+- Work 页面新增 Quality Gates、待转交和 Handoff 历史视图
+
 ## 2026-07-17
 
 ### Jira 自动化项目发布

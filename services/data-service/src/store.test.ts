@@ -1,8 +1,276 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultMcpCapabilityConfig } from "@my-agent-toolkit/contracts";
 import { ADMIN_CLAIM_TTL_MS, createDataStore, seedDefaultRoleConfig } from "./store.js";
 
 describe("data-service store", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("models one personal agent per user and isolated work stages", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "bot-a", name: "Alice Bot", runtime: "claude-code" });
+    store.createBot({ bot_id: "bot-b", name: "Bob Bot", runtime: "claude-code" });
+    const alice = store.createPlatformUser({
+      user_id: "user-a",
+      wecom_user_id: "wecom-a",
+      display_name: "Alice",
+    });
+    const bob = store.createPlatformUser({
+      user_id: "user-b",
+      wecom_user_id: "wecom-b",
+      display_name: "Bob",
+    });
+    const agentA = store.createPersonalAgent({
+      agent_id: "agent-a",
+      name: "Alice Agent",
+      runtime: "claude-code",
+    });
+    const agentB = store.createPersonalAgent({
+      agent_id: "agent-b",
+      name: "Bob Agent",
+      runtime: "claude-code",
+    });
+
+    expect(store.bindUserAgent({ user_id: alice.user_id, agent_id: agentA.agent_id }))
+      .toMatchObject({ binding_type: "personal" });
+    store.bindUserAgent({ user_id: bob.user_id, agent_id: agentB.agent_id });
+    store.bindAgentBot({ agent_id: agentA.agent_id, bot_id: "bot-a" });
+    store.bindAgentBot({ agent_id: agentB.agent_id, bot_id: "bot-b" });
+    expect(() => store.bindUserAgent({ user_id: alice.user_id, agent_id: agentB.agent_id }))
+      .toThrow("already has");
+
+    const work = store.createWorkItem({
+      work_id: "work-1",
+      title: "生成技术方案",
+      created_by_user_id: alice.user_id,
+      assigned_user_id: bob.user_id,
+      assigned_agent_id: agentB.agent_id,
+      priority: "high",
+    });
+    const stage = store.createWorkStage({
+      stage_id: "stage-1",
+      work_id: work.work_id,
+      name: "HLD 设计",
+      intent: "根据已确认的 PRD 生成完整 HLD 设计",
+    });
+
+    expect(stage).toMatchObject({
+      status: "pending",
+      position: 1,
+      assigned_user_id: bob.user_id,
+      assigned_agent_id: agentB.agent_id,
+    });
+    expect(stage.conversation_id).toMatch(/^work_conv_/);
+    expect(stage.workspace_ref).toBe("workspaces/work-1/stage-1/files");
+    expect(store.getWorkConversation(stage.stage_id)).toMatchObject({
+      conversation_id: stage.conversation_id,
+      assigned_user_id: bob.user_id,
+      assigned_agent_id: agentB.agent_id,
+    });
+    const runtimeSession = store.createWorkRuntimeSession({
+      stage_id: stage.stage_id,
+      agent_id: agentB.agent_id,
+      runtime: "claude-code",
+    });
+    expect(runtimeSession).toMatchObject({
+      conversation_id: stage.conversation_id,
+      workspace_ref: stage.workspace_ref,
+    });
+    const published = store.createArtifact({
+      artifact_id: "artifact-hld",
+      stage_id: stage.stage_id,
+      artifact_type: "architecture.hld",
+      title: "HLD",
+      content_ref: "docs/HLD.md",
+      integrity_sha256: "a".repeat(64),
+      summary: "初版设计",
+      created_by_type: "agent",
+      created_by_id: agentB.agent_id,
+    });
+    expect(published.version).toMatchObject({
+      version: 1,
+      content_ref: "workspaces/work-1/stage-1/files/docs/HLD.md",
+    });
+    expect(store.publishArtifactVersion("artifact-hld", {
+      content_ref: "docs/HLD-v2.md",
+      integrity_sha256: "b".repeat(64),
+      summary: "根据评审意见修订",
+      created_by_type: "agent",
+      created_by_id: agentB.agent_id,
+    }).version).toBe(2);
+    expect(store.getArtifact("artifact-hld")?.latest_version).toBe(2);
+    expect(() => store.publishArtifactVersion("artifact-hld", {
+      content_ref: "../other-work/private.md",
+      integrity_sha256: "c".repeat(64),
+      summary: "越界引用",
+      created_by_type: "agent",
+    })).toThrow("content_ref is invalid");
+    expect(store.transitionWorkStage(stage.stage_id, {
+      status: "queued",
+      actor_type: "user",
+    }).status).toBe("queued");
+    expect(store.transitionWorkStage(stage.stage_id, {
+      status: "running",
+      actor_type: "system",
+    }).status).toBe("running");
+    expect(store.transitionWorkStage(stage.stage_id, {
+      status: "waiting_user",
+      actor_type: "agent",
+      actor_id: agentB.agent_id,
+      summary: "缺少技术约束",
+    }).status).toBe("waiting_user");
+    expect(store.getWorkItem(work.work_id)?.status).toBe("waiting");
+    expect(store.listWorkEvents(work.work_id).map((event) => event.event_type)).toEqual([
+      "work.created",
+      "stage.created",
+      "runtime_session.created",
+      "artifact.published",
+      "artifact.version_published",
+      "stage.status_changed",
+      "stage.status_changed",
+      "stage.status_changed",
+    ]);
+    expect(() => store.transitionWorkStage(stage.stage_id, {
+      status: "succeeded",
+      actor_type: "system",
+    })).toThrow("invalid stage transition");
+    store.transitionWorkStage(stage.stage_id, { status: "queued", actor_type: "user" });
+    store.transitionWorkStage(stage.stage_id, { status: "running", actor_type: "system" });
+    store.transitionWorkStage(stage.stage_id, { status: "succeeded", actor_type: "agent" });
+    expect(store.getWorkItem(work.work_id)?.status).toBe("completed");
+  });
+
+  it("leases at most one execution per Personal Agent and writes results back", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-18T00:00:00.000Z"));
+    const store = createDataStore();
+    store.createBot({ bot_id: "bot-a", name: "Agent Bot", runtime: "claude-code" });
+    store.createPlatformUser({ user_id: "user-a", wecom_user_id: "wecom-a", display_name: "Alice" });
+    store.createPersonalAgent({ agent_id: "agent-a", name: "Alice Agent", runtime: "claude-code" });
+    store.bindUserAgent({ user_id: "user-a", agent_id: "agent-a" });
+    store.bindAgentBot({ agent_id: "agent-a", bot_id: "bot-a" });
+
+    for (const number of [1, 2]) {
+      store.createWorkItem({
+        work_id: `work-${number}`,
+        title: `任务 ${number}`,
+        created_by_user_id: "user-a",
+        assigned_user_id: "user-a",
+        assigned_agent_id: "agent-a",
+      });
+      store.createWorkStage({
+        stage_id: `stage-${number}`,
+        work_id: `work-${number}`,
+        name: "执行",
+        intent: `完成任务 ${number}`,
+      });
+    }
+
+    const firstQueue = store.enqueueWorkStage({ stage_id: "stage-1", actor_id: "user-a" });
+    expect(store.enqueueWorkStage({ stage_id: "stage-1", actor_id: "user-a" }).queue_id)
+      .toBe(firstQueue.queue_id);
+    store.enqueueWorkStage({ stage_id: "stage-2", actor_id: "user-a" });
+
+    const firstLease = store.leaseNextExecution({ worker_id: "worker-a" });
+    expect(firstLease).toMatchObject({
+      queue_item: { stage_id: "stage-1", attempt: 1 },
+      execution: { status: "running" },
+      runtime_request: {
+        bot_id: "bot-a",
+        user_id: "wecom-a",
+        runtime: "claude-code",
+      },
+    });
+    expect(store.leaseNextExecution({ worker_id: "worker-b" })).toBeUndefined();
+
+    vi.advanceTimersByTime(1_201_000);
+    const retryLease = store.leaseNextExecution({ worker_id: "worker-b" });
+    expect(retryLease).toMatchObject({
+      queue_item: { stage_id: "stage-1", attempt: 2 },
+      execution: { status: "running" },
+    });
+    expect(store.listWorkExecutions("work-1").find((run) => run.attempt === 1)).toMatchObject({
+      status: "failed",
+      error_code: "lease_expired",
+    });
+    store.completeExecution(retryLease!.execution.execution_id, {
+      status: "succeeded",
+      runner_session_id: "claude:bot-a:wecom-a:stage-1",
+      output: "任务一完成",
+    });
+    expect(store.getWorkItem("work-1")?.status).toBe("completed");
+
+    const secondLease = store.leaseNextExecution({ worker_id: "worker-b" });
+    expect(secondLease?.queue_item.stage_id).toBe("stage-2");
+    store.completeExecution(secondLease!.execution.execution_id, {
+      status: "failed",
+      error_code: "runtime_exit",
+      error_message: "CLI exited",
+    });
+    expect(store.getWorkItem("work-2")?.status).toBe("failed");
+    expect(store.listWorkExecutions("work-1").find((run) => run.status === "succeeded")).toMatchObject({
+      status: "succeeded",
+      output: "任务一完成",
+    });
+  });
+
+  it("passes a versioned Artifact through a Gate and hands off minimal context", () => {
+    const store = createDataStore();
+    for (const suffix of ["a", "b"]) {
+      store.createBot({ bot_id: `bot-${suffix}`, name: `Bot ${suffix}`, runtime: "claude-code" });
+      store.createPlatformUser({ user_id: `user-${suffix}`, wecom_user_id: `wecom-${suffix}`, display_name: `User ${suffix}` });
+      store.createPersonalAgent({ agent_id: `agent-${suffix}`, name: `Agent ${suffix}`, runtime: "claude-code" });
+      store.bindUserAgent({ user_id: `user-${suffix}`, agent_id: `agent-${suffix}` });
+      store.bindAgentBot({ agent_id: `agent-${suffix}`, bot_id: `bot-${suffix}` });
+    }
+    store.createWorkItem({ work_id: "work-gate", title: "功能交付", description: "实现已批准需求",
+      created_by_user_id: "user-a", assigned_user_id: "user-a", assigned_agent_id: "agent-a" });
+    store.createWorkStage({ stage_id: "stage-design", work_id: "work-gate", name: "HLD", intent: "输出可实施设计" });
+    store.enqueueWorkStage({ stage_id: "stage-design", actor_id: "user-a" });
+    const lease = store.leaseNextExecution({ worker_id: "worker-a" })!;
+    store.completeExecution(lease.execution.execution_id, { status: "succeeded", output: "内部完整输出不应交接" });
+    const published = store.createArtifact({ stage_id: "stage-design", artifact_type: "architecture.hld", title: "HLD",
+      content_ref: "docs/HLD.md", integrity_sha256: "a".repeat(64), summary: "已覆盖核心接口",
+      created_by_type: "agent", created_by_id: "agent-a" });
+    const gate = store.createGateDefinition({ stage_id: "stage-design", name: "设计门禁", kind: "human_review",
+      criteria: "接口、异常与回滚设计完整", reviewer_user_id: "user-a", reviewer_agent_id: "agent-a", actor_id: "user-a" });
+    expect(() => store.createGateResult({ gate_id: gate.gate_id,
+      artifact_version_id: published.version.artifact_version_id, outcome: "revision_required", evidence: "缺少回滚",
+      actor_type: "user", actor_id: "user-a" })).toThrow("revision_required needs");
+    const result = store.createGateResult({ gate_id: gate.gate_id,
+      artifact_version_id: published.version.artifact_version_id, outcome: "passed", evidence: "评审通过",
+      actor_type: "user", actor_id: "user-a" });
+    const revised = store.publishArtifactVersion(published.artifact.artifact_id, {
+      content_ref: "docs/HLD-v2.md", integrity_sha256: "b".repeat(64), summary: "补充回滚设计",
+      created_by_type: "agent", created_by_id: "agent-a",
+    });
+    const handoffInput = {
+      work_id: "work-gate", source_stage_id: "stage-design", target_user_id: "user-b", target_agent_id: "agent-b",
+      target_stage_name: "代码实现", target_stage_intent: "根据 HLD 完成代码和测试",
+      acceptance_criteria: "构建和单元测试通过", constraints: "不得修改无关模块",
+      expected_output: "源码、测试与验证摘要", created_by_user_id: "user-a",
+    };
+    expect(() => store.createHandoff({ ...handoffInput, gate_result_id: result.gate_result_id }))
+      .toThrow("approval is stale");
+    const currentResult = store.createGateResult({ gate_id: gate.gate_id,
+      artifact_version_id: revised.artifact_version_id, outcome: "passed", evidence: "最新版评审通过",
+      actor_type: "user", actor_id: "user-a" });
+    const completed = store.createHandoff({ work_id: "work-gate", source_stage_id: "stage-design",
+      gate_result_id: currentResult.gate_result_id, target_user_id: "user-b", target_agent_id: "agent-b",
+      target_stage_name: "代码实现", target_stage_intent: "根据 HLD 完成代码和测试",
+      acceptance_criteria: "构建和单元测试通过", constraints: "不得修改无关模块",
+      expected_output: "源码、测试与验证摘要", created_by_user_id: "user-a" });
+
+    expect(completed).toMatchObject({ handoff: { status: "completed", target_user_id: "user-b" },
+      stage: { status: "queued", assigned_agent_id: "agent-b" }, queue_item: { status: "queued", bot_id: "bot-b" } });
+    expect(completed.handoff.context_snapshot.approved_artifacts).toMatchObject([{ version: 2, summary: "补充回滚设计" }]);
+    expect(completed.queue_item.prompt_snapshot).toContain("Authorized minimal handoff context");
+    expect(completed.queue_item.prompt_snapshot).not.toContain("内部完整输出不应交接");
+    expect(store.getWorkItem("work-gate")).toMatchObject({ assigned_user_id: "user-b", current_stage_id: completed.stage.stage_id });
+    expect(store.leaseNextExecution({ worker_id: "worker-b" })?.runtime_request).toMatchObject({ user_id: "wecom-b", bot_id: "bot-b" });
+  });
+
   it("creates and reads bot records", () => {
     const store = createDataStore();
 

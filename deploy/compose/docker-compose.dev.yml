@@ -65,6 +65,15 @@ services:
       - ../../packages/contracts/src:/app/packages/contracts/src:ro
       - contracts-dev-dist:/app/packages/contracts/dist
 
+  work-dispatcher:
+    build:
+      target: build
+    command: ["npx", "tsx", "watch", "services/work-dispatcher/src/main.ts"]
+    environment:
+      NODE_ENV: development
+    volumes:
+      - ../../services/work-dispatcher/src:/app/services/work-dispatcher/src:ro
+
   log-service:
     build:
       target: build

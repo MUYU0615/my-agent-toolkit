@@ -3314,4 +3314,207 @@ describe("control-api server", () => {
       redirect_password: "jira-password-a",
     }]);
   });
+
+  it("renders the AgentLattice workbench from isolated platform data", async () => {
+    const payloads = new Map<string, unknown>([
+      ["/v1/users", [{ user_id: "user-a", wecom_user_id: "wm-a", display_name: "用户 A", status: "active" }]],
+      ["/v1/personal-agents", [{ agent_id: "agent-a", name: "Agent A", runtime: "claude-code", status: "ready" }]],
+      ["/v1/user-agent-bindings", [{ binding_id: "uab-a", user_id: "user-a", agent_id: "agent-a" }]],
+      ["/v1/agent-bot-bindings", [{ binding_id: "abb-a", agent_id: "agent-a", bot_id: "bot-a" }]],
+      ["/v1/bots", [{ bot_id: "bot-a", name: "Bot A", status: "ready" }]],
+      ["/v1/works", [{ work_id: "work-a", title: "审核 PRD", status: "active", priority: "high", assigned_user_id: "user-a", assigned_agent_id: "agent-a", updated_at: "2026-07-18T01:00:00.000Z" }]],
+    ]);
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const path = new URL(request.url).pathname;
+        return payloads.has(path)
+          ? Response.json(payloads.get(path))
+          : Response.json({ error: "unexpected", path }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/agent-lattice"));
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("AgentLattice");
+    expect(html).toContain("每位用户拥有一个 Personal Agent");
+    expect(html).toContain("用户 A");
+    expect(html).toContain("Agent A");
+    expect(html).toContain("Bot A");
+    expect(html).toContain("审核 PRD");
+    expect(html).toContain("/agent-lattice/works/work-a");
+    expect(html).not.toContain("Jira Key");
+  });
+
+  it("creates an AgentLattice work and redirects to its isolated detail page", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const body = await request.json() as Record<string, unknown>;
+        calls.push({ url: request.url, body });
+        if (request.url === "http://data-service/v1/works") {
+          return Response.json({ ...body, work_id: "work-new", status: "draft" }, { status: 201 });
+        }
+        if (request.url === "http://log-service/v1/audit-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/agent-lattice/works/create", {
+      method: "POST",
+      body: new URLSearchParams({
+        title: "实现服务",
+        description: "根据已通过的设计实现",
+        created_by_user_id: "user-a",
+        assigned_user_id: "user-b",
+        assigned_agent_id: "agent-b",
+        priority: "high",
+      }),
+    }));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/agent-lattice/works/work-new");
+    expect(calls[0]).toEqual({
+      url: "http://data-service/v1/works",
+      body: {
+        actor_id: "user-a",
+        title: "实现服务",
+        description: "根据已通过的设计实现",
+        created_by_user_id: "user-a",
+        assigned_user_id: "user-b",
+        assigned_agent_id: "agent-b",
+        priority: "high",
+      },
+    });
+    expect(calls[1].url).toBe("http://log-service/v1/audit-events");
+    expect(calls[1].body).toMatchObject({
+      action: "work.create",
+      target_type: "work",
+      target_id: "work-new",
+    });
+  });
+
+  it("creates a pending Stage and automatically enqueues it for its Personal Agent", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const body = await request.json() as Record<string, unknown>;
+        calls.push({ url: request.url, body });
+        if (request.url === "http://data-service/v1/works/work-a/stages") {
+          return Response.json({ ...body, stage_id: "stage-new" }, { status: 201 });
+        }
+        if (request.url === "http://data-service/v1/work-stages/stage-new/enqueue") {
+          return Response.json({ stage_id: "stage-new", status: "queued" }, { status: 201 });
+        }
+        if (request.url === "http://log-service/v1/audit-events") {
+          return Response.json({ ok: true }, { status: 201 });
+        }
+        return Response.json({ error: "unexpected" }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request(
+      "http://localhost/agent-lattice/works/work-a/stages/create",
+      {
+        method: "POST",
+        body: new URLSearchParams({
+          actor_id: "user-a",
+          name: "代码实现",
+          intent: "根据设计完成代码与验证",
+          assigned_user_id: "user-a",
+          assigned_agent_id: "agent-a",
+          auto_start: "true",
+        }),
+      },
+    ));
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/agent-lattice/works/work-a");
+    expect(calls[0]).toEqual({
+      url: "http://data-service/v1/works/work-a/stages",
+      body: {
+        actor_id: "user-a",
+        actor_type: "user",
+        name: "代码实现",
+        intent: "根据设计完成代码与验证",
+        assigned_user_id: "user-a",
+        assigned_agent_id: "agent-a",
+        status: "pending",
+      },
+    });
+    expect(calls[2]).toEqual({
+      url: "http://data-service/v1/work-stages/stage-new/enqueue",
+      body: { actor_id: "user-a" },
+    });
+    expect(calls.filter((call) => call.url === "http://log-service/v1/audit-events"))
+      .toHaveLength(2);
+  });
+
+  it("renders isolated Stage context and versioned Artifacts on a Work page", async () => {
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : new Request(input, init);
+        const path = new URL(request.url).pathname;
+        if (path === "/v1/works/work-a") return Response.json({
+          work: { work_id: "work-a", title: "实现服务", status: "active", priority: "high" },
+          stages: [{
+            stage_id: "stage-a",
+            name: "开发",
+            intent: "完成代码实现",
+            position: 1,
+            status: "running",
+            conversation_id: "work_conv_a",
+            workspace_ref: "workspaces/work-a/stage-a/files",
+          }],
+          events: [],
+          artifacts: [{ artifact_id: "artifact-a" }],
+        });
+        if (path === "/v1/users" || path === "/v1/personal-agents") return Response.json([]);
+        if (path === "/v1/artifacts/artifact-a") return Response.json({
+          artifact: {
+            artifact_id: "artifact-a",
+            artifact_type: "source.commit",
+            title: "实现代码",
+            visibility: "work",
+            latest_version: 2,
+          },
+          versions: [{
+            version: 2,
+            content_ref: "workspaces/work-a/stage-a/files/src/index.ts",
+            integrity_sha256: "a".repeat(64),
+            summary: "完成实现",
+          }],
+        });
+        return Response.json({ error: "unexpected", path }, { status: 500 });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/agent-lattice/works/work-a"));
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("work_conv_a");
+    expect(html).toContain("workspaces/work-a/stage-a/files");
+    expect(html).toContain("发布本阶段产物");
+    expect(html).toContain("实现代码");
+    expect(html).toContain("latest v2");
+    expect(html).toContain("src/index.ts");
+    expect(html).toContain("发布新版本");
+    expect(html).toContain("Quality Gates");
+    expect(html).toContain("Handoffs");
+  });
 });
