@@ -213,6 +213,7 @@ describe("MCP capability config", () => {
           "memory.stats",
           "search.query",
           "project.publish",
+          "jira.project.publish",
         ],
       },
       directory_refs: [],

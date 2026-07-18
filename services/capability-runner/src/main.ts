@@ -19,6 +19,7 @@ const app = createCapabilityRunnerServer({
   listSkills: () => skillManager.listCatalog(),
   syncProject: (context) => projectManager.sync(context),
   publishProject: (context) => projectManager.publish(context),
+  publishJiraProject: (context) => projectManager.publishJira(context),
   projectRunnerToken: process.env.MCP_RUNNER_SECRET,
 });
 

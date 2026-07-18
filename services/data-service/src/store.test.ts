@@ -680,6 +680,39 @@ describe("data-service store", () => {
     })).toThrow("bot config documents must use /v1/bot-config-documents");
   });
 
+  it("stores per-Bot rules as ordered configuration and keeps them out of business documents", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+    store.upsertBotConfigDocument({
+      bot_id: "prd-bot",
+      title: "rules",
+      content: "只在当前会话目录工作。",
+    });
+    store.upsertBotConfigDocument({
+      bot_id: "prd-bot",
+      title: "soul",
+      content: "你是 PRD 助手。",
+    });
+    store.upsertBotConfigDocument({
+      bot_id: "prd-bot",
+      title: "agents.md",
+      content: "按流程工作。",
+    });
+
+    expect(store.listBotConfigDocuments("prd-bot").map((document) => document.title)).toEqual([
+      "soul",
+      "agents.md",
+      "rules.md",
+    ]);
+    expect(() => store.createBusinessDocument({
+      scope: "bot",
+      owner_id: "prd-bot",
+      title: "rules.md",
+      doc_type: "config",
+      content: "not allowed",
+    })).toThrow("bot config documents must use /v1/bot-config-documents");
+  });
+
   it("atomically applies and confirms pending generated documents exactly once", () => {
     const store = createDataStore();
     store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
@@ -1928,6 +1961,46 @@ describe("data-service store", () => {
 
     store.deleteBotEnvVar("prd-bot", "OPENAI_API_KEY");
     expect(store.listBotEnvVars("prd-bot")).toEqual([]);
+  });
+
+  it("isolates user runtime env vars and keeps ciphertext out of metadata", () => {
+    const store = createDataStore();
+    store.createBot({ bot_id: "prd-bot", name: "PRD Bot", runtime: "kiro" });
+
+    const saved = store.upsertUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      key: "HIM22187_AUTH_TOKEN",
+      value_ciphertext: "ciphertext-user-a",
+    });
+    store.upsertUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-b",
+      key: "HIM22187_AUTH_TOKEN",
+      value_ciphertext: "ciphertext-user-b",
+    });
+
+    expect(store.listUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" })).toEqual([
+      {
+        bot_id: "prd-bot",
+        wecom_user_id: "user-a",
+        key: "HIM22187_AUTH_TOKEN",
+        is_set: true,
+        updated_at: saved.updated_at,
+      },
+    ]);
+    expect(JSON.stringify(store.listUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" })))
+      .not.toContain("ciphertext-user-a");
+    expect(store.getUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-b" }))
+      .toMatchObject([{ value_ciphertext: "ciphertext-user-b" }]);
+
+    store.deleteUserEnvVar({
+      bot_id: "prd-bot",
+      wecom_user_id: "user-a",
+      key: "HIM22187_AUTH_TOKEN",
+    });
+    expect(store.getUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-a" })).toEqual([]);
+    expect(store.getUserEnvVars({ bot_id: "prd-bot", wecom_user_id: "user-b" })).toHaveLength(1);
   });
 
   it("upserts lists and deletes bot skills", () => {

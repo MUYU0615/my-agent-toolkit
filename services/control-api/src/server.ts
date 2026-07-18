@@ -77,6 +77,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
         return handleBotConfigDocumentSave(request, config, botAgentsSaveMatch[1], "agents.md");
       }
 
+      const botRulesSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/config\/rules$/);
+      if (request.method === "POST" && botRulesSaveMatch) {
+        return handleBotConfigDocumentSave(request, config, botRulesSaveMatch[1], "rules.md");
+      }
+
       const botCapabilityEnvSaveMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/env\/save$/);
       if (request.method === "POST" && botCapabilityEnvSaveMatch) {
         return handleBotEnvSave(request, config, botCapabilityEnvSaveMatch[1]);
@@ -90,6 +95,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
       const botCapabilitySkillInstallMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/install$/);
       if (request.method === "POST" && botCapabilitySkillInstallMatch) {
         return handleBotSkillInstall(request, config, botCapabilitySkillInstallMatch[1]);
+      }
+
+      const botCapabilitySkillUploadMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/upload$/);
+      if (request.method === "POST" && botCapabilitySkillUploadMatch) {
+        return handleBotSkillUpload(request, config, botCapabilitySkillUploadMatch[1]);
       }
 
       const botCapabilitySkillDeleteMatch = url.pathname.match(/^\/admin\/bots\/([^/]+)\/capabilities\/skills\/delete$/);
@@ -764,7 +774,7 @@ async function handleBotConfigDocumentSave(
   request: Request,
   config: ControlApiConfig,
   botId: string,
-  title: "soul" | "agents.md",
+  title: "soul" | "agents.md" | "rules.md",
 ): Promise<Response> {
   const form = await readUrlEncodedForm(request);
   await proxyJsonRequest(
@@ -896,6 +906,105 @@ async function handleBotSkillInstall(
     },
   });
   return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+const MAX_LOCAL_SKILL_FILES = 500;
+const MAX_LOCAL_SKILL_BYTES = 25 * 1024 * 1024;
+
+async function handleBotSkillUpload(
+  request: Request,
+  config: ControlApiConfig,
+  botId: string,
+): Promise<Response> {
+  if (!config.capabilityRunnerUrl) {
+    return jsonResponse({ error: "capability runner is not configured" }, 503);
+  }
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
+    return jsonResponse({ error: "local skill upload requires multipart/form-data" }, 400);
+  }
+
+  const form = await request.formData();
+  const actorId = optionalFormText(form, "actor_id") || "webui";
+  const files = form.getAll("files");
+  const paths = form.getAll("paths");
+  if (files.length === 0) {
+    return jsonResponse({ error: "select a local skill directory containing SKILL.md" }, 400);
+  }
+  if (files.length > MAX_LOCAL_SKILL_FILES || paths.length !== files.length) {
+    return jsonResponse({ error: "invalid local skill file list" }, 400);
+  }
+  const name = localSkillNameFromPaths(paths);
+
+  let totalBytes = 0;
+  const uploadedFiles: Array<{ path: string; content_base64: string }> = [];
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    const path = paths[index];
+    if (!isUploadedFile(file) || typeof path !== "string" || !path.trim()) {
+      return jsonResponse({ error: "invalid local skill file" }, 400);
+    }
+    const bytes = Buffer.from(await file.arrayBuffer());
+    totalBytes += bytes.length;
+    if (totalBytes > MAX_LOCAL_SKILL_BYTES) {
+      return jsonResponse({ error: "local skill package exceeds the allowed size" }, 400);
+    }
+    uploadedFiles.push({ path: path.trim(), content_base64: bytes.toString("base64") });
+  }
+
+  const response = await config.fetch(
+    new Request(`${config.capabilityRunnerUrl}/internal/bots/${encodeURIComponent(botId)}/skills/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name,
+        source_ref: "webui-local-upload",
+        source_type: "local_upload",
+        files: uploadedFiles,
+        actor_id: actorId,
+      }),
+    }),
+  );
+  if (!response.ok) return cloneJsonResponse(response);
+  await recordAuditEvent(config, {
+    actor_id: actorId,
+    action: "bot.skill.upload",
+    target_type: "bot",
+    target_id: botId,
+    metadata: { name, file_count: uploadedFiles.length, source_type: "local_upload" },
+  });
+  return redirectResponse(`/admin/bots/${encodeURIComponent(botId)}/capabilities`);
+}
+
+function isUploadedFile(value: FormDataEntryValue): value is File {
+  return typeof value !== "string" && typeof value.arrayBuffer === "function";
+}
+
+function requiredFormText(form: FormData, key: string): string {
+  const value = form.get(key);
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${key} is required`);
+  return value.trim();
+}
+
+function optionalFormText(form: FormData, key: string): string | undefined {
+  const value = form.get(key);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function localSkillNameFromPaths(paths: FormDataEntryValue[]): string {
+  const directoryNames = new Set<string>();
+  for (const path of paths) {
+    if (typeof path !== "string") throw new Error("invalid local skill file path");
+    const normalized = path.trim().replaceAll("\\", "/");
+    const [directoryName, ...rest] = normalized.split("/");
+    if (!directoryName || rest.length === 0 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(directoryName)) {
+      throw new Error("select one valid local skill directory");
+    }
+    directoryNames.add(directoryName);
+  }
+  if (directoryNames.size !== 1) throw new Error("select exactly one local skill directory");
+  const name = [...directoryNames][0];
+  if (!name) throw new Error("select one valid local skill directory");
+  return name;
 }
 
 async function handleBotSkillDelete(
@@ -1727,6 +1836,7 @@ function renderBotConfigEditorPage(
   bot: Record<string, unknown>,
   documents: Array<Record<string, unknown>>,
 ): string {
+  const encodedBotId = encodeURIComponent(botId);
   const soul = documents.find((document) => {
     const title = String(document.title ?? "").toLowerCase();
     return title === "soul" || title === "soul.md";
@@ -1735,6 +1845,7 @@ function renderBotConfigEditorPage(
     const title = String(document.title ?? "").toLowerCase();
     return title === "agents" || title === "agents.md";
   });
+  const rules = documents.find((document) => String(document.title ?? "").toLowerCase() === "rules.md");
   return pageShell("Bot 配置编辑", [
     `<section class="card stack">`,
     `<div class="actions"><a class="btn" href="/">返回 Channel 管理</a></div>`,
@@ -1745,14 +1856,29 @@ function renderBotConfigEditorPage(
     `<section class="card stack">`,
     `<h2>Soul</h2>`,
     `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
-    `<div class="actions"><span class="btn">保存 Soul</span></div>`,
-    `<textarea>${escapeHtmlValue(soul?.content ?? "")}</textarea>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/soul">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content">${escapeHtmlValue(soul?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 Soul</button></div>`,
+    `</form>`,
     `</section>`,
     `<section class="card stack">`,
     `<h2>Agents</h2>`,
     `<div class="muted">提交目标：/v1/bot-config-documents</div>`,
-    `<div class="actions"><span class="btn">保存 Agents</span></div>`,
-    `<textarea>${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/agents">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content">${escapeHtmlValue(agents?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 Agents</button></div>`,
+    `</form>`,
+    `</section>`,
+    `<section class="card stack">`,
+    `<h2>运行规则（rules.md）</h2>`,
+    `<div class="muted">管理员规则会在每次运行时优先注入，不会作为记忆参与检索。</div>`,
+    `<form class="stack" method="post" action="/admin/bots/${encodedBotId}/config/rules">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<textarea name="content" placeholder="例如：只在当前会话工作目录中创建文件；没有环境变量时向用户索取，不得猜测已有项目或环境。">${escapeHtmlValue(rules?.content ?? "")}</textarea>`,
+    `<div class="actions"><button class="btn" type="submit">保存 rules.md</button></div>`,
+    `</form>`,
     `</section>`,
   ].join(""));
 }
@@ -1798,6 +1924,23 @@ function renderBotCapabilitiesPage(
       ? [`<div class="muted">暂无可安装的内置 Skill，请检查 capability-runner 的 Skill 目录。</div>`]
       : []),
     `</form>`,
+    `<form class="stack" id="local-skill-upload-form" method="post" action="/admin/bots/${encodedBotId}/capabilities/skills/upload" enctype="multipart/form-data">`,
+    `<input type="hidden" name="actor_id" value="webui">`,
+    `<label>选择本地 Skill 目录<input id="local-skill-upload-files" name="files" type="file" webkitdirectory directory multiple required></label>`,
+    `<div class="muted">选择包含 <code>SKILL.md</code> 的一个目录。目录名会自动作为 Skill 名称；最多 500 个文件、25 MB。</div>`,
+    `<div class="actions"><button type="submit">添加 Skill</button></div>`,
+    `</form>`,
+    `<script>`,
+    `document.getElementById("local-skill-upload-form")?.addEventListener("submit", async (event) => {`,
+    `  const form = event.currentTarget; const input = document.getElementById("local-skill-upload-files");`,
+    `  if (!(form instanceof HTMLFormElement) || !(input instanceof HTMLInputElement) || input.files.length === 0) return;`,
+    `  event.preventDefault(); const data = new FormData(form); data.delete("files");`,
+    `  for (const file of input.files) { data.append("files", file, file.name); data.append("paths", file.webkitRelativePath || file.name); }`,
+    `  const response = await fetch(form.action, { method: "POST", body: data });`,
+    `  if (response.redirected) { window.location.assign(response.url); return; }`,
+    `  alert(await response.text());`,
+    `});`,
+    `</script>`,
     `<table><thead><tr><th>名称</th><th>来源</th><th>状态</th><th>错误</th><th>操作</th></tr></thead><tbody>`,
     ...(skills.length === 0
       ? [`<tr><td colspan="5" class="muted">暂无 Skills</td></tr>`]
@@ -2224,6 +2367,7 @@ function renderChannelWorkbenchPage(): string {
     }
     .modal-head h2 { margin: 0; font-size: 18px; }
     .modal-body { padding: 20px; background: #f8fafb; }
+    .modal-backdrop.trace-open .modal { width: min(1180px, 100%); }
     .test-env-summary {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
@@ -2248,6 +2392,14 @@ function renderChannelWorkbenchPage(): string {
     .trace-span.error { border-left-color: var(--danger); }
     .trace-span summary { cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-weight: 700; }
     .trace-span pre { max-height: 340px; overflow: auto; margin: 9px 0 0; font-size: 12px; }
+    .trace-toolbar { position: sticky; top: -20px; z-index: 2; display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 0; background: #f8fafb; border-bottom: 1px solid var(--line); }
+    .trace-toolbar button { min-height: 34px; font-size: 13px; }
+    .trace-flow { display: grid; gap: 10px; margin-top: 10px; }
+    .trace-flow-arrow { color: var(--primary); font-weight: 800; text-align: center; }
+    .trace-text { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fff; }
+    .trace-text-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 10px; background: #f1f8f6; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 750; }
+    .trace-text-head button { min-height: 30px; padding: 0 9px; font-size: 12px; }
+    .trace-text pre { max-height: 480px; overflow: auto; margin: 0; border-radius: 0; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       background: var(--surface-soft);
@@ -2362,6 +2514,7 @@ function renderChannelWorkbenchPage(): string {
       "memory.stats",
       "search.query",
       "project.publish",
+      "jira.project.publish",
     ];
 
     function setToast(message, isError = false) {
@@ -2498,6 +2651,7 @@ function renderChannelWorkbenchPage(): string {
           '</div>',
           '<div class="tools">',
             '<button type="button" class="secondary" data-action="edit-channel">编辑配置</button>',
+            '<button type="button" data-action="edit-bot-config">编辑 Soul / Agents / rules</button>',
             '<button type="button" data-action="edit-project">测试环境</button>',
             '<button type="button" class="secondary" data-action="view-traces">消息链路</button>',
             '<button type="button" data-action="manage-bot-capabilities">管理 Env / Skills / MCP</button>',
@@ -2794,6 +2948,7 @@ function renderChannelWorkbenchPage(): string {
       const bot = detail?.bot;
       if (!bot) return;
       modalTitle.textContent = "消息链路 · " + bot.name;
+      modalBackdrop.classList.add("trace-open");
       modalBody.innerHTML = '<div class="subtle">正在加载 Trace…</div>';
       modalBackdrop.classList.add("open");
       try {
@@ -2814,7 +2969,7 @@ function renderChannelWorkbenchPage(): string {
           '<select id="traceConversationFilter"><option value="">全部会话</option>' + conversations.map((value) => '<option value="' + escapeHtml(value) + '">' + escapeHtml(value) + '</option>').join("") + '</select>',
           '<button type="button" class="secondary" data-action="refresh-traces">筛选</button>',
         '</div>',
-        '<div class="subtle">一条 Trace 对应一条企微消息；展开后可查看 Prompt、CLI、MCP 和最终回复。</div>',
+        '<div class="subtle">一条 Trace 对应一条企微消息；依次查看基础 Prompt、MCP 注入和 CLI 实际输入。</div>',
         '<div class="trace-list" id="traceList">' + renderTraceList(traces) + '</div>',
         '<div class="trace-spans" id="traceSpans"><div class="empty">选择一条消息查看完整链路。</div></div>',
       ].join("");
@@ -2831,6 +2986,46 @@ function renderChannelWorkbenchPage(): string {
         badge(trace.status, statusKind(trace.status)) + '</button>').join("");
     }
 
+    function traceTextBlock(label, value, copyLabel) {
+      const text = typeof value === "string" ? value : JSON.stringify(value ?? {}, null, 2);
+      const copyId = "trace-copy-" + Math.random().toString(36).slice(2);
+      return '<section class="trace-text"><div class="trace-text-head"><span>' + escapeHtml(label) + '</span>' +
+        '<button type="button" class="secondary" data-trace-copy-id="' + copyId + '">' + escapeHtml(copyLabel || "复制") + '</button></div>' +
+        '<pre id="' + copyId + '">' + escapeHtml(text) + '</pre></section>';
+    }
+
+    function renderTraceSpanContent(span) {
+      const summary = span.summary || {};
+      if (span.stage === "prompt.rendered") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("用户原始消息", summary.input, "复制消息") +
+          '<div class="trace-flow-arrow">↓ Bot Host 拼接项目、记忆、AGENTS ↓</div>' +
+          traceTextBlock("Bot Host 基础 Prompt（MCP 注入前）", summary.output, "复制基础 Prompt") +
+          '</div>';
+      }
+      if (span.stage === "cli.turn") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("CLI 实际 Prompt（已注入 MCP）", summary.input, "复制完整 Prompt") +
+          '<div class="trace-flow-arrow">↓ CLI 执行 ↓</div>' +
+          traceTextBlock("CLI 原始输出", summary.output, "复制输出") +
+          '</div>';
+      }
+      if (span.stage === "response.prepare") {
+        return '<div class="trace-flow">' +
+          traceTextBlock("CLI 输出", summary.input, "复制") +
+          '<div class="trace-flow-arrow">↓ 脱敏、隐藏工具协议、整理格式 ↓</div>' +
+          traceTextBlock("用户可见回复", summary.output, "复制回复") +
+          '</div>';
+      }
+      if (span.stage === "context.mcp") {
+        return traceTextBlock("本轮注入的 MCP 工具清单", summary.output, "复制 MCP 清单");
+      }
+      if (span.stage === "wecom.received" || span.stage === "wecom.reply") {
+        return traceTextBlock(span.stage === "wecom.received" ? "企微原始消息" : "实际企微回复", summary.output, "复制");
+      }
+      return '<pre>' + escapeHtml(JSON.stringify(summary, null, 2)) + '</pre>';
+    }
+
     async function loadTraceSpans(traceId) {
       const botId = modalBody.dataset.traceBotId;
       const target = document.querySelector("#traceSpans");
@@ -2838,12 +3033,17 @@ function renderChannelWorkbenchPage(): string {
       target.innerHTML = '<div class="subtle">正在加载消息链路…</div>';
       try {
         const spans = await requestJson("/v1/trace-spans?bot_id=" + encodeURIComponent(botId) + "&trace_id=" + encodeURIComponent(traceId));
-        target.innerHTML = spans.length ? spans.map((span, index) => {
-          const body = JSON.stringify(span.summary || {}, null, 2);
+        target.innerHTML = spans.length ? '<div class="trace-toolbar">' +
+          '<button type="button" class="secondary" data-scroll-trace="wecom.received">原消息</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="prompt.rendered">基础 Prompt</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="context.mcp">MCP 清单</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="cli.turn">CLI 最终 Prompt</button>' +
+          '<button type="button" class="secondary" data-scroll-trace="response.prepare">最终回复</button>' +
+          '</div>' + spans.map((span, index) => {
           return '<details class="trace-span ' + (span.status === "error" ? "error" : "") + '"' + (index < 2 ? " open" : "") + '>' +
-            '<summary><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
+            '<summary data-trace-stage="' + escapeHtml(span.stage) + '"><span>' + escapeHtml(span.stage) + '</span><span>' + escapeHtml(span.duration_ms === undefined ? span.status : span.duration_ms + " ms · " + span.status) + '</span></summary>' +
             '<div class="trace-meta">' + escapeHtml(formatBeijingTime(span.created_at)) + (span.run_id ? ' · ' + escapeHtml(span.run_id) : '') + '</div>' +
-            '<pre>' + escapeHtml(body) + '</pre></details>';
+            renderTraceSpanContent(span) + '</details>';
         }).join("") : '<div class="empty">该消息暂时没有步骤记录。</div>';
       } catch (error) {
         target.innerHTML = '<div class="empty">链路加载失败。</div>';
@@ -2852,6 +3052,7 @@ function renderChannelWorkbenchPage(): string {
     }
 
     function closeModal() {
+      modalBackdrop.classList.remove("trace-open");
       modalBackdrop.classList.remove("open");
     }
 
@@ -2900,6 +3101,10 @@ function renderChannelWorkbenchPage(): string {
           openModal(detail.bot);
           return;
         }
+        if (button.dataset.action === "edit-bot-config") {
+          window.location.href = "/admin/bots/" + encodeURIComponent(botId) + "/config";
+          return;
+        }
         if (button.dataset.action === "edit-project") {
           openProjectModal(detail);
           return;
@@ -2946,6 +3151,27 @@ function renderChannelWorkbenchPage(): string {
     });
 
     modalBody.addEventListener("click", async (event) => {
+      const traceCopyButton = event.target.closest("button[data-trace-copy-id]");
+      if (traceCopyButton) {
+        const source = document.querySelector("#" + traceCopyButton.dataset.traceCopyId);
+        try {
+          await navigator.clipboard.writeText(source?.textContent || "");
+          setToast("内容已复制。");
+        } catch (_error) {
+          setToast("复制失败，请手动复制。", true);
+        }
+        return;
+      }
+      const traceJumpButton = event.target.closest("button[data-scroll-trace]");
+      if (traceJumpButton) {
+        const stage = traceJumpButton.dataset.scrollTrace;
+        const summary = document.querySelector("summary[data-trace-stage='" + stage + "']");
+        if (summary) {
+          summary.parentElement.open = true;
+          summary.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+        return;
+      }
       const traceRow = event.target.closest("button[data-trace-id]");
       if (traceRow) {
         await loadTraceSpans(traceRow.dataset.traceId);

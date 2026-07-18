@@ -4,13 +4,15 @@ import {
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
   renameSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CapabilityDispatchContext } from "./server.js";
 import { requireSinglePathSegment } from "./workspace.js";
 
@@ -41,7 +43,13 @@ interface SkillMutationPayload {
   name: string;
   source_ref?: string;
   source_type?: string;
+  files?: unknown;
   actor_id?: string;
+}
+
+interface UploadedSkillFile {
+  path: string;
+  content_base64: string;
 }
 
 export function createSkillManager(config: SkillManagerConfig): SkillManager {
@@ -75,27 +83,34 @@ export function createSkillManager(config: SkillManagerConfig): SkillManager {
         const payload = readMutationPayload(context.payload);
         const name = requireSinglePathSegment(payload.name, "name");
         const sourceType = payload.source_type ?? "builtin";
-        const sourceRef = requireSinglePathSegment(payload.source_ref ?? name, "source_ref");
+        const sourceRef = sourceType === "local_upload"
+          ? "webui-local-upload"
+          : requireSinglePathSegment(payload.source_ref ?? name, "source_ref");
+        const storedSourceType = sourceType === "local_upload" ? "local" : "builtin";
         const actorId = payload.actor_id?.trim() || "webui";
 
-        if (sourceType !== "builtin") {
-          throw new Error("only builtin skill installation is supported");
+        if (sourceType !== "builtin" && sourceType !== "local_upload") {
+          throw new Error("unsupported skill source type");
         }
 
         await upsertSkillStatus(fetchImplementation, dataServiceUrl, context.botId, {
           name,
-          source_type: "builtin",
+          source_type: storedSourceType,
           source_ref: sourceRef,
           status: "installing",
           installed_by_wecom_user_id: actorId,
         });
 
         try {
-          const source = inspectSkillPackage(catalogRoot, sourceRef, name).root;
-          installSkillPackage(workspaceRoot, context.botId, name, source);
+          if (sourceType === "local_upload") {
+            installUploadedSkillPackage(workspaceRoot, context.botId, name, payload.files);
+          } else {
+            const source = inspectSkillPackage(catalogRoot, sourceRef, name).root;
+            installSkillPackage(workspaceRoot, context.botId, name, source);
+          }
           await upsertSkillStatus(fetchImplementation, dataServiceUrl, context.botId, {
             name,
-            source_type: "builtin",
+            source_type: storedSourceType,
             source_ref: sourceRef,
             status: "installed",
             installed_by_wecom_user_id: actorId,
@@ -105,7 +120,7 @@ export function createSkillManager(config: SkillManagerConfig): SkillManager {
           try {
             await upsertSkillStatus(fetchImplementation, dataServiceUrl, context.botId, {
               name,
-              source_type: "builtin",
+              source_type: storedSourceType,
               source_ref: sourceRef,
               status: "failed",
               installed_by_wecom_user_id: actorId,
@@ -154,6 +169,10 @@ function inspectSkillPackage(
   const packageRoot = realpathSync(candidate);
   assertInside(catalogRoot, packageRoot, "skill source");
 
+  return { root: packageRoot, ...inspectSkillDirectory(packageRoot, expectedName) };
+}
+
+function inspectSkillDirectory(packageRoot: string, expectedName: string): { name: string; description: string } {
   let fileCount = 0;
   let totalBytes = 0;
   walkPackage(packageRoot, (file) => {
@@ -172,7 +191,74 @@ function inspectSkillPackage(
   if (metadata.name !== expectedName) {
     throw new Error("skill name does not match SKILL.md frontmatter");
   }
-  return { root: packageRoot, ...metadata };
+  return metadata;
+}
+
+function installUploadedSkillPackage(
+  workspaceRoot: string,
+  botId: string,
+  name: string,
+  rawFiles: unknown,
+): void {
+  const files = normalizeUploadedFiles(rawFiles);
+  const botRoot = safeBotRoot(workspaceRoot, botId);
+  const sourceRoot = mkdtempSync(join(botRoot, ".skill-upload-"));
+  try {
+    for (const file of files) {
+      const destination = join(sourceRoot, file.path);
+      assertInside(sourceRoot, destination, "uploaded skill file");
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, file.content, { mode: 0o644 });
+    }
+    inspectSkillDirectory(sourceRoot, name);
+    installSkillPackage(workspaceRoot, botId, name, sourceRoot);
+  } finally {
+    rmSync(sourceRoot, { recursive: true, force: true });
+  }
+}
+
+function normalizeUploadedFiles(rawFiles: unknown): Array<{ path: string; content: Buffer }> {
+  if (!Array.isArray(rawFiles) || rawFiles.length === 0 || rawFiles.length > MAX_SKILL_FILES) {
+    throw new Error("invalid uploaded skill files");
+  }
+  const candidates = rawFiles.map((value) => {
+    if (!value || typeof value !== "object") throw new Error("invalid uploaded skill file");
+    const file = value as UploadedSkillFile;
+    if (typeof file.path !== "string" || typeof file.content_base64 !== "string") {
+      throw new Error("invalid uploaded skill file");
+    }
+    return { path: normalizeUploadedPath(file.path), content: decodeUploadedFile(file.content_base64) };
+  });
+  const firstSegments = new Set(candidates.map(({ path }) => path.split("/")[0]));
+  const hasRootSkillFile = candidates.some(({ path }) => path === "SKILL.md");
+  const shouldStripRoot = !hasRootSkillFile && firstSegments.size === 1 && candidates.every(({ path }) => path.includes("/"));
+  const files = candidates.map(({ path, content }) => ({
+    path: shouldStripRoot ? path.slice(path.indexOf("/") + 1) : path,
+    content,
+  }));
+  if (new Set(files.map(({ path }) => path)).size !== files.length) {
+    throw new Error("uploaded skill contains duplicate paths");
+  }
+  const totalBytes = files.reduce((total, file) => total + file.content.length, 0);
+  if (totalBytes > MAX_SKILL_BYTES || !files.some(({ path }) => path === "SKILL.md")) {
+    throw new Error("uploaded skill package is invalid");
+  }
+  return files;
+}
+
+function normalizeUploadedPath(path: string): string {
+  const normalized = path.replaceAll("\\", "/");
+  if (!normalized || isAbsolute(normalized) || normalized.startsWith("/") || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error("uploaded skill file path is invalid");
+  }
+  return normalized;
+}
+
+function decodeUploadedFile(value: string): Buffer {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error("uploaded skill file content is invalid");
+  }
+  return Buffer.from(value, "base64");
 }
 
 function walkPackage(root: string, onFile: (file: string) => void): void {
@@ -315,6 +401,7 @@ function readMutationPayload(payload: unknown): SkillMutationPayload {
     name: record.name,
     source_ref: typeof record.source_ref === "string" ? record.source_ref : undefined,
     source_type: typeof record.source_type === "string" ? record.source_type : undefined,
+    files: record.files,
     actor_id: typeof record.actor_id === "string" ? record.actor_id : undefined,
   };
 }

@@ -70,6 +70,19 @@ export function createDataServiceServer(
         return handleGetUserCredentialRuntimeEnv(request, url, store, config);
       }
 
+      if (url.pathname === "/internal/user-env" && (request.method === "GET" || request.method === "POST")) {
+        return handleUserEnv(request, url, store, config);
+      }
+
+      const userEnvDeleteMatch = url.pathname.match(/^\/internal\/user-env\/([^/]+)$/);
+      if (request.method === "DELETE" && userEnvDeleteMatch) {
+        return handleDeleteUserEnv(request, url, store, config, userEnvDeleteMatch[1]);
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/user-env/runtime-env") {
+        return handleGetUserEnvRuntimeEnv(request, url, store, config);
+      }
+
       if (
         request.method === "GET"
         && url.pathname === "/internal/user-credentials/project-git"
@@ -2136,6 +2149,84 @@ function handleUserCredential(
   }
 }
 
+async function handleUserEnv(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Promise<Response> {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  try {
+    const scope = userEnvScopeFromUrl(url);
+    if (request.method === "GET") {
+      return jsonResponse({ items: store.listUserEnvVars(scope) });
+    }
+    if (!config.credentialVault) {
+      return jsonResponse({ error: "user credential vault is not configured" }, 503);
+    }
+    const body = await request.json() as { key?: unknown; value?: unknown };
+    const key = requireUserEnvKey(body.key);
+    const value = requireSecret(body.value, "value");
+    const record = store.upsertUserEnvVar({
+      ...scope,
+      key,
+      value_ciphertext: config.credentialVault.encryptText(value),
+    });
+    return jsonResponse(record, 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleDeleteUserEnv(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+  encodedKey: string,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  try {
+    store.deleteUserEnvVar({
+      ...userEnvScopeFromUrl(url),
+      key: requireUserEnvKey(decodeURIComponent(encodedKey)),
+    });
+    return jsonResponse({ deleted: true });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+function handleGetUserEnvRuntimeEnv(
+  request: Request,
+  url: URL,
+  store: DataStore,
+  config: DataServiceServerConfig,
+): Response {
+  const accessError = internalCredentialAccessError(request, config);
+  if (accessError) {
+    return accessError;
+  }
+  if (!config.credentialVault) {
+    return jsonResponse({ error: "user credential vault is not configured" }, 503);
+  }
+  try {
+    const env: Record<string, string> = {};
+    for (const record of store.getUserEnvVars(userEnvScopeFromUrl(url))) {
+      env[record.key] = config.credentialVault.decryptText(record.value_ciphertext);
+    }
+    return jsonResponse({ env });
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
 function handleGetUserCredentialRuntimeEnv(
   request: Request,
   url: URL,
@@ -2265,6 +2356,24 @@ function credentialScopeFromUrl(url: URL) {
     ),
     provider: requireCredentialProvider(url.searchParams.get("provider")),
   };
+}
+
+function userEnvScopeFromUrl(url: URL) {
+  return {
+    bot_id: requireText(url.searchParams.get("bot_id"), "bot_id"),
+    wecom_user_id: requireText(url.searchParams.get("wecom_user_id"), "wecom_user_id"),
+  };
+}
+
+function requireUserEnvKey(value: unknown): string {
+  const key = requireText(value, "key");
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) {
+    throw new Error("env key must use uppercase letters, numbers, and underscores");
+  }
+  if (["PATH", "HOME", "SHELL", "NODE_OPTIONS", "KIRO_HOME", "KIRO_RELAY_AUTH_TOKEN"].includes(key)) {
+    throw new Error("env key is reserved");
+  }
+  return key;
 }
 
 function requireCredentialProvider(value: unknown): "easemob_jira" | "github_fork" {

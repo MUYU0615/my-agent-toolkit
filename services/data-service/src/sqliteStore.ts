@@ -106,6 +106,9 @@ import {
   type UserCredentialMetadataRecord,
   type UserCredentialRecord,
   type UserCredentialScopeInput,
+  type UserEnvVarMetadataRecord,
+  type UserEnvVarRecord,
+  type UpsertUserEnvVarInput,
   type UpsertBotMcpInput,
   type UpsertBotSkillInput,
   type UpsertRuntimeConfigInput,
@@ -236,6 +239,7 @@ export function createSqliteDataStore(
       const status = admin ? "initializing" : "draft";
       const updatedAt = nextIsoTimestamp(bot.updated_at);
       db.prepare("delete from bot_config_documents where bot_id = ?").run(bot.bot_id);
+      db.prepare("delete from user_env_vars where bot_id = ?").run(bot.bot_id);
       db.prepare("delete from initialization_sessions where bot_id = ?").run(bot.bot_id);
       db.prepare("delete from pending_generated_documents where bot_id = ?").run(bot.bot_id);
       db.prepare("delete from conversations where bot_id = ?").run(bot.bot_id);
@@ -318,6 +322,22 @@ export function createSqliteDataStore(
 
     deleteBotEnvVar(botId, key) {
       deleteBotEnvVar(db, botId, key);
+    },
+
+    upsertUserEnvVar(input) {
+      return upsertUserEnvVar(db, input);
+    },
+
+    listUserEnvVars(input) {
+      return listUserEnvVars(db, input);
+    },
+
+    getUserEnvVars(input) {
+      return getUserEnvVars(db, input);
+    },
+
+    deleteUserEnvVar(input) {
+      deleteUserEnvVar(db, input);
     },
 
     createUserCredentialBinding(input) {
@@ -752,6 +772,7 @@ function resetToStandardRoleConfigInSqlite(
     db.prepare("delete from bot_mcp_capability_configs").run();
     db.prepare("delete from bot_runtime_policies").run();
     db.prepare("delete from bot_env_vars").run();
+    db.prepare("delete from user_env_vars").run();
     db.prepare("delete from user_credential_bindings").run();
     db.prepare("delete from user_credentials").run();
     db.prepare("delete from bot_skills").run();
@@ -1086,6 +1107,83 @@ function deleteBotEnvVar(
   db.prepare("delete from bot_env_vars where bot_id = ? and key = ?").run(
     bot.bot_id,
     requireText(key, "key"),
+  );
+}
+
+function upsertUserEnvVar(
+  db: Database.Database,
+  input: UpsertUserEnvVarInput,
+): UserEnvVarMetadataRecord {
+  const bot = getRequiredBot(db, input.bot_id);
+  const wecomUserId = requireText(input.wecom_user_id, "wecom_user_id");
+  const key = requireUserEnvVarKey(input.key);
+  const existing = mapUserEnvVarRecord(db.prepare(
+    "select * from user_env_vars where bot_id = ? and wecom_user_id = ? and key = ?",
+  ).get(bot.bot_id, wecomUserId, key));
+  const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+  const record: UserEnvVarRecord = {
+    bot_id: bot.bot_id,
+    wecom_user_id: wecomUserId,
+    key,
+    value_ciphertext: requireText(input.value_ciphertext, "value_ciphertext"),
+    created_at: existing?.created_at ?? now,
+    updated_at: now,
+  };
+  db.prepare(`
+    insert into user_env_vars (bot_id, wecom_user_id, key, value_ciphertext, created_at, updated_at)
+    values (?, ?, ?, ?, ?, ?)
+    on conflict(bot_id, wecom_user_id, key) do update set
+      value_ciphertext = excluded.value_ciphertext,
+      updated_at = excluded.updated_at
+  `).run(
+    record.bot_id,
+    record.wecom_user_id,
+    record.key,
+    record.value_ciphertext,
+    record.created_at,
+    record.updated_at,
+  );
+  return userEnvVarMetadata(record);
+}
+
+function listUserEnvVars(
+  db: Database.Database,
+  input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id">,
+): UserEnvVarMetadataRecord[] {
+  const bot = getRequiredBot(db, input.bot_id);
+  return db.prepare(`
+    select bot_id, wecom_user_id, key, updated_at
+    from user_env_vars
+    where bot_id = ? and wecom_user_id = ?
+    order by updated_at desc
+  `).all(bot.bot_id, requireText(input.wecom_user_id, "wecom_user_id"))
+    .map((row) => mapUserEnvVarMetadataRecord(row))
+    .filter((record): record is UserEnvVarMetadataRecord => Boolean(record));
+}
+
+function getUserEnvVars(
+  db: Database.Database,
+  input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id">,
+): UserEnvVarRecord[] {
+  const bot = getRequiredBot(db, input.bot_id);
+  return db.prepare(`
+    select * from user_env_vars
+    where bot_id = ? and wecom_user_id = ?
+    order by updated_at desc
+  `).all(bot.bot_id, requireText(input.wecom_user_id, "wecom_user_id"))
+    .map((row) => mapUserEnvVarRecord(row))
+    .filter((record): record is UserEnvVarRecord => Boolean(record));
+}
+
+function deleteUserEnvVar(
+  db: Database.Database,
+  input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id" | "key">,
+): void {
+  const bot = getRequiredBot(db, input.bot_id);
+  db.prepare("delete from user_env_vars where bot_id = ? and wecom_user_id = ? and key = ?").run(
+    bot.bot_id,
+    requireText(input.wecom_user_id, "wecom_user_id"),
+    requireUserEnvVarKey(input.key),
   );
 }
 
@@ -2565,6 +2663,16 @@ function migrate(db: Database.Database): void {
       primary key (bot_id, key)
     );
 
+    create table if not exists user_env_vars (
+      bot_id text not null,
+      wecom_user_id text not null,
+      key text not null,
+      value_ciphertext text not null,
+      created_at text not null,
+      updated_at text not null,
+      primary key (bot_id, wecom_user_id, key)
+    );
+
     create table if not exists user_credentials (
       bot_id text not null,
       wecom_user_id text not null,
@@ -2901,6 +3009,9 @@ function migrate(db: Database.Database): void {
     "create index if not exists idx_user_credentials_scope on user_credentials(bot_id, wecom_user_id, provider)",
   ).run();
   db.prepare(
+    "create index if not exists idx_user_env_vars_scope on user_env_vars(bot_id, wecom_user_id)",
+  ).run();
+  db.prepare(
     "create index if not exists idx_user_credential_bindings_expiry on user_credential_bindings(expires_at)",
   ).run();
   migrateBotConfigDocuments(db);
@@ -2914,14 +3025,15 @@ function migrateBotConfigDocuments(db: Database.Database): void {
         owner_id as bot_id,
         case
           when lower(title) in ('soul', 'soul.md', 'private/soul.md') then 'soul'
-          else 'agents.md'
+          when lower(title) in ('agents', 'agents.md', 'instructions/agents.md') then 'agents.md'
+          else 'rules.md'
         end as title,
         version,
         content,
         created_at
       from memory_document_versions
       where scope = 'bot'
-        and lower(title) in ('soul', 'soul.md', 'private/soul.md', 'agents', 'agents.md', 'instructions/agents.md')
+        and lower(title) in ('soul', 'soul.md', 'private/soul.md', 'agents', 'agents.md', 'instructions/agents.md', 'rules', 'rules.md', 'instructions/rules.md')
     `,
   ).run();
   db.prepare(
@@ -2942,7 +3054,7 @@ function migrateBotConfigDocuments(db: Database.Database): void {
     `
       delete from memory_document_versions
       where scope = 'bot'
-        and lower(title) in ('soul', 'soul.md', 'private/soul.md', 'agents', 'agents.md', 'instructions/agents.md')
+        and lower(title) in ('soul', 'soul.md', 'private/soul.md', 'agents', 'agents.md', 'instructions/agents.md', 'rules', 'rules.md', 'instructions/rules.md')
     `,
   ).run();
 }
@@ -3845,6 +3957,45 @@ function mapBotEnvVarMetadataRecord(row: unknown): BotEnvVarMetadataRecord | und
   };
 }
 
+function mapUserEnvVarRecord(row: unknown): UserEnvVarRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: requireText(record.bot_id as string, "bot_id"),
+    wecom_user_id: requireText(record.wecom_user_id as string, "wecom_user_id"),
+    key: requireUserEnvVarKey(record.key as string),
+    value_ciphertext: requireText(record.value_ciphertext as string, "value_ciphertext"),
+    created_at: requireText(record.created_at as string, "created_at"),
+    updated_at: requireText(record.updated_at as string, "updated_at"),
+  };
+}
+
+function userEnvVarMetadata(record: UserEnvVarRecord): UserEnvVarMetadataRecord {
+  return {
+    bot_id: record.bot_id,
+    wecom_user_id: record.wecom_user_id,
+    key: record.key,
+    is_set: true,
+    updated_at: record.updated_at,
+  };
+}
+
+function mapUserEnvVarMetadataRecord(row: unknown): UserEnvVarMetadataRecord | undefined {
+  if (!row || typeof row !== "object") {
+    return undefined;
+  }
+  const record = row as Record<string, unknown>;
+  return {
+    bot_id: requireText(record.bot_id as string, "bot_id"),
+    wecom_user_id: requireText(record.wecom_user_id as string, "wecom_user_id"),
+    key: requireUserEnvVarKey(record.key as string),
+    is_set: true,
+    updated_at: requireText(record.updated_at as string, "updated_at"),
+  };
+}
+
 function mapUserCredentialRecord(row: unknown): UserCredentialRecord | undefined {
   if (!row || typeof row !== "object") {
     return undefined;
@@ -4308,6 +4459,17 @@ function requireMcpToolExecutionDuration(value: number): number {
     throw new Error("duration_ms is invalid");
   }
   return value;
+}
+
+function requireUserEnvVarKey(value: string): string {
+  const key = requireText(value, "key");
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) {
+    throw new Error("env key must use uppercase letters, numbers, and underscores");
+  }
+  if (["PATH", "HOME", "SHELL", "NODE_OPTIONS", "KIRO_HOME", "KIRO_RELAY_AUTH_TOKEN"].includes(key)) {
+    throw new Error("env key is reserved");
+  }
+  return key;
 }
 
 function nextTableIsoTimestamp(

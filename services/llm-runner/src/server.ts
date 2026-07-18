@@ -150,6 +150,7 @@ async function handleChatStream(
     const runtimeResult = await runRuntimeStreamResolved(config, runtimeRequest);
     const runId = `run_${crypto.randomUUID()}`;
     const encoder = new TextEncoder();
+    const heartbeatIntervalMs = config.stream_heartbeat_interval_ms ?? 25_000;
 
     return new Response(
       new ReadableStream<Uint8Array>({
@@ -160,12 +161,20 @@ async function handleChatStream(
             runner_session_id: runtimeResult.runner_session_id,
           })));
 
+          const heartbeat = setInterval(() => {
+            try {
+              controller.enqueue(encoder.encode(ndjsonLine({ type: "heartbeat" })));
+            } catch {
+              // The client has already gone away; normal stream cleanup will follow.
+            }
+          }, heartbeatIntervalMs);
+          heartbeat.unref?.();
           try {
             // Buffer one runtime turn before forwarding it. This keeps an MCP
             // protocol block private even when MCP is temporarily misconfigured.
             const finalOutput = await continueAfterMcpToolCallsStream(
               config,
-              chatRequest,
+              runtimeRequest,
               runtimeResult,
             );
             enqueueChunk(controller, encoder, finalOutput);
@@ -175,6 +184,7 @@ async function handleChatStream(
             controller.enqueue(encoder.encode(ndjsonLine(runtimeStreamErrorPayload(error))));
             controller.close();
           } finally {
+            clearInterval(heartbeat);
             releaseSessionLock?.();
           }
         },
@@ -239,7 +249,7 @@ async function handleChat(
     const runtimeRequest = await enrichChatRequest(config, chatRequest);
     releaseSessionLock = await acquireRuntimeSessionLock(sessionLocks, runtimeRequest);
     const runtimeResult = await runRuntime(config, runtimeRequest);
-    const finalResult = await continueAfterMcpToolCalls(config, chatRequest, runtimeResult);
+    const finalResult = await continueAfterMcpToolCalls(config, runtimeRequest, runtimeResult);
     const response: ChatResponse = {
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: finalResult.runner_session_id,
@@ -310,7 +320,7 @@ async function continueAfterMcpToolCalls(
       }
       return currentResult;
     }
-    if (toolRequest.status === "call" && toolRequest.call.tool === "project.publish") {
+    if (toolRequest.status === "call" && isProjectPublishTool(toolRequest.call.tool)) {
       return {
         ...currentResult,
         output: formatProjectPublishOutcome(
@@ -384,7 +394,7 @@ async function continueAfterMcpToolCallsStream(
       }
       return output;
     }
-    if (toolRequest.status === "call" && toolRequest.call.tool === "project.publish") {
+    if (toolRequest.status === "call" && isProjectPublishTool(toolRequest.call.tool)) {
       return formatProjectPublishOutcome(
         await executeMcpToolCallResult(config, chatRequest, toolRequest.call),
       );
@@ -483,6 +493,10 @@ function isExplicitProjectPublishRequest(message: string): boolean {
   return /^(?:(?:把|将).{0,160})?(?:给我\s*)?(?:提交|推送|发布(?:代码|改动|分支|到\s*(?:github|git))|commit|push|publish)/i.test(command);
 }
 
+function isProjectPublishTool(tool: string): boolean {
+  return tool === "project.publish" || tool === "jira.project.publish";
+}
+
 function lastUserMessage(prompt: string): string {
   const messages = [...prompt.matchAll(/<user-message>\s*([\s\S]*?)\s*<\/user-message>/gi)];
   return messages.length > 0 ? messages.at(-1)?.[1] ?? prompt : prompt;
@@ -543,10 +557,10 @@ async function executeMcpToolCallResult(
       error: "mcp is not configured",
     };
   }
-  if (toolCall.tool === "project.publish" && !isExplicitProjectPublishRequest(chatRequest.prompt)) {
+  if (isProjectPublishTool(toolCall.tool) && !isExplicitProjectPublishRequest(chatRequest.prompt)) {
     return {
       ok: false,
-      error: "project.publish requires an explicit user request to submit or Push code",
+      error: `${toolCall.tool} requires an explicit user request to submit or Push code`,
     };
   }
   const startedAt = Date.now();
@@ -778,9 +792,20 @@ async function withBotEnv(
   const botEnv = config.resolveBotEnvVars
     ? await config.resolveBotEnvVars(chatRequest.bot_id)
     : {};
-  const userEnv = config.resolveUserEnvVars
+  const resolvedUserEnv = config.resolveUserEnvVars
     ? await config.resolveUserEnvVars(chatRequest.bot_id, chatRequest.user_id)
-    : await resolveUserCredentialEnv(config, chatRequest.bot_id, chatRequest.user_id);
+    : undefined;
+  const runtimeUserEnv = resolvedUserEnv
+    ? resolvedUserEnv
+    : await resolveUserRuntimeEnv(config, chatRequest.bot_id, chatRequest.user_id);
+  const userEnv = resolvedUserEnv
+    ? resolvedUserEnv
+    : {
+      ...(await resolveUserCredentialEnv(config, chatRequest.bot_id, chatRequest.user_id)),
+      ...runtimeUserEnv,
+    };
+  const runtimeUserEnvKeys = Object.keys(runtimeUserEnv)
+    .filter(isAllowedUserRuntimeEnvKey);
   const projectEnv = await resolveProjectRuntimeEnv(config, chatRequest.bot_id);
   return {
     ...cliConfig,
@@ -793,6 +818,14 @@ async function withBotEnv(
       KIRO_RELAY_USER_ID: chatRequest.user_id,
       KIRO_RELAY_CONVERSATION_ID: chatRequest.conversation_id,
       ...(chatRequest.trace_id ? { MY_AGENT_TRACE_ID: chatRequest.trace_id } : {}),
+      ...(runtimeUserEnvKeys.length > 0
+        ? {
+          MY_AGENT_USER_RUNTIME_ENV_KEYS_B64: Buffer.from(
+            JSON.stringify(runtimeUserEnvKeys),
+            "utf8",
+          ).toString("base64"),
+        }
+        : {}),
       KIRO_RELAY_RUNTIME: chatRequest.runtime,
       MY_AGENT_CLI_PROVIDER: chatRequest.runtime,
     },
@@ -872,6 +905,50 @@ async function resolveUserCredentialEnv(
     }
   }
   return env;
+}
+
+async function resolveUserRuntimeEnv(
+  config: RunnerConfig,
+  botId: string,
+  userId: string,
+): Promise<Record<string, string>> {
+  if (!config.data_service_url || !config.credential_internal_token) {
+    return {};
+  }
+  const query = new URLSearchParams({
+    bot_id: botId,
+    wecom_user_id: userId,
+  });
+  const response = await fetchWithConfig(config, new Request(
+    `${config.data_service_url}/internal/user-env/runtime-env?${query}`,
+    { headers: { authorization: `Bearer ${config.credential_internal_token}` } },
+  ));
+  const payload = await response.json().catch(() => undefined) as
+    | { env?: Record<string, unknown>; error?: string }
+    | undefined;
+  // Before an operator configures the vault, ordinary bot runs should continue
+  // to work. `/env set` still reports the configuration error explicitly.
+  if (!response.ok && response.status === 503) return {};
+  if (!response.ok) {
+    throw new Error(payload?.error ?? "user environment lookup failed");
+  }
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(payload?.env ?? {})) {
+    if (isAllowedUserRuntimeEnvKey(key) && typeof value === "string") {
+      env[key] = value;
+    }
+  }
+  return env;
+}
+
+function isAllowedUserRuntimeEnvKey(key: string): boolean {
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) return false;
+  if (["PATH", "HOME", "SHELL", "NODE_OPTIONS", "KIRO_HOME", "KIRO_RELAY_AUTH_TOKEN"].includes(key)) {
+    return false;
+  }
+  return !key.startsWith("EASEMOB_JIRA_")
+    && !key.startsWith("MY_AGENT_")
+    && !key.startsWith("KIRO_RELAY_");
 }
 
 function isAllowedUserCredentialEnvKey(key: string): boolean {

@@ -45,15 +45,17 @@ Generated raw data, graph files, summaries, and case coverage design drafts are 
 
 When `MY_AGENT_RUNTIME=wecom`, treat a concrete Jira key or URL as a request to analyze the Jira and produce a testcase draft unless the user explicitly requests readiness-only analysis.
 
+For the short administrator-controlled Test-Jira Bot prompt rules, use `assets/test-jira-bot-rules.md` as the canonical template. Keep operational detail in Skills, not in that prompt document.
+
 Run the default wrapper without `--write-cases`, then read the generated case design and the relevant temporary Jira summaries/raw evidence. Use that evidence to write the complete testcase draft directly in the assistant response as Markdown.
 
 - Do not ask the user for an output path.
 - Do not persist a testcase file while the draft is under conversational review.
 - Do not wrap the whole response in a fenced code block; return Markdown headings, lists, and case sections directly so the Enterprise WeChat client can display them.
 - Mark the response as an AI-generated draft that has not been written to a project or submitted to GitHub.
-- For `ready`, output the normal testcase draft.
-- For `partial`, output an assumption-based testcase draft and keep assumptions, gaps, and targeted confirmation questions visible.
-- For `not_ready`, do not invent testcases; output the blocking gaps and targeted questions.
+- For `ready`, start with `测试准入：通过` and output the normal testcase draft.
+- For `partial` or `not_ready`, start with `测试准入：不通过`; list missing minimum information, test risks, and targeted questions. Do not output guessed cases by default.
+- Only when the user explicitly asks to continue despite the gaps, use `测试准入：条件通过（假设与待确认项）` and output an assumption-labelled draft. Do not claim complete coverage or use speculative details as assertions.
 - When the user requests revisions in the same Kiro session, revise the prior draft and return the complete updated Markdown, not only a change acknowledgement.
 
 Only write testcase files when the user explicitly requests a local file export. In that case, require a caller-controlled directory and pass it explicitly:
@@ -139,7 +141,21 @@ When posting a Jira comment that references an attached file, use the actual att
 *日志附件：* [HIM-22187-log-20260611-183034.zip|http://j1.private.easemob.com/secure/attachment/72754/HIM-22187-log-20260611-183034.zip]
 ```
 
-Workflow: always upload the attachment first (`attach-file`), capture the printed URL, then include it in the comment body before posting (`reply-issue` or direct comment API call).
+Workflow: always upload the attachment first (`attach-file`), capture the printed URL, then include it in the prepared comment before posting with `reply-issue`.
+
+## Publish a Real Test Report to Jira
+
+Use this flow only when the current user explicitly asks to post, comment, upload, or attach the current Jira's test report to Jira. It is a write operation; completing a run or generating a report is not permission to post it.
+
+This flow is for a report produced by `easemob-qa-automation-project` after a real execution. Do not publish a fabricated pass/fail summary, a template report, or a report from another user, conversation, or Jira.
+
+1. Read the current Jira project's latest `reports/*.md` and confirm it contains a real execution time, non-secret environment, scope, passed/failed/skipped counts, failures, and evidence paths.
+2. Create an evidence ZIP in the same Jira project's `reports/` directory. Include the report and only selected, already-redacted evidence needed to investigate failures. Never include `.env*`, `env/`, `.runtime/`, virtual environments, source project files, cookies, tokens, passwords, raw authorization headers, or unredacted request/response logs. If safe evidence is unavailable, attach a ZIP containing the report only.
+3. Upload the ZIP first with `attach-file`; retain the returned attachment URL. Do not guess an attachment URL or report success if upload fails.
+4. Generate a concise Chinese Jira comment in `<page-dir>/summary/<JIRA-KEY>-reply.md` and use the existing reply state in the same summary directory. The comment must include: execution time, environment without secrets, scope, passed/failed/skipped counts, concise failure reasons or `无`, risks/recommendations, and a Jira-format link to the uploaded ZIP. It must not contain tokens, credentials, full request headers, or private local paths.
+5. Call `reply-issue` exactly once for that prepared draft. It applies Jira formatting and records the comment ID to prevent duplicate publication of the same content. On success, reply to the WeCom user with the Jira key, comment ID, attachment URL, and the local report path. On failure, report the returned error without claiming publication.
+
+Use the normal `--draft-reply` run first when a reply state does not yet exist. The report comment may replace the generated draft body before `reply-issue`; the command recalculates the content hash and only deduplicates an already-posted identical comment.
 
 ## Python Environment Guardrails
 
@@ -217,15 +233,17 @@ Do not write Feishu credentials, tokens, cookies, or document content into persi
 
 If a Jira points to a Feishu design doc but the document cannot be read, mention that the design document was discovered but not read, and treat missing design content as a task completeness risk unless the Jira itself has enough acceptance criteria.
 
-When a Jira points to an Easemob Confluence page (`https://c1.private.easemob.com/...`), the skill must attempt to fetch the page content using the `easemob-confluence-review` skill:
+When a Jira points to one or more Easemob Confluence pages (`https://c1.private.easemob.com/...`), the skill must attempt to fetch all discovered pages with the `easemob-confluence-review` skill in one batch:
 
 ```bash
-cd <repo-root>/.agents/skills/easemob-confluence-review && ./scripts/run.sh analyze-url --url '<CONFLUENCE-URL>'
+cd <repo-root>/.agents/skills/easemob-confluence-review && ./scripts/run.sh analyze-urls --url '<CONFLUENCE-URL-1>' --url '<CONFLUENCE-URL-2>'
 ```
 
-If fetching succeeds, record `read_status: read` and incorporate the page summary into the analysis context. The fetched content informs readiness, case coverage design, and task completeness judgments.
+In the managed Enterprise WeChat runtime, `easemob-confluence-review` reuses the current user's `/jira bind` credentials. Do not ask users to bind or send separate Confluence credentials.
 
-If fetching fails (missing credentials, network error, or page access denied), record `read_status: not_read` with the error reason, and treat missing Confluence content as a task completeness risk unless the Jira itself has enough acceptance criteria.
+For every `read_status: read` page in the generated `jira-context.json`, read the page's `qa-context.json` and its referenced `index.md`. Treat `index.md` as source evidence, and use the QA context only for traceability, page readiness, and gaps. The fetched content informs readiness, case coverage design, and task completeness judgments.
+
+If one or more pages are unreadable, record each `read_status: not_read` with its error reason. Keep successfully read pages in the analysis, but treat missing Confluence content as a task completeness risk unless the Jira itself has enough acceptance criteria. Do not invent API paths, request bodies, field definitions, permissions, error codes, or expected results from an unreadable page.
 
 ## Jira Context Traversal
 
@@ -250,19 +268,18 @@ Do not mark the task context complete only because the root Jira title is readab
 ## Readiness Behavior
 
 - If readiness is `ready`, continue and generate normal testcase output.
-- If readiness is `partial`, continue and generate an assumption-based case coverage design.
-- If readiness is `not_ready`, still generate the task completeness summary and report the blocking gaps, but do not write testcase files.
+- If readiness is `partial` or `not_ready`, report the blocking gaps, test risks, and minimum targeted questions; do not write testcase files or present a final testcase set.
+- Generate an assumption-based draft for `partial` only after the user explicitly requests that it continue with incomplete information. Mark it `测试准入：条件通过（假设与待确认项）` and keep all unsupported details visibly unconfirmed.
 - If the root Jira and linked Jira issues have only titles/relationships but no description, useful comments, or readable external design document, treat it as `not_ready`, even if a Jira relationship exists.
 - Report missing information and targeted confirmation questions.
 - Do not ask the user to "补充测试范围" generically. Ask concrete questions about the changed module, acceptance criteria, API fields, permissions, configuration, gray release, compatibility, historical data, or explicit out-of-scope behavior.
 
-Use `partial` when the Jira has an identifiable topic, title, linked development task, parent/child relation, or comment reference, but lacks enough acceptance criteria for a final testcase set. The generated case design must clearly mark:
+Use `partial` when the Jira has an identifiable topic, title, linked development task, parent/child relation, or comment reference, but lacks enough acceptance criteria for a final testcase set. The analysis must clearly mark:
 
 - `信息完整度：partial`
 - external design documents and read status, when found
-- inferred test scope
-- default assumptions
-- case coverage design
+- supported test scope
+- unsupported assumptions (only used if the user later requests a conditional draft)
 - confirmation questions
 - current gaps and risks
 

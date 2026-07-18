@@ -23,7 +23,7 @@
     <key>KIRO_COMMAND</key>
     <string>/Users/dujiepeng/.local/bin/kiro-cli</string>
     <key>KIRO_TIMEOUT_MS</key>
-    <string>300000</string>
+    <string>900000</string>
     <key>PATH</key>
     <string>/Users/dujiepeng/.nvm/versions/node/v22.16.0/bin:/Users/dujiepeng/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

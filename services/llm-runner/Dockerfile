@@ -21,6 +21,7 @@ COPY packages/contracts/package.json ./node_modules/@my-agent-toolkit/contracts/
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=build /app/services/llm-runner/dist ./services/llm-runner/dist
 COPY services/llm-runner/scripts ./services/llm-runner/scripts
+COPY --from=deps /app/node_modules/undici ./node_modules/undici
 RUN mkdir -p ./node_modules/@my-agent-toolkit/contracts/dist \
   && cp -R ./packages/contracts/dist/. ./node_modules/@my-agent-toolkit/contracts/dist/
 EXPOSE 8200

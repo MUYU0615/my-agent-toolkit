@@ -13,7 +13,9 @@ HOST="${KIRO_HOST_RELAY_HOST:-0.0.0.0}"
 PID_FILE="${KIRO_HOST_RELAY_PID_FILE:-$ROOT_DIR/runtime/kiro-host-relay.pid}"
 COMMAND="${KIRO_COMMAND:-$HOME/.local/bin/kiro-cli}"
 WORKSPACE_ROOT="${KIRO_WORKSPACE_ROOT:-$HOME/Documents/KiroBotWorkspaces}"
-TIMEOUT_MS="${KIRO_TIMEOUT_MS:-900000}"
+# Keep the host relay limit independent from a runner-side KIRO_TIMEOUT_MS.
+TIMEOUT_MS="${KIRO_HOST_RELAY_TIMEOUT_MS:-900000}"
+HEARTBEAT_INTERVAL_MS="${KIRO_RELAY_HEARTBEAT_INTERVAL_MS:-25000}"
 RELAY_SCRIPT="$ROOT_DIR/services/llm-runner/scripts/kiro-host-relay.mjs"
 
 if [[ "$COMMAND" == */* && ! -x "$COMMAND" ]]; then
@@ -51,6 +53,7 @@ echo "Kiro relay watch mode: http://$HOST:$PORT"
 echo "Kiro command: $COMMAND"
 echo "Kiro workspace root: $WORKSPACE_ROOT"
 echo "Kiro timeout: ${TIMEOUT_MS}ms"
+echo "Kiro stream heartbeat: ${HEARTBEAT_INTERVAL_MS}ms"
 
 cd "$ROOT_DIR"
 exec env \
@@ -59,4 +62,5 @@ exec env \
   KIRO_COMMAND="$COMMAND" \
   KIRO_WORKSPACE_ROOT="$WORKSPACE_ROOT" \
   KIRO_TIMEOUT_MS="$TIMEOUT_MS" \
+  KIRO_RELAY_HEARTBEAT_INTERVAL_MS="$HEARTBEAT_INTERVAL_MS" \
   node --watch "$RELAY_SCRIPT"

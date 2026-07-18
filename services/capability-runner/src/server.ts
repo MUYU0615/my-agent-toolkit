@@ -33,6 +33,14 @@ export interface CreateCapabilityRunnerServerOptions {
     branch: string;
     commitMessage: string;
   }): unknown | Promise<unknown>;
+  publishJiraProject?(context: {
+    botId: string;
+    userId: string;
+    conversationId: string;
+    jiraKey: string;
+    branch: string;
+    commitMessage: string;
+  }): unknown | Promise<unknown>;
   projectRunnerToken?: string;
 }
 
@@ -43,6 +51,7 @@ export function createCapabilityRunnerServer(
   const listSkills = options.listSkills;
   const syncProject = options.syncProject;
   const publishProject = options.publishProject;
+  const publishJiraProject = options.publishJiraProject;
 
   return {
     async fetch(request: Request): Promise<Response> {
@@ -109,6 +118,36 @@ export function createCapabilityRunnerServer(
           } catch (error) {
             return jsonResponse({
               error: error instanceof Error ? error.message : "project publish failed",
+            }, 400);
+          }
+        });
+      }
+
+      const jiraProjectPublishRouteMatch = url.pathname.match(
+        /^\/internal\/bots\/([^/]+)\/jira-projects\/publish$/,
+      );
+      if (request.method === "POST" && jiraProjectPublishRouteMatch) {
+        if (!matchesToken(
+          request.headers.get("x-project-runner-token"),
+          options.projectRunnerToken,
+        )) {
+          return jsonResponse({ error: "project runner token is invalid" }, 401);
+        }
+        return withDecodedBotId(jiraProjectPublishRouteMatch[1], async (botId) => {
+          try {
+            const payload = requireRecord(await readJsonPayload(request));
+            const result = await publishJiraProject?.({
+              botId,
+              userId: requireString(payload.user_id, "user_id"),
+              conversationId: requireString(payload.conversation_id, "conversation_id"),
+              jiraKey: requireString(payload.jira_key, "jira_key"),
+              branch: requireString(payload.branch, "branch"),
+              commitMessage: requireString(payload.commit_message, "commit_message"),
+            });
+            return jsonResponse(result ?? { error: "Jira project manager is not configured" }, result ? 200 : 503);
+          } catch (error) {
+            return jsonResponse({
+              error: error instanceof Error ? error.message : "Jira project publish failed",
             }, 400);
           }
         });

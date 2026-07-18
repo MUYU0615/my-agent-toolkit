@@ -258,6 +258,30 @@ export interface BotEnvVarMetadataRecord {
   updated_at: string;
 }
 
+export interface UserEnvVarRecord {
+  bot_id: string;
+  wecom_user_id: string;
+  key: string;
+  value_ciphertext: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserEnvVarMetadataRecord {
+  bot_id: string;
+  wecom_user_id: string;
+  key: string;
+  is_set: true;
+  updated_at: string;
+}
+
+export interface UpsertUserEnvVarInput {
+  bot_id: string;
+  wecom_user_id: string;
+  key: string;
+  value_ciphertext: string;
+}
+
 export type UserCredentialProvider = "easemob_jira" | "github_fork";
 
 export interface UserCredentialRecord {
@@ -556,7 +580,7 @@ export interface MemoryStats {
 
 export interface BotConfigDocumentRecord {
   bot_id: string;
-  title: "soul" | "agents.md";
+  title: "soul" | "agents.md" | "rules.md";
   content: string;
   created_at: string;
   updated_at: string;
@@ -843,6 +867,10 @@ export interface DataStore {
   getBotEnvVar(botId: string, key: string): BotEnvVarRecord | undefined;
   listBotEnvVars(botId: string): BotEnvVarMetadataRecord[];
   deleteBotEnvVar(botId: string, key: string): void;
+  upsertUserEnvVar(input: UpsertUserEnvVarInput): UserEnvVarMetadataRecord;
+  listUserEnvVars(input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id">): UserEnvVarMetadataRecord[];
+  getUserEnvVars(input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id">): UserEnvVarRecord[];
+  deleteUserEnvVar(input: Pick<UpsertUserEnvVarInput, "bot_id" | "wecom_user_id" | "key">): void;
   createUserCredentialBinding(input: UserCredentialScopeInput): UserCredentialBindingRecord;
   getUserCredentialBinding(token: string): UserCredentialBindingRecord | undefined;
   completeUserCredentialBinding(
@@ -950,6 +978,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
   const runtimeSessions = new Map<string, RuntimeSessionRecord>();
   const botRuntimePolicies = new Map<string, BotRuntimePolicyRecord>();
   const botEnvVars = new Map<string, BotEnvVarRecord>();
+  const userEnvVars = new Map<string, UserEnvVarRecord>();
   const userCredentials = new Map<string, UserCredentialRecord>();
   const userCredentialBindings = new Map<string, UserCredentialBindingRecord>();
   const botSkills = new Map<string, BotSkillRecord>();
@@ -1067,6 +1096,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
       mcpCapabilityConfigs.clear();
       botRuntimePolicies.clear();
       botEnvVars.clear();
+      userEnvVars.clear();
       userCredentials.clear();
       userCredentialBindings.clear();
       botSkills.clear();
@@ -1168,6 +1198,11 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         const record = conversationHistory.get(key);
         if (record?.bot_id === bot.bot_id) {
           conversationHistory.delete(key);
+        }
+      }
+      for (const [key, record] of [...userEnvVars.entries()]) {
+        if (record.bot_id === bot.bot_id) {
+          userEnvVars.delete(key);
         }
       }
       const updated = {
@@ -1352,6 +1387,52 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
     deleteBotEnvVar(botId, key) {
       const bot = getRequiredBot(bots, botId);
       botEnvVars.delete(botCapabilityScopedKey(bot.bot_id, requireText(key, "key")));
+    },
+
+    upsertUserEnvVar(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const wecomUserId = requireText(input.wecom_user_id, "wecom_user_id");
+      const key = requireUserEnvVarKey(input.key);
+      const scopeKey = userEnvVarScopeKey(bot.bot_id, wecomUserId, key);
+      const existing = userEnvVars.get(scopeKey);
+      const now = existing ? nextIsoTimestamp(existing.updated_at) : new Date().toISOString();
+      const record: UserEnvVarRecord = {
+        bot_id: bot.bot_id,
+        wecom_user_id: wecomUserId,
+        key,
+        value_ciphertext: requireText(input.value_ciphertext, "value"),
+        created_at: existing?.created_at ?? now,
+        updated_at: now,
+      };
+      userEnvVars.set(scopeKey, record);
+      return userEnvVarMetadata(record);
+    },
+
+    listUserEnvVars(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const wecomUserId = requireText(input.wecom_user_id, "wecom_user_id");
+      return [...userEnvVars.values()]
+        .filter((record) => record.bot_id === bot.bot_id && record.wecom_user_id === wecomUserId)
+        .sort(compareUpdatedRecordsDesc)
+        .map(userEnvVarMetadata);
+    },
+
+    getUserEnvVars(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      const wecomUserId = requireText(input.wecom_user_id, "wecom_user_id");
+      return [...userEnvVars.values()]
+        .filter((record) => record.bot_id === bot.bot_id && record.wecom_user_id === wecomUserId)
+        .sort(compareUpdatedRecordsDesc)
+        .map((record) => ({ ...record }));
+    },
+
+    deleteUserEnvVar(input) {
+      const bot = getRequiredBot(bots, input.bot_id);
+      userEnvVars.delete(userEnvVarScopeKey(
+        bot.bot_id,
+        requireText(input.wecom_user_id, "wecom_user_id"),
+        requireUserEnvVarKey(input.key),
+      ));
     },
 
     createUserCredentialBinding(input) {
@@ -3094,6 +3175,31 @@ export function cloneBotEnvVarRecord(
   return { ...record };
 }
 
+function userEnvVarMetadata(record: UserEnvVarRecord): UserEnvVarMetadataRecord {
+  return {
+    bot_id: record.bot_id,
+    wecom_user_id: record.wecom_user_id,
+    key: record.key,
+    is_set: true,
+    updated_at: record.updated_at,
+  };
+}
+
+function userEnvVarScopeKey(botId: string, wecomUserId: string, key: string): string {
+  return JSON.stringify([botId, wecomUserId, key]);
+}
+
+function requireUserEnvVarKey(value: string): string {
+  const key = requireText(value, "key");
+  if (!/^[A-Z][A-Z0-9_]{0,127}$/.test(key)) {
+    throw new Error("env key must use uppercase letters, numbers, and underscores");
+  }
+  if (["PATH", "HOME", "SHELL", "NODE_OPTIONS", "KIRO_HOME", "KIRO_RELAY_AUTH_TOKEN"].includes(key)) {
+    throw new Error("env key is reserved");
+  }
+  return key;
+}
+
 export function cloneBotSkillRecord(
   record: BotSkillRecord,
 ): BotSkillRecord {
@@ -3368,11 +3474,24 @@ function normalizeBotConfigDocumentTitle(value: string): BotConfigDocumentRecord
   ) {
     return "agents.md";
   }
+  if (
+    title === "rules" ||
+    title === "rules.md" ||
+    title === "instructions/rules.md"
+  ) {
+    return "rules.md";
+  }
   return undefined;
 }
 
 export function configDocumentOrder(title: BotConfigDocumentRecord["title"]): number {
-  return title === "soul" ? 0 : 1;
+  if (title === "soul") {
+    return 0;
+  }
+  if (title === "agents.md") {
+    return 1;
+  }
+  return 2;
 }
 
 export function requireBotStatus(value: string): BotStatus {

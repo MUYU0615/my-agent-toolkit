@@ -86,9 +86,9 @@ describe("mcpClient", () => {
     expect(section).toContain("document.create");
     expect(section).toContain("required: scope, owner_id, title, doc_type, content");
     expect(section).toContain("&lt;mcp_tool_call&gt;{\"tool\":\"tool.name\",\"input\":{}}&lt;/mcp_tool_call&gt;");
-    expect(section).toContain("The user prepares the project with /sync");
+    expect(section).toContain("A shared repository is prepared with /sync");
     expect(section).toContain("Native Git commit and push are disabled in the CLI runtime");
-    expect(section).toContain("reply with exactly one project.publish MCP call first");
+    expect(section).toContain("current Jira project, use jira.project.publish");
     expect(section).toContain("Do not invoke native Kiro CLI tools");
     expect(section).toContain("</mcp_tools>");
   });

@@ -177,6 +177,18 @@ export function listMcpTools(options: {
       },
       { writes: [], reads: [] },
     ),
+    toolDescriptor(
+      "jira.project.publish",
+      "project",
+      "Commit the current conversation's validated Jira project directory and push it to the current user's bound GitHub fork. The project is selected by Jira key only; no local path or token is accepted. Requires explicit user authorization.",
+      ["jira_key", "branch", "commit_message"],
+      {
+        jira_key: stringProperty(),
+        branch: stringProperty(),
+        commit_message: stringProperty(),
+      },
+      { writes: [], reads: [] },
+    ),
   ].filter((tool) => !enabledTools || enabledTools.has(tool.name));
   return {
     version: 1,
@@ -442,6 +454,17 @@ export async function callMcpTool(
       return {
         ok: true,
         result: await deps.projectClient.publish(context, input),
+      };
+    }
+
+    if (call.tool === "jira.project.publish") {
+      const input = parseJiraProjectPublishInput(call.input);
+      if (!deps.projectClient) {
+        throw new StorageUnavailableError("project manager is unavailable");
+      }
+      return {
+        ok: true,
+        result: await deps.projectClient.publishJira(context, input),
       };
     }
 
@@ -910,6 +933,19 @@ function parseProjectPublishInput(value: unknown): {
   const record = requireRecord(value, "project publish input");
   return {
     projectKey: readRequiredString(record, "project_key"),
+    branch: readRequiredString(record, "branch"),
+    commitMessage: readRequiredString(record, "commit_message"),
+  };
+}
+
+function parseJiraProjectPublishInput(value: unknown): {
+  jiraKey: string;
+  branch: string;
+  commitMessage: string;
+} {
+  const record = requireRecord(value, "Jira project publish input");
+  return {
+    jiraKey: readRequiredString(record, "jira_key"),
     branch: readRequiredString(record, "branch"),
     commitMessage: readRequiredString(record, "commit_message"),
   };

@@ -23,7 +23,7 @@ describe("document MCP tools", () => {
       commit: "a".repeat(40),
     });
     const deps = createNoopDeps();
-    deps.projectClient = { publish };
+    deps.projectClient = { publish, publishJira: vi.fn() };
 
     const result = await callMcpTool(context, deps, {
       tool: "project.publish",
@@ -42,6 +42,34 @@ describe("document MCP tools", () => {
       projectKey: "im-test-hub",
       branch: "bot/add-case",
       commitMessage: "test: add case",
+    });
+  });
+
+  it("publishes the current Jira project using trusted conversation context", async () => {
+    const publishJira = vi.fn().mockResolvedValue({
+      branch: "bot/HIM-22187-case",
+      commit: "a".repeat(40),
+    });
+    const deps = createNoopDeps();
+    deps.projectClient = { publish: vi.fn(), publishJira };
+
+    const result = await callMcpTool(context, deps, {
+      tool: "jira.project.publish",
+      input: {
+        jira_key: "HIM-22187",
+        branch: "bot/HIM-22187-case",
+        commit_message: "test: add HIM-22187 automation",
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      result: { branch: "bot/HIM-22187-case", commit: "a".repeat(40) },
+    });
+    expect(publishJira).toHaveBeenCalledWith(context, {
+      jiraKey: "HIM-22187",
+      branch: "bot/HIM-22187-case",
+      commitMessage: "test: add HIM-22187 automation",
     });
   });
 
@@ -990,6 +1018,7 @@ describe("MCP tool discovery", () => {
       "memory.stats",
       "search.query",
       "project.publish",
+      "jira.project.publish",
     ]);
     expect(manifest.tools.find((tool) => tool.name === "document.create")).toMatchObject({
       category: "document",

@@ -26,6 +26,16 @@ npm run dev:up
 /jira unbind
 ```
 
+自动化测试需要仅在运行时使用的 Token、密码或 Cookie 时，Bot 会给出变量名。用户可在自己的 Bot 对话中设置：
+
+```text
+/env set HIM22187_AUTH_TOKEN <token>
+/env status
+/env unset HIM22187_AUTH_TOKEN
+```
+
+变量按 Bot 和企微用户隔离，`status` 仅显示变量名；值不会写入测试项目的 `.env` 文件。每次 Claude/Kiro CLI 运行时，只会注入当前用户设置的变量。
+
 `/jira bind` 返回 10 分钟有效的一次性页面。绑定完成后，用户可直接发送 `HIM-22356` 等 Jira 编号。账号密码以 AES-256-GCM 密文存入 `data-service.db`；运行时仅注入当前 Bot、当前企微用户的 Kiro 子进程。
 
 本机默认绑定地址为 `http://localhost:8600`，适合在同一台电脑的企微客户端中验证。手机或远程用户必须将 `CREDENTIAL_BIND_PUBLIC_URL` 配置为用户可访问的 HTTPS 域名。
