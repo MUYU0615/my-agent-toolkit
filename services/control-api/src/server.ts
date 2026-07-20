@@ -3172,6 +3172,9 @@ function renderChannelWorkbenchPage(): string {
       "search.query",
       "project.publish",
       "jira.project.publish",
+      "handoff.draft.create",
+      "handoff.draft.select_bot",
+      "handoff.draft.confirm_send",
     ];
 
     function setToast(message, isError = false) {

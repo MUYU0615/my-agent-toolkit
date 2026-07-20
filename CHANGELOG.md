@@ -10,6 +10,11 @@
 - 兼容既有 Bot 的 MCP 权限配置，并在明确转交意图下要求运行器实际调用转交 MCP，避免退化为让用户手动复制转发摘要。
 - 当前转交仅负责任务摘要与通知投递；Jira Webhook 自动路由、自动执行和 Workflow 恢复尚未实现。
 
+### Jira Webhook 入站
+
+- 新增 `jira-webhook-ingress` 微服务，提供 `POST /webhooks/jira`、共享密钥校验、请求体限制和 Jira Issue Key 校验。
+- Jira 事件按事件标识持久化去重，并以 `pending_route` 状态确认接收；自动路由、CLI 执行与企微结果通知将在后续阶段接入。
+
 
 
 ## 2026-07-17

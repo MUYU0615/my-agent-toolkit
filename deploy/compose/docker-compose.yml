@@ -1,4 +1,29 @@
 services:
+  jira-webhook-ingress:
+    build:
+      context: ../..
+      dockerfile: services/jira-webhook-ingress/Dockerfile
+    environment:
+      PORT: "9000"
+      JIRA_WEBHOOK_SHARED_SECRET: "${JIRA_WEBHOOK_SHARED_SECRET:-}"
+      JIRA_WEBHOOK_EVENT_STORE_FILE: "/data/jira-events.json"
+    ports:
+      - "9000:9000"
+    volumes:
+      - jira-webhook-ingress-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   control-api:
     build:
       context: ../..
@@ -310,3 +335,4 @@ volumes:
   data-service-data:
   log-service-data:
   capability-runner-data:
+  jira-webhook-ingress-data:
