@@ -6,6 +6,7 @@ const port = positiveInteger(process.env.PORT, 8900);
 const dispatcher = createWorkDispatcher({
   dataServiceUrl: (process.env.DATA_SERVICE_URL ?? "http://data-service:8300").replace(/\/+$/, ""),
   llmRunnerUrl: (process.env.LLM_RUNNER_URL ?? "http://llm-runner:8200").replace(/\/+$/, ""),
+  wecomWorkerUrl: process.env.WECOM_WORKER_URL?.replace(/\/+$/, ""),
   internalToken: process.env.DATA_SERVICE_INTERNAL_TOKEN ?? "",
   workerId: process.env.WORK_DISPATCHER_ID?.trim() || "work-dispatcher-1",
   pollIntervalMs: positiveInteger(process.env.WORK_DISPATCHER_POLL_MS, 1_000),

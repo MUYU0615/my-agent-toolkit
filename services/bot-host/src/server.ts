@@ -16,6 +16,7 @@ import {
   type WeComMessageInput,
 } from "./messageHandler.js";
 import type { IncomingWeComMessage, WeComClient } from "./wecomClient.js";
+import { createSimpleTaskRouter, type SimpleTaskRouter } from "./simpleTaskRouter.js";
 
 export type { BotHostConfig } from "./messageHandler.js";
 
@@ -31,6 +32,7 @@ export interface BotHostWorker {
     botId: string;
     adminWeComUserId: string;
   }): Promise<RestartInitializationResult>;
+  notify?(input: { botId?: string; userId: string; text: string }): Promise<void>;
 }
 
 export interface RestartInitializationResult {
@@ -54,10 +56,12 @@ export interface BotHostServerConfig extends BotHostConfig {
 export interface BotHostWorkerConfig extends StreamBotMessageConfig {
   botId: string;
   runtime: "mock" | "kiro" | "claude-code";
+  simpleTaskRouter?: SimpleTaskRouter;
 }
 
 export interface WeComRuntimeBotConfig {
   bot_id: string;
+  name: string;
   runtime: "mock" | "kiro" | "claude-code";
   wecom_bot_id: string;
   wecom_secret: string;
@@ -180,6 +184,9 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
         text: message.text,
         runtime: config.runtime,
       };
+      const taskAction = await workerConfig.simpleTaskRouter?.handle({ botId: config.botId, userId: message.userId, text: message.text });
+      if (taskAction?.reply) { await workerConfig.wecomClient.sendText(message.conversationId, taskAction.reply); return; }
+      if (taskAction?.continueText) messageInput.text = taskAction.continueText;
       if (await shouldHandleWizardConfirmationAsync(workerConfig, messageInput)) {
         await workerConfig.wecomClient.sendText(
           message.conversationId,
@@ -282,6 +289,9 @@ export function createBotHostWorker(config: BotHostWorkerConfig): BotHostWorker 
       workerConfig.wecomClient.disconnect();
     },
     restartInitialization,
+    async notify(input) {
+      await workerConfig.wecomClient.sendText(input.userId, input.text, { forceActive: true });
+    },
   };
 }
 
@@ -295,6 +305,11 @@ export function createBotHostSupervisor(
   let timer: NodeJS.Timeout | undefined;
   let syncInFlight = false;
   let stopped = false;
+  const taskRouter = createSimpleTaskRouter(async (input) => {
+    const worker = workers.get(input.botId)?.worker;
+    if (!worker?.notify) throw new Error(`target Bot is not connected: ${input.botId}`);
+    await worker.notify({ userId: input.userId, text: input.text });
+  }, config.dataServiceUrl);
 
   const sync = async () => {
     if (syncInFlight || stopped) {
@@ -306,6 +321,7 @@ export function createBotHostSupervisor(
         config,
         `${config.dataServiceUrl}/internal/wecom-runtime/bots`,
       );
+      taskRouter.registerBots(runtimeBots.map((bot) => ({ botId: bot.bot_id, name: bot.name })));
       const activeBotIds = new Set(runtimeBots.map((bot) => bot.bot_id));
 
       for (const [botId, entry] of workers.entries()) {
@@ -344,6 +360,7 @@ export function createBotHostSupervisor(
             botId: bot.wecom_bot_id,
             secret: bot.wecom_secret,
           }),
+          simpleTaskRouter: taskRouter,
         });
         workers.set(bot.bot_id, { signature, worker });
         await worker.start();
@@ -352,6 +369,17 @@ export function createBotHostSupervisor(
           runtime: bot.runtime,
           wecomBotId: bot.wecom_bot_id,
         });
+      }
+      // Handoff delivery is backend-owned. A failed active WeCom send leaves the
+      // notification pending, so a later supervisor sync retries it.
+      const pending = await getJson<{ notifications?: Array<{ notification_id: string; bot_id: string; user_id: string; text: string }> }>(config, `${config.dataServiceUrl}/internal/handoff/notifications/pending`);
+      for (const notification of pending.notifications ?? []) {
+        const target = workers.get(notification.bot_id)?.worker;
+        if (!target?.notify) continue;
+        try {
+          await target.notify({ userId: notification.user_id, text: notification.text });
+          await postJson(config, `${config.dataServiceUrl}/internal/handoff/notifications/${encodeURIComponent(notification.notification_id)}/delivered`, {});
+        } catch (error) { console.warn("[wecom-supervisor] handoff notification pending", { notificationId: notification.notification_id, error: error instanceof Error ? error.message : "unknown" }); }
       }
     } catch (error) {
       console.error("[wecom-supervisor] sync failed", error);
@@ -389,6 +417,13 @@ export function createBotHostSupervisor(
         throw new Error(`bot worker not found: ${input.botId}`);
       }
       return worker.restartInitialization(input);
+    },
+    async notify(input) {
+      await sync();
+      if (!input.botId) throw new Error("botId is required for supervisor notifications");
+      const worker = workers.get(input.botId)?.worker;
+      if (!worker?.notify) throw new Error(`bot worker not found: ${input.botId}`);
+      await worker.notify({ userId: input.userId, text: input.text });
     },
   };
 }
@@ -460,6 +495,11 @@ async function getJson<T>(
   }
 
   return payload as T;
+}
+
+async function postJson(config: BotHostConfig, url: string, body: unknown): Promise<void> {
+  const response = await config.fetch(new Request(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+  if (!response.ok) throw new Error(`upstream POST failed: ${response.status}`);
 }
 
 function parseWeComMessageInput(value: unknown): WeComMessageInput {

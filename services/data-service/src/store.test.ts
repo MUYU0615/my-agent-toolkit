@@ -386,7 +386,16 @@ describe("data-service store", () => {
       },
       directory_refs: ["bot-workspace"],
     });
-    expect(store.getBotMcpCapabilityConfig("prd-bot")).toEqual(updated);
+    const resolved = store.getBotMcpCapabilityConfig("prd-bot");
+    expect({
+      ...resolved,
+      tools: { ...resolved.tools, enabled: ["memory.search"] },
+    }).toEqual(updated);
+    expect(resolved.tools.enabled).toEqual(expect.arrayContaining([
+      "handoff.draft.create",
+      "handoff.draft.select_bot",
+      "handoff.draft.confirm_send",
+    ]));
     expect(() => store.getBotMcpCapabilityConfig("missing-bot"))
       .toThrow("bot not found: missing-bot");
     expect(() => store.updateBotMcpCapabilityConfig("prd-bot", {

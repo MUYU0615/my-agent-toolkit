@@ -16,6 +16,9 @@ export interface DataServiceClient {
   createMemory(input: CreateMemoryInput): Promise<Record<string, unknown>>;
   getMemoryStats(input: MemoryStatsInput): Promise<Record<string, unknown>>;
   getMcpCapabilityConfig(botId: string): Promise<McpCapabilityConfig>;
+  createHandoffDraft(input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  selectHandoffBot(draftId: string, botId: string): Promise<Record<string, unknown>>;
+  confirmHandoffDraft(draftId: string): Promise<Record<string, unknown>>;
 }
 
 export interface McpToolExecutionAuditInput {
@@ -113,6 +116,9 @@ export function createDataServiceClient(
       );
       return parseMcpCapabilityConfig(body);
     },
+    createHandoffDraft(input) { return requestJson(fetchImpl, `${baseUrl}/internal/handoff/drafts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }); },
+    selectHandoffBot(draftId, botId) { return requestJson(fetchImpl, `${baseUrl}/internal/handoff/drafts/${encodeURIComponent(draftId)}/select-bot`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target_bot_id: botId }) }); },
+    confirmHandoffDraft(draftId) { return requestJson(fetchImpl, `${baseUrl}/internal/handoff/drafts/${encodeURIComponent(draftId)}/confirm`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); },
   };
 }
 

@@ -496,6 +496,16 @@ export function buildPrompt(
     ]);
   }
 
+  parts.push(...[
+    "<agentlattice-handoff-rules>",
+    "You are participating in a multi-user AgentLattice workflow. Understand Chinese natural-language handoff requests; never require a fixed command syntax or expose internal WeCom user IDs or Bot IDs.",
+    "When the user asks to transfer, send, assign, or hand work to another person, use handoff.draft.create with a concise factual summary, Jira/Confluence links and artifact references. Present only the returned receiving Bot names (not IDs) and use handoff.draft.select_bot only after the user chooses. Then show the summarized final preview. The user must explicitly confirm the final preview before calling handoff.draft.confirm_send.",
+    "After you complete a concrete deliverable (plan, code, report, or analysis), ask whether the user wants to hand it off to another user. Do not ask while essential information is still missing.",
+    "Never claim a task was sent, assigned, or delivered unless the platform has returned a verified handoff result. Do not invent cross-user communication capabilities.",
+    "</agentlattice-handoff-rules>",
+    "",
+  ]);
+
   parts.push("<user-message>", text, "</user-message>");
   return parts.join("\n");
 }

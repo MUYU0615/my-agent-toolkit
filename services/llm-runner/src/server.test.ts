@@ -1051,6 +1051,73 @@ describe("llm-runner server", () => {
     expect(JSON.stringify(lines)).not.toContain("mcp_tool_call");
   });
 
+  it("retries an explicit handoff when the runtime initially declines to use the handoff MCP", async () => {
+    const mcpRequests: Request[] = [];
+    const command = [
+      "let input = '';",
+      "process.stdin.on('data', chunk => input += chunk);",
+      "process.stdin.on('end', () => {",
+      "  if (input.includes('<mcp_tool_result>')) { process.stdout.write('请选择接收 Bot：1. QA Bot'); return; }",
+      "  if (input.includes('HANDOFF_GATE')) {",
+      "    process.stdout.write('<mcp_tool_call>{\\\"tool\\\":\\\"handoff.draft.create\\\",\\\"input\\\":{\\\"recipient_name\\\":\\\"王安琦\\\",\\\"summary\\\":\\\"开始测试 HIM-22187\\\",\\\"jira_links\\\":[\\\"https://j1.private.easemob.com/browse/HIM-22187\\\"]}}</mcp_tool_call>');",
+      "    return;",
+      "  }",
+      "  process.stdout.write('我无法直接给王安琦发消息。');",
+      "});",
+    ].join(" ");
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: { command: process.execPath, args: ["-e", command], timeout_ms: 1000 },
+      mcp: { service_url: "http://mcp-service:8700", runner_secret: "runner-secret" },
+      fetch: async (input) => {
+        const request = input instanceof Request ? input : new Request(input);
+        mcpRequests.push(request);
+        if (request.url.endsWith("/tools")) {
+          return Response.json({
+            version: 1,
+            directory_refs: [],
+            tools: [{
+              name: "handoff.draft.create",
+              category: "handoff",
+              description: "Create an unsent handoff draft.",
+              input_schema: { type: "object", required: ["recipient_name", "summary"], properties: {} },
+              permissions: { reads: [], writes: [] },
+            }],
+          });
+        }
+        expect(await request.json()).toEqual({
+          tool: "handoff.draft.create",
+          input: {
+            recipient_name: "王安琦",
+            summary: "开始测试 HIM-22187",
+            jira_links: ["https://j1.private.easemob.com/browse/HIM-22187"],
+          },
+        });
+        return Response.json({
+          ok: true,
+          result: { draft_id: "handoff-1", target_bots: [{ bot_id: "qa-bot", name: "QA Bot" }] },
+        });
+      },
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        bot_id: "prd-bot",
+        user_id: "user-a",
+        conversation_id: "conv-handoff",
+        runtime: "kiro",
+        prompt: "转交给王安琦，让他开始测试 HIM-22187",
+      }),
+    }));
+
+    expect(mcpRequests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/mcp/bots/prd-bot/sessions/conv-handoff/tools",
+      "/mcp/bots/prd-bot/sessions/conv-handoff/tools/call",
+    ]);
+    expect((await response.json() as { output: string }).output).toBe("请选择接收 Bot：1. QA Bot");
+  });
+
   it("returns a verified project.publish result directly with its GitHub URL", async () => {
     const mcpRequests: Request[] = [];
     const command = [

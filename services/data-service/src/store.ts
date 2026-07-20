@@ -29,6 +29,7 @@ import {
   type ArtifactRecord,
   type ArtifactVersionRecord,
   type BindAgentBotInput,
+  type CancelWorkStageInput,
   type BindUserAgentInput,
   type CreateArtifactInput,
   type CompleteExecutionInput,
@@ -69,6 +70,7 @@ export type {
   ArtifactRecord,
   ArtifactVersionRecord,
   BindAgentBotInput,
+  CancelWorkStageInput,
   BindUserAgentInput,
   CreateArtifactInput,
   CompleteExecutionInput,
@@ -156,6 +158,7 @@ export interface WeComConnectionTestResult {
 
 export interface WeComRuntimeBotConfig {
   bot_id: string;
+  name: string;
   runtime: string;
   wecom_bot_id: string;
   wecom_secret: string;
@@ -962,6 +965,7 @@ export interface DataStore {
   listWorkArtifacts(workId: string): ArtifactRecord[];
   listArtifactVersions(artifactId: string): ArtifactVersionRecord[];
   enqueueWorkStage(input: EnqueueWorkStageInput): ExecutionQueueRecord;
+  cancelWorkStage(input: CancelWorkStageInput): WorkStageRecord;
   leaseNextExecution(input: LeaseExecutionInput): LeasedExecution | undefined;
   completeExecution(executionId: string, input: CompleteExecutionInput): ExecutionRunRecord;
   listWorkQueueItems(workId: string): ExecutionQueueRecord[];
@@ -1546,6 +1550,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         stage_id: stage.stage_id,
         version: 1,
         content_ref: `${stage.workspace_ref}/${requireWorkspaceRelativeRef(input.content_ref)}`,
+        ...normalizeArtifactContent(input.content, input.integrity_sha256),
         mime_type: requireLatticeText(input.mime_type ?? "text/markdown", "mime_type", 200),
         integrity_sha256: requireSha256(input.integrity_sha256),
         summary: requireLatticeText(input.summary, "summary", 2_000),
@@ -1582,6 +1587,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         stage_id: artifact.stage_id,
         version: versionNumber,
         content_ref: `${stage.workspace_ref}/${requireWorkspaceRelativeRef(input.content_ref)}`,
+        ...normalizeArtifactContent(input.content, input.integrity_sha256),
         mime_type: requireLatticeText(input.mime_type ?? "text/markdown", "mime_type", 200),
         integrity_sha256: requireSha256(input.integrity_sha256),
         summary: requireLatticeText(input.summary, "summary", 2_000),
@@ -1628,7 +1634,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         throw new Error("stage must be assigned before execution");
       }
       if (!stage.conversation_id || !stage.workspace_ref) throw new Error("stage isolation is not initialized");
-      if (!["pending", "queued", "waiting_user", "revision_required", "failed"].includes(stage.status)) {
+      if (!["pending", "queued", "waiting_user", "revision_required", "failed", "cancelled"].includes(stage.status)) {
         throw new Error(`stage cannot be queued from status: ${stage.status}`);
       }
       const active = [...executionQueue.values()].find(
@@ -1683,6 +1689,27 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         summary: "Stage 已加入 Personal Agent 执行队列",
       });
       return { ...record };
+    },
+
+    cancelWorkStage(input) {
+      const stage = workStages.get(requireLatticeId(input.stage_id, "stage_id"));
+      if (!stage) throw new Error(`stage not found: ${input.stage_id}`);
+      if (["succeeded", "cancelled"].includes(stage.status)) throw new Error(`stage cannot be cancelled from status: ${stage.status}`);
+      const now = new Date().toISOString();
+      for (const [id, item] of executionQueue.entries()) {
+        if (item.stage_id === stage.stage_id && ["queued", "leased"].includes(item.status)) {
+          executionQueue.set(id, { ...item, status: "cancelled", leased_by: undefined, lease_expires_at: undefined, updated_at: now });
+        }
+      }
+      for (const [id, run] of executionRuns.entries()) {
+        if (run.stage_id === stage.stage_id && run.status === "running") executionRuns.set(id, { ...run, status: "cancelled", error_code: "cancelled_by_user", error_message: input.reason ?? "cancelled by user", finished_at: now, updated_at: now });
+      }
+      const updated = { ...stage, status: "cancelled" as const, updated_at: now };
+      workStages.set(stage.stage_id, updated);
+      const work = workItems.get(stage.work_id);
+      if (work) workItems.set(work.work_id, { ...work, status: "cancelled", current_stage_id: stage.stage_id, updated_at: now });
+      appendAgentLatticeEvent({ work_id: stage.work_id, stage_id: stage.stage_id, event_type: "execution.cancelled", actor_type: input.actor_id ? "user" : "system", actor_id: input.actor_id, summary: input.reason ?? "用户取消了任务" });
+      return { ...updated };
     },
 
     leaseNextExecution(input) {
@@ -1835,6 +1862,9 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
           status: status === "succeeded" ? "released" : "failed",
           updated_at: now,
         });
+      }
+      if (status === "succeeded" && updated.output && stage.workspace_ref) {
+        persistExecutionOutputArtifact(artifacts, artifactVersions, stage, updated, now);
       }
       appendAgentLatticeEvent({
         work_id: run.work_id,
@@ -2002,6 +2032,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
           title: artifact.title,
           version: approvedVersion.version,
           content_ref: approvedVersion.content_ref,
+          ...(approvedVersion.content ? { content: approvedVersion.content } : {}),
           integrity_sha256: approvedVersion.integrity_sha256,
           summary: approvedVersion.summary,
         }],
@@ -2200,7 +2231,9 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
 
     getBotMcpCapabilityConfig(botId) {
       const bot = getRequiredBot(bots, botId);
-      return mcpCapabilityConfigs.get(bot.bot_id) ?? buildDefaultMcpCapabilityConfig();
+      return ensureHandoffTools(
+        mcpCapabilityConfigs.get(bot.bot_id) ?? buildDefaultMcpCapabilityConfig(),
+      );
     },
 
     updateBotMcpCapabilityConfig(botId, input) {
@@ -2319,6 +2352,7 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
           return bot.wecom_bot_id && secret
             ? {
               bot_id: bot.bot_id,
+              name: bot.name,
               runtime: bot.runtime,
               wecom_bot_id: bot.wecom_bot_id,
               wecom_secret: secret,
@@ -3550,6 +3584,26 @@ export function createDataStore(options: DataStoreOptions = {}): DataStore {
         by_tier: countMemoriesByTier(filteredMemories),
         disk_usage_bytes: filteredAssets.reduce((total, asset) => total + asset.size_bytes, 0),
       };
+    },
+  };
+}
+
+/**
+ * Bots created before the handoff MCP tools existed have a persisted allow-list.
+ * Keep that allow-list backward compatible so a platform-wide handoff feature does
+ * not silently disappear merely because the Bot was created earlier.
+ */
+function ensureHandoffTools(config: McpCapabilityConfig): McpCapabilityConfig {
+  const handoffTools = [
+    "handoff.draft.create",
+    "handoff.draft.select_bot",
+    "handoff.draft.confirm_send",
+  ];
+  return {
+    ...config,
+    tools: {
+      ...config.tools,
+      enabled: [...new Set([...config.tools.enabled, ...handoffTools])],
     },
   };
 }
@@ -4895,6 +4949,35 @@ function normalizeLeaseSeconds(value: number | undefined): number {
     throw new Error("lease_seconds must be between 30 and 3600");
   }
   return seconds;
+}
+
+function normalizeArtifactContent(content: string | undefined, integritySha256: string): Pick<ArtifactVersionRecord, "content" | "content_size"> {
+  if (content === undefined) return {};
+  const normalized = requireLatticeText(content, "content", 1_000_000);
+  if (createHash("sha256").update(normalized, "utf8").digest("hex") !== requireSha256(integritySha256)) {
+    throw new Error("artifact content does not match integrity_sha256");
+  }
+  return { content: normalized, content_size: Buffer.byteLength(normalized, "utf8") };
+}
+
+function persistExecutionOutputArtifact(
+  artifacts: Map<string, ArtifactRecord>, versions: Map<string, ArtifactVersionRecord[]>,
+  stage: WorkStageRecord, run: ExecutionRunRecord, now: string,
+): void {
+  if (!run.output || !stage.workspace_ref) return;
+  const artifactId = `artifact_execution_${run.execution_id}`;
+  if (artifacts.has(artifactId)) return;
+  const hash = createHash("sha256").update(run.output, "utf8").digest("hex");
+  const artifact: ArtifactRecord = { artifact_id: artifactId, work_id: run.work_id, stage_id: stage.stage_id,
+    artifact_type: "agent.execution_result", title: `执行结果 #${run.attempt}`, visibility: "work",
+    created_by_type: "agent", created_by_id: run.agent_id, latest_version: 1, created_at: now, updated_at: now };
+  const version: ArtifactVersionRecord = { artifact_version_id: `artifact_version_${crypto.randomUUID()}`,
+    artifact_id: artifactId, work_id: run.work_id, stage_id: stage.stage_id, version: 1,
+    content_ref: `${stage.workspace_ref}/execution-result-${run.execution_id}.md`, content: run.output,
+    content_size: Buffer.byteLength(run.output, "utf8"), mime_type: "text/markdown", integrity_sha256: hash,
+    summary: "Personal Agent 的已完成执行输出", created_by_type: "agent", created_by_id: run.agent_id, created_at: now };
+  artifacts.set(artifactId, artifact);
+  versions.set(artifactId, [version]);
 }
 
 function compileWorkStagePrompt(

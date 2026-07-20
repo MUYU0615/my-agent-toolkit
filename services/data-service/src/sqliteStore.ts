@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   buildDefaultMcpCapabilityConfig,
   parseMcpCapabilityConfig,
@@ -686,6 +686,7 @@ export function createSqliteDataStore(
         stage_id: stage.stage_id,
         version: 1,
         content_ref: `${stage.workspace_ref}/${requireWorkspaceRelativeRef(input.content_ref)}`,
+        ...normalizeSqliteArtifactContent(input.content, input.integrity_sha256),
         mime_type: requireLatticeText(input.mime_type ?? "text/markdown", "mime_type", 200),
         integrity_sha256: requireSha256(input.integrity_sha256),
         summary: requireLatticeText(input.summary, "summary", 2_000),
@@ -728,6 +729,7 @@ export function createSqliteDataStore(
         stage_id: artifact.stage_id,
         version: versionNumber,
         content_ref: `${stage.workspace_ref}/${requireWorkspaceRelativeRef(input.content_ref)}`,
+        ...normalizeSqliteArtifactContent(input.content, input.integrity_sha256),
         mime_type: requireLatticeText(input.mime_type ?? "text/markdown", "mime_type", 200),
         integrity_sha256: requireSha256(input.integrity_sha256),
         summary: requireLatticeText(input.summary, "summary", 2_000),
@@ -839,6 +841,22 @@ export function createSqliteDataStore(
           summary: "Stage 已加入 Personal Agent 执行队列",
         });
         return record;
+      });
+      return transaction.immediate();
+    },
+
+    cancelWorkStage(input) {
+      const stageId = requireLatticeId(input.stage_id, "stage_id");
+      const transaction = db.transaction((): WorkStageRecord => {
+        const stage = requireWorkStage(db, stageId);
+        if (["succeeded", "cancelled"].includes(stage.status)) throw new Error(`stage cannot be cancelled from status: ${stage.status}`);
+        const now = new Date().toISOString();
+        db.prepare("update execution_queue set status = 'cancelled', leased_by = null, lease_expires_at = null, updated_at = ? where stage_id = ? and status in ('queued', 'leased')").run(now, stageId);
+        db.prepare("update execution_runs set status = 'cancelled', error_code = 'cancelled_by_user', error_message = ?, finished_at = ?, updated_at = ? where stage_id = ? and status = 'running'").run(input.reason ?? "cancelled by user", now, now, stageId);
+        db.prepare("update work_stages set status = 'cancelled', updated_at = ? where stage_id = ?").run(now, stageId);
+        db.prepare("update work_items set status = 'cancelled', current_stage_id = ?, updated_at = ? where work_id = ?").run(stageId, now, stage.work_id);
+        appendSqliteWorkEvent(db, { work_id: stage.work_id, stage_id: stageId, event_type: "execution.cancelled", actor_type: input.actor_id ? "user" : "system", actor_id: input.actor_id, summary: input.reason ?? "用户取消了任务" });
+        return { ...stage, status: "cancelled", updated_at: now };
       });
       return transaction.immediate();
     },
@@ -1012,6 +1030,9 @@ export function createSqliteDataStore(
             run.runtime_session_id,
           );
         }
+        if (status === "succeeded" && updated.output && stage.workspace_ref) {
+          insertSqliteExecutionOutputArtifact(db, stage, updated, now);
+        }
         appendSqliteWorkEvent(db, {
           work_id: run.work_id,
           stage_id: run.stage_id,
@@ -1171,7 +1192,8 @@ export function createSqliteDataStore(
           work_goal: work.description ?? work.title, current_stage_goal: source.intent,
           approved_artifacts: [{ artifact_id: artifact.artifact_id, artifact_version_id: version.artifact_version_id,
             artifact_type: artifact.artifact_type, title: artifact.title, version: version.version,
-            content_ref: version.content_ref, integrity_sha256: version.integrity_sha256, summary: version.summary }],
+            content_ref: version.content_ref, ...(version.content ? { content: version.content } : {}),
+            integrity_sha256: version.integrity_sha256, summary: version.summary }],
           acceptance_criteria: requireLatticeText(input.acceptance_criteria, "acceptance_criteria", 4_000),
           key_decisions: optionalLatticeText(input.key_decisions, "key_decisions", 4_000),
           constraints: optionalLatticeText(input.constraints, "constraints", 4_000),
@@ -1359,7 +1381,7 @@ export function createSqliteDataStore(
     listWeComRuntimeBots() {
       return db.prepare(
         `
-          select bot_id, runtime, wecom_bot_id, wecom_secret
+          select bot_id, name, runtime, wecom_bot_id, wecom_secret
           from bots
           where wecom_bot_id is not null
             and wecom_secret is not null
@@ -2026,7 +2048,23 @@ function getBotMcpCapabilityConfig(
   if (!row) {
     return buildDefaultMcpCapabilityConfig();
   }
-  return parseMcpCapabilityConfig(JSON.parse(row.config_json) as unknown);
+  return ensureHandoffTools(parseMcpCapabilityConfig(JSON.parse(row.config_json) as unknown));
+}
+
+/** See the in-memory store: old persisted Bot capability configs predate handoff. */
+function ensureHandoffTools(config: McpCapabilityConfig): McpCapabilityConfig {
+  const handoffTools = [
+    "handoff.draft.create",
+    "handoff.draft.select_bot",
+    "handoff.draft.confirm_send",
+  ];
+  return {
+    ...config,
+    tools: {
+      ...config.tools,
+      enabled: [...new Set([...config.tools.enabled, ...handoffTools])],
+    },
+  };
 }
 
 function updateBotMcpCapabilityConfig(
@@ -3765,6 +3803,8 @@ function migrate(db: Database.Database): void {
       stage_id text not null,
       version integer not null,
       content_ref text not null,
+      content text,
+      content_size integer,
       mime_type text not null,
       integrity_sha256 text not null,
       summary text not null,
@@ -4349,6 +4389,9 @@ function migrate(db: Database.Database): void {
     "create unique index if not exists idx_conversations_scope_sequence on conversations(scope_key, sequence_no)",
   ).run();
   addColumnIfMissing(db, "initialization_sessions", "selected_role_id", "text");
+  // Existing SQLite volumes predate immutable artifact snapshots.
+  addColumnIfMissing(db, "artifact_versions", "content", "text");
+  addColumnIfMissing(db, "artifact_versions", "content_size", "integer");
   db.prepare(
     "create unique index if not exists idx_bots_wecom_bot_id_unique on bots (wecom_bot_id) where wecom_bot_id is not null",
   ).run();
@@ -6034,6 +6077,8 @@ function mapArtifactVersionRecord(value: unknown): ArtifactVersionRecord | undef
     stage_id: requireLatticeId(String(record.stage_id), "stage_id"),
     version,
     content_ref: requireWorkspaceRelativeRef(String(record.content_ref)),
+    content: typeof record.content === "string" ? record.content : undefined,
+    content_size: typeof record.content_size === "number" ? record.content_size : undefined,
     mime_type: requireLatticeText(String(record.mime_type), "mime_type", 200),
     integrity_sha256: requireSha256(String(record.integrity_sha256)),
     summary: requireLatticeText(String(record.summary), "summary", 2_000),
@@ -6066,13 +6111,14 @@ function insertArtifactVersion(db: Database.Database, record: ArtifactVersionRec
   db.prepare(`
     insert into artifact_versions (
       artifact_version_id, artifact_id, work_id, stage_id, version,
-      content_ref, mime_type, integrity_sha256, summary,
+      content_ref, content, content_size, mime_type, integrity_sha256, summary,
       created_by_type, created_by_id, created_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.artifact_version_id, record.artifact_id, record.work_id, record.stage_id,
-    record.version, record.content_ref, record.mime_type, record.integrity_sha256,
-    record.summary, record.created_by_type, record.created_by_id ?? null, record.created_at,
+    record.version, record.content_ref, record.content ?? null, record.content_size ?? null,
+    record.mime_type, record.integrity_sha256, record.summary, record.created_by_type,
+    record.created_by_id ?? null, record.created_at,
   );
 }
 
@@ -6277,6 +6323,32 @@ function normalizeSqliteLeaseSeconds(value: number | undefined): number {
     throw new Error("lease_seconds must be between 30 and 3600");
   }
   return seconds;
+}
+
+function normalizeSqliteArtifactContent(content: string | undefined, integritySha256: string): Pick<ArtifactVersionRecord, "content" | "content_size"> {
+  if (content === undefined) return {};
+  const normalized = requireLatticeText(content, "content", 1_000_000);
+  if (createHash("sha256").update(normalized, "utf8").digest("hex") !== requireSha256(integritySha256)) {
+    throw new Error("artifact content does not match integrity_sha256");
+  }
+  return { content: normalized, content_size: Buffer.byteLength(normalized, "utf8") };
+}
+
+function insertSqliteExecutionOutputArtifact(db: Database.Database, stage: WorkStageRecord, run: ExecutionRunRecord, now: string): void {
+  if (!run.output || !stage.workspace_ref) return;
+  const artifactId = `artifact_execution_${run.execution_id}`;
+  if (db.prepare("select 1 from artifacts where artifact_id = ?").get(artifactId)) return;
+  const hash = createHash("sha256").update(run.output, "utf8").digest("hex");
+  const artifact: ArtifactRecord = { artifact_id: artifactId, work_id: run.work_id, stage_id: stage.stage_id,
+    artifact_type: "agent.execution_result", title: `执行结果 #${run.attempt}`, visibility: "work",
+    created_by_type: "agent", created_by_id: run.agent_id, latest_version: 1, created_at: now, updated_at: now };
+  const version: ArtifactVersionRecord = { artifact_version_id: `artifact_version_${crypto.randomUUID()}`,
+    artifact_id: artifactId, work_id: run.work_id, stage_id: stage.stage_id, version: 1,
+    content_ref: `${stage.workspace_ref}/execution-result-${run.execution_id}.md`, content: run.output,
+    content_size: Buffer.byteLength(run.output, "utf8"), mime_type: "text/markdown", integrity_sha256: hash,
+    summary: "Personal Agent 的已完成执行输出", created_by_type: "agent", created_by_id: run.agent_id, created_at: now };
+  insertArtifact(db, artifact);
+  insertArtifactVersion(db, version);
 }
 
 function compileSqliteWorkStagePrompt(work: WorkItemRecord, stage: WorkStageRecord): string {

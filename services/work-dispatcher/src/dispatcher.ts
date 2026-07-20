@@ -1,6 +1,7 @@
 export interface WorkDispatcherConfig {
   dataServiceUrl: string;
   llmRunnerUrl: string;
+  wecomWorkerUrl?: string;
   internalToken: string;
   workerId: string;
   pollIntervalMs: number;
@@ -172,6 +173,24 @@ async function executeLease(config: WorkDispatcherConfig, lease: LeasedExecution
     },
   ));
   if (!response.ok) throw new Error(`execution completion failed (${response.status})`);
+  if (config.wecomWorkerUrl) {
+    const succeeded = completion.status === "succeeded";
+    try {
+      await config.fetch(new Request(`${config.wecomWorkerUrl}/internal/notifications`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          bot_id: lease.runtime_request.bot_id,
+          wecom_user_id: lease.runtime_request.user_id,
+          text: succeeded
+            ? `任务已完成：${lease.queue_item.stage_id}。请在 AgentLattice 工作台查看产物和执行结果。`
+            : `任务执行未完成：${lease.queue_item.stage_id}。请在 AgentLattice 工作台查看原因并重试。`,
+        }),
+      }));
+    } catch (error) {
+      config.onError?.(new Error(`notification delivery failed: ${error instanceof Error ? error.message : "unknown"}`));
+    }
+  }
 }
 
 async function readRuntimePayload(response: Response): Promise<RuntimeResponse> {

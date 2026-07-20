@@ -87,6 +87,19 @@ export function createWeComWorkerApp() {
           }
         }
 
+        if (request.method === "POST" && url.pathname === "/internal/notifications") {
+          try {
+            const body = await request.json() as { bot_id?: unknown; wecom_user_id?: unknown; text?: unknown };
+            if (typeof body.bot_id !== "string" || typeof body.wecom_user_id !== "string" || typeof body.text !== "string") {
+              return jsonResponse({ error: "bot_id, wecom_user_id and text are required" }, 400);
+            }
+            await supervisor.notify?.({ botId: body.bot_id, userId: body.wecom_user_id, text: body.text });
+            return jsonResponse({ delivered: true });
+          } catch (error) {
+            return jsonResponse({ error: error instanceof Error ? error.message : "notification failed" }, 503);
+          }
+        }
+
         const restartInitializationMatch = url.pathname.match(
           /^\/internal\/bots\/([^/]+)\/initialization\/restart$/,
         );

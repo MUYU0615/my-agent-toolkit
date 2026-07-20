@@ -66,6 +66,9 @@ const DEFAULT_MCP_TOOLS = [
   "search.query",
   "project.publish",
   "jira.project.publish",
+  "handoff.draft.create",
+  "handoff.draft.select_bot",
+  "handoff.draft.confirm_send",
 ] as const;
 const RESERVED_CONFIG_DOCUMENT_TITLES = new Set([
   "soul",

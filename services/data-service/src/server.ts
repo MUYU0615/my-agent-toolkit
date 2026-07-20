@@ -9,6 +9,7 @@ import {
 } from "./store.js";
 import type { CredentialVault, UserCredentialPayload } from "./credentialVault.js";
 import { timingSafeEqual } from "node:crypto";
+import { createHandoffState } from "./handoffState.js";
 import {
   requireWorkStatus,
   type CompleteExecutionInput,
@@ -44,6 +45,7 @@ export function createDataServiceServer(
   store: DataStore = createDataStore(),
   config: DataServiceServerConfig = {},
 ): DataServiceServer {
+  const handoffs = createHandoffState();
   return {
     async fetch(request: Request): Promise<Response> {
       const url = new URL(request.url);
@@ -51,6 +53,26 @@ export function createDataServiceServer(
       if (request.method === "GET" && url.pathname === "/health") {
         return jsonResponse(healthResponse("data-service"));
       }
+      if (url.pathname === "/internal/handoff/claim" && request.method === "POST") {
+        try { const body = await request.json() as { bot_id: string; user_id: string; display_name?: string }; return jsonResponse(await handoffs.claim(body.bot_id, body.user_id, body.display_name)); } catch (error) { return errorResponse(error); }
+      }
+      if (url.pathname === "/internal/handoff/profiles" && request.method === "POST") {
+        try { const body = await request.json() as { user_id: string; display_name: string }; return jsonResponse(await handoffs.setName(body.user_id, body.display_name)); } catch (error) { return errorResponse(error); }
+      }
+      if (url.pathname === "/internal/handoff/drafts" && request.method === "POST") {
+        try {
+          const body = await request.json() as { source_bot_id: string; source_user_id: string; recipient_name: string; summary: string; jira_links?: string[]; artifact_refs?: string[] };
+          const created = await handoffs.createDraft({ ...body, jira_links: body.jira_links ?? [], artifact_refs: body.artifact_refs ?? [] });
+          return jsonResponse({ ...created, target_bots: created.target_bots.map(({ bot_id }) => ({ bot_id, name: store.getBot(bot_id)?.name ?? bot_id })) }, 201);
+        } catch (error) { return errorResponse(error); }
+      }
+      const handoffSelect = url.pathname.match(/^\/internal\/handoff\/drafts\/([^/]+)\/select-bot$/);
+      if (handoffSelect && request.method === "POST") { try { const body = await request.json() as { target_bot_id: string }; return jsonResponse(await handoffs.selectBot(decodeURIComponent(handoffSelect[1]), body.target_bot_id)); } catch (error) { return errorResponse(error); } }
+      const handoffConfirm = url.pathname.match(/^\/internal\/handoff\/drafts\/([^/]+)\/confirm$/);
+      if (handoffConfirm && request.method === "POST") { try { return jsonResponse(await handoffs.confirm(decodeURIComponent(handoffConfirm[1]))); } catch (error) { return errorResponse(error); } }
+      if (url.pathname === "/internal/handoff/notifications/pending" && request.method === "GET") { try { return jsonResponse({ notifications: await handoffs.listPendingNotifications() }); } catch (error) { return errorResponse(error); } }
+      const handoffDelivered = url.pathname.match(/^\/internal\/handoff\/notifications\/([^/]+)\/delivered$/);
+      if (handoffDelivered && request.method === "POST") { try { await handoffs.markDelivered(decodeURIComponent(handoffDelivered[1])); return jsonResponse({ ok: true }); } catch (error) { return errorResponse(error); } }
 
       if (url.pathname === "/v1/users") {
         if (request.method === "GET") return handleListPlatformUsers(store);
@@ -138,6 +160,11 @@ export function createDataServiceServer(
       const workStageEnqueueMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/enqueue$/);
       if (request.method === "POST" && workStageEnqueueMatch) {
         return handleEnqueueWorkStage(request, store, decodeURIComponent(workStageEnqueueMatch[1]));
+      }
+
+      const workStageCancelMatch = url.pathname.match(/^\/v1\/work-stages\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && workStageCancelMatch) {
+        return handleCancelWorkStage(request, store, decodeURIComponent(workStageCancelMatch[1]));
       }
 
       const workExecutionsMatch = url.pathname.match(/^\/v1\/works\/([^/]+)\/executions$/);
@@ -1095,6 +1122,15 @@ async function handleEnqueueWorkStage(
   try {
     const body = await request.json() as Omit<EnqueueWorkStageInput, "stage_id">;
     return jsonResponse(store.enqueueWorkStage({ ...body, stage_id: stageId }), 201);
+  } catch (error) {
+    return errorResponse(error);
+  }
+}
+
+async function handleCancelWorkStage(request: Request, store: DataStore, stageId: string): Promise<Response> {
+  try {
+    const body = await request.json() as { actor_id?: string; reason?: string };
+    return jsonResponse(store.cancelWorkStage({ ...body, stage_id: stageId }));
   } catch (error) {
     return errorResponse(error);
   }

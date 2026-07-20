@@ -192,6 +192,9 @@ export interface ArtifactVersionRecord {
   stage_id: string;
   version: number;
   content_ref: string;
+  /** Immutable UTF-8 snapshot permitted for isolated review/handoff. */
+  content?: string;
+  content_size?: number;
   mime_type: string;
   integrity_sha256: string;
   summary: string;
@@ -207,6 +210,7 @@ export interface CreateArtifactInput {
   title: string;
   visibility?: ArtifactVisibility;
   content_ref: string;
+  content?: string;
   mime_type?: string;
   integrity_sha256: string;
   summary: string;
@@ -216,6 +220,7 @@ export interface CreateArtifactInput {
 
 export interface PublishArtifactVersionInput {
   content_ref: string;
+  content?: string;
   mime_type?: string;
   integrity_sha256: string;
   summary: string;
@@ -268,6 +273,8 @@ export interface EnqueueWorkStageInput {
   actor_id?: string;
   idempotency_key?: string;
 }
+
+export interface CancelWorkStageInput { stage_id: string; actor_id?: string; reason?: string; }
 
 export interface LeaseExecutionInput {
   worker_id: string;
@@ -352,6 +359,7 @@ export interface HandoffArtifactSnapshot {
   title: string;
   version: number;
   content_ref: string;
+  content?: string;
   integrity_sha256: string;
   summary: string;
 }

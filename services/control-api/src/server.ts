@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export interface ControlApiConfig {
   dataServiceUrl: string;
   logServiceUrl: string;
@@ -78,6 +80,11 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
       const agentLatticeStageEnqueueMatch = url.pathname.match(/^\/agent-lattice\/work-stages\/([^/]+)\/enqueue$/);
       if (request.method === "POST" && agentLatticeStageEnqueueMatch) {
         return handleAgentLatticeStageEnqueue(request, config, agentLatticeStageEnqueueMatch[1]);
+      }
+
+      const agentLatticeStageCancelMatch = url.pathname.match(/^\/agent-lattice\/work-stages\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && agentLatticeStageCancelMatch) {
+        return handleAgentLatticeStageCancel(request, config, agentLatticeStageCancelMatch[1]);
       }
 
       const agentLatticeGateCreateMatch = url.pathname.match(/^\/agent-lattice\/work-stages\/([^/]+)\/gates\/create$/);
@@ -925,14 +932,16 @@ async function handleAgentLatticeArtifactCreate(
 ): Promise<Response> {
   const form = await readUrlEncodedForm(request);
   const workId = form.work_id ?? "";
+  const content = form.content?.trim() || undefined;
   return mutateAgentLatticeFromForm(config, `/v1/work-stages/${encodeURIComponent(stageId)}/artifacts`, {
     actor_id: form.actor_id || "webui",
     artifact_type: form.artifact_type,
     title: form.title,
     visibility: form.visibility || "work",
     content_ref: form.content_ref,
+    ...(content ? { content } : {}),
     mime_type: form.mime_type || "text/markdown",
-    integrity_sha256: form.integrity_sha256,
+    integrity_sha256: content ? sha256(content) : form.integrity_sha256,
     summary: form.summary,
     created_by_type: "user",
     created_by_id: form.actor_id || "webui",
@@ -946,11 +955,13 @@ async function handleAgentLatticeArtifactVersionCreate(
 ): Promise<Response> {
   const form = await readUrlEncodedForm(request);
   const workId = form.work_id ?? "";
+  const content = form.content?.trim() || undefined;
   return mutateAgentLatticeFromForm(config, `/v1/artifacts/${encodeURIComponent(artifactId)}/versions`, {
     actor_id: form.actor_id || "webui",
     content_ref: form.content_ref,
+    ...(content ? { content } : {}),
     mime_type: form.mime_type || "text/markdown",
-    integrity_sha256: form.integrity_sha256,
+    integrity_sha256: content ? sha256(content) : form.integrity_sha256,
     summary: form.summary,
     created_by_type: "user",
     created_by_id: form.actor_id || "webui",
@@ -967,6 +978,14 @@ async function handleAgentLatticeStageEnqueue(
   return mutateAgentLatticeFromForm(config, `/v1/work-stages/${encodeURIComponent(stageId)}/enqueue`, {
     actor_id: form.actor_id || "webui",
   }, "execution.enqueue", "work_stage", "stage_id", `/agent-lattice/works/${encodeURIComponent(workId)}`);
+}
+
+async function handleAgentLatticeStageCancel(request: Request, config: ControlApiConfig, stageId: string): Promise<Response> {
+  const form = await readUrlEncodedForm(request);
+  const workId = form.work_id ?? "";
+  return mutateAgentLatticeFromForm(config, `/v1/work-stages/${encodeURIComponent(stageId)}/cancel`, {
+    actor_id: form.actor_id || "webui", reason: form.reason || "用户取消了任务",
+  }, "execution.cancel", "work_stage", "stage_id", `/agent-lattice/works/${encodeURIComponent(workId)}`);
 }
 
 async function fetchDataServiceJsonArray(
@@ -2238,6 +2257,10 @@ function parseJsonArrayField(raw: string | undefined): unknown[] {
   return Array.isArray(parsed) ? parsed : [];
 }
 
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 function escapeHtmlValue(value: unknown): string {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -2374,11 +2397,13 @@ function renderAgentLatticeWorkPage(
     const enqueueForm = canEnqueue
       ? `<form method="post" action="/agent-lattice/work-stages/${encodeURIComponent(String(stage.stage_id))}/enqueue"><input type="hidden" name="work_id" value="${escapeHtmlValue(workId)}"><input type="hidden" name="actor_id" value="webui"><button class="btn primary" type="submit">交给 Personal Agent 执行</button></form>`
       : "";
+    const cancelForm = ["pending", "queued", "running", "waiting_user", "revision_required", "failed"].includes(String(stage.status))
+      ? `<form method="post" action="/agent-lattice/work-stages/${encodeURIComponent(String(stage.stage_id))}/cancel"><input type="hidden" name="work_id" value="${escapeHtmlValue(workId)}"><input type="hidden" name="actor_id" value="webui"><button class="btn" type="submit">取消任务</button></form>` : "";
     const gateForm = String(stage.status) === "succeeded"
       ? `<details><summary>创建质量门禁</summary><form class="stack compact" method="post" action="/agent-lattice/work-stages/${encodeURIComponent(String(stage.stage_id))}/gates/create"><input type="hidden" name="work_id" value="${escapeHtmlValue(workId)}"><input type="hidden" name="actor_id" value="webui"><label class="stack"><span class="muted">门禁名称</span><input name="name" required maxlength="200"></label><label class="stack"><span class="muted">门禁类型</span><select name="kind"><option value="human_review">人工评审</option><option value="rule">确定性规则</option></select></label><label class="stack"><span class="muted">通过标准</span><textarea name="criteria" required maxlength="4000"></textarea></label><div class="grid"><label class="stack"><span class="muted">Reviewer 用户（可选）</span><select name="reviewer_user_id">${userOptions}</select></label><label class="stack"><span class="muted">Reviewer Agent（需同时选择对应用户）</span><select name="reviewer_agent_id">${agentOptions}</select></label></div><button class="btn" type="submit">创建 Gate</button></form></details>`
       : "";
     const artifactForm = `<details><summary>发布本阶段产物</summary><form class="stack compact" method="post" action="/agent-lattice/work-stages/${encodeURIComponent(String(stage.stage_id))}/artifacts/create"><input type="hidden" name="work_id" value="${escapeHtmlValue(workId)}"><input type="hidden" name="actor_id" value="webui"><div class="grid"><label class="stack"><span class="muted">产物类型</span><input name="artifact_type" placeholder="architecture.hld" required maxlength="128"></label><label class="stack"><span class="muted">标题</span><input name="title" required maxlength="300"></label><label class="stack"><span class="muted">Stage 内相对路径</span><input name="content_ref" placeholder="docs/HLD.md" required maxlength="1000"></label><label class="stack"><span class="muted">MIME</span><input name="mime_type" value="text/markdown" required maxlength="200"></label><label class="stack"><span class="muted">可见范围</span><select name="visibility"><option value="work">整个 Work</option><option value="stage">当前 Stage</option><option value="private">仅创建者</option></select></label><label class="stack"><span class="muted">SHA-256</span><input name="integrity_sha256" pattern="[A-Fa-f0-9]{64}" minlength="64" maxlength="64" required></label></div><label class="stack"><span class="muted">版本摘要</span><textarea name="summary" required maxlength="2000"></textarea></label><button class="btn" type="submit">发布 Artifact v1</button></form></details>`;
-    return `<article class="card stack"><div class="actions"><span class="badge">${escapeHtmlValue(stage.status)}</span><span class="muted">#${escapeHtmlValue(stage.position)}</span></div><h3>${escapeHtmlValue(stage.name)}</h3><p>${escapeHtmlValue(stage.intent)}</p><div class="muted">conversation: <code>${escapeHtmlValue(stage.conversation_id ?? "待创建")}</code></div><div class="muted">workspace: <code>${escapeHtmlValue(stage.workspace_ref ?? "待创建")}</code></div>${enqueueForm}${transitionForm}${artifactForm}${gateForm}</article>`;
+    return `<article class="card stack"><div class="actions"><span class="badge">${escapeHtmlValue(stage.status)}</span><span class="muted">#${escapeHtmlValue(stage.position)}</span></div><h3>${escapeHtmlValue(stage.name)}</h3><p>${escapeHtmlValue(stage.intent)}</p><div class="muted">conversation: <code>${escapeHtmlValue(stage.conversation_id ?? "待创建")}</code></div><div class="muted">workspace: <code>${escapeHtmlValue(stage.workspace_ref ?? "待创建")}</code></div>${enqueueForm}${cancelForm}${transitionForm}${artifactForm}${gateForm}</article>`;
   }).join("");
   const artifactCards = artifactDetails.map((detail) => {
     const artifact = detail.artifact as Record<string, unknown> | undefined;

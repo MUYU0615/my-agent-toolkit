@@ -18,7 +18,7 @@ export interface McpToolCall {
 }
 
 export interface McpToolDependencies {
-  dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats">;
+  dataClient: Pick<DataServiceClient, "createDocument" | "createMemory" | "getMemoryStats"> & Partial<Pick<DataServiceClient, "createHandoffDraft" | "selectHandoffBot" | "confirmHandoffDraft">>;
   memoryBackend: Pick<MemoryBackendClient, "storeMemory" | "search"> &
     Partial<Pick<MemoryBackendClient, "ingestFile" | "fetchUrl" | "scanDirectory" | "deleteMemory">>;
   allowedDirectoryRefs?: Record<string, string>;
@@ -47,7 +47,7 @@ export interface McpToolManifest {
 
 export interface McpToolDescriptor {
   name: string;
-  category: "document" | "memory" | "search" | "project";
+  category: "document" | "memory" | "search" | "project" | "handoff";
   description: string;
   input_schema: {
     type: "object";
@@ -189,6 +189,9 @@ export function listMcpTools(options: {
       },
       { writes: [], reads: [] },
     ),
+    toolDescriptor("handoff.draft.create", "handoff", "Create a summarized, unsent cross-user handoff draft. Never sends a message.", ["recipient_name", "summary"], { recipient_name: stringProperty(), summary: stringProperty(), jira_links: { type: "array", items: stringProperty() }, artifact_refs: { type: "array", items: stringProperty() } }, { writes: [], reads: [] }),
+    toolDescriptor("handoff.draft.select_bot", "handoff", "Select one receiving Bot from the list returned by handoff.draft.create. Never sends a message.", ["draft_id", "target_bot_id"], { draft_id: stringProperty(), target_bot_id: stringProperty() }, { writes: [], reads: [] }),
+    toolDescriptor("handoff.draft.confirm_send", "handoff", "Send a selected handoff only after the user explicitly confirmed the preview.", ["draft_id", "user_confirmed"], { draft_id: stringProperty(), user_confirmed: { type: "boolean" } }, { writes: [], reads: [] }),
   ].filter((tool) => !enabledTools || enabledTools.has(tool.name));
   return {
     version: 1,
@@ -466,6 +469,22 @@ export async function callMcpTool(
         ok: true,
         result: await deps.projectClient.publishJira(context, input),
       };
+    }
+    if (call.tool === "handoff.draft.create") {
+      const input = requireRecord(call.input, "handoff draft input");
+      if (!deps.dataClient.createHandoffDraft) throw new StorageUnavailableError("handoff backend is unavailable");
+      return { ok: true, result: await deps.dataClient.createHandoffDraft({ source_bot_id: context.bot_id, source_user_id: context.user_id, recipient_name: requireString(input.recipient_name, "recipient_name"), summary: requireString(input.summary, "summary"), jira_links: optionalStringArray(input.jira_links), artifact_refs: optionalStringArray(input.artifact_refs) }) };
+    }
+    if (call.tool === "handoff.draft.select_bot") {
+      const input = requireRecord(call.input, "handoff select input");
+      if (!deps.dataClient.selectHandoffBot) throw new StorageUnavailableError("handoff backend is unavailable");
+      return { ok: true, result: await deps.dataClient.selectHandoffBot(requireString(input.draft_id, "draft_id"), requireString(input.target_bot_id, "target_bot_id")) };
+    }
+    if (call.tool === "handoff.draft.confirm_send") {
+      const input = requireRecord(call.input, "handoff confirmation input");
+      if (input.user_confirmed !== true) throw new Error("user_confirmed must be true");
+      if (!deps.dataClient.confirmHandoffDraft) throw new StorageUnavailableError("handoff backend is unavailable");
+      return { ok: true, result: await deps.dataClient.confirmHandoffDraft(requireString(input.draft_id, "draft_id")) };
     }
 
     return toolError("validation_error", `unsupported MCP tool: ${call.tool}`);
@@ -994,6 +1013,17 @@ function requireRecord(value: unknown, name: string): Record<string, unknown> {
     throw new Error(`${name} must be an object`);
   }
   return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required`);
+  return value.trim();
+}
+
+function optionalStringArray(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error("expected string array");
+  return value.map((item) => item.trim()).filter(Boolean);
 }
 
 function readRequiredString(

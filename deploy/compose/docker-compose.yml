@@ -40,6 +40,7 @@ services:
       PORT: "8400"
       DATA_SERVICE_URL: "http://data-service:8300"
       LLM_RUNNER_URL: "http://llm-runner:8200"
+      WECOM_WORKER_URL: "http://wecom-worker:8401"
       CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
       LOG_SERVICE_URL: "http://log-service:8500"
       MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
@@ -91,6 +92,8 @@ services:
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
     ports:
       - "8401:8401"
+    volumes:
+      - data-service-data:/data
     depends_on:
       data-service:
         condition: service_healthy
