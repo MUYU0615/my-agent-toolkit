@@ -11,6 +11,7 @@ const conversationId = process.env.KIRO_RELAY_CONVERSATION_ID?.trim();
 const systemFlow = process.env.KIRO_RELAY_SYSTEM_FLOW === "true";
 const flowId = process.env.KIRO_RELAY_FLOW_ID?.trim();
 const flowRunId = process.env.KIRO_RELAY_RUN_ID?.trim();
+const workspaceId = process.env.KIRO_RELAY_WORKSPACE_ID?.trim();
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const runtimeEnv = collectRuntimeEnv(process.env);
 const provider = process.env.MY_AGENT_CLI_PROVIDER === "claude-code" ? "claude-code" : "kiro";
@@ -139,7 +140,7 @@ async function runStream(prompt) {
 
 function relayIdentity() {
   return systemFlow
-    ? { system_flow: true, flow_id: flowId, run_id: flowRunId }
+    ? { system_flow: true, flow_id: flowId, run_id: flowRunId, ...(workspaceId ? { workspace_id: workspaceId } : {}) }
     : { bot_id: botId, user_id: userId, conversation_id: conversationId };
 }
 

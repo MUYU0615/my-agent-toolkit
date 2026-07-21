@@ -20,9 +20,13 @@ export interface ChatResponse {
 export interface SystemRunRequest {
   flow_id: string;
   run_id: string;
+  /** Stable project workspace identity. Defaults to run_id for one-shot Flows. */
+  workspace_id?: string;
   runtime: RuntimeName;
   prompt: string;
   trace_id?: string;
+  /** Actual Kiro/Claude conversation to resume for a persistent project Flow. */
+  provider_session_id?: string;
   /** Runtime-only Flow environment. Never part of a Bot or chat request. */
   runtime_env?: Record<string, string>;
   /** Explicit administrator authorization for a non-conversational Flow. */
@@ -79,12 +83,32 @@ export function parseSystemRunRequest(value: unknown): SystemRunRequest {
   return {
     flow_id: flowId,
     run_id: runId,
+    ...(typeof record.workspace_id === "string" && record.workspace_id.trim()
+      ? { workspace_id: readSystemRunIdentifier(record.workspace_id, "workspace_id") }
+      : {}),
     runtime: record.runtime,
     prompt,
     ...(record.runtime_env === undefined ? {} : { runtime_env: parseSystemRuntimeEnv(record.runtime_env) }),
     ...(record.auto_execute === true ? { auto_execute: true } : {}),
     ...(typeof record.trace_id === "string" && record.trace_id.trim() ? { trace_id: record.trace_id.trim() } : {}),
+    ...(typeof record.provider_session_id === "string" && record.provider_session_id.trim()
+      ? { provider_session_id: readProviderSessionId(record.provider_session_id) }
+      : {}),
   };
+}
+
+function readSystemRunIdentifier(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(normalized)) throw new Error(`${field} is invalid`);
+  return normalized;
+}
+
+function readProviderSessionId(value: string): string {
+  const normalized = value.trim();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalized)) {
+    throw new Error("provider_session_id is invalid");
+  }
+  return normalized;
 }
 
 function parseSystemRuntimeEnv(value: unknown): Record<string, string> {

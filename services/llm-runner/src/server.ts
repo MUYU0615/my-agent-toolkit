@@ -94,12 +94,14 @@ async function handleSystemRun(request: Request, config: RunnerConfig): Promise<
     } as const;
     const result = await runCliRuntime({
       ...cliConfig,
+      ...(systemRun.provider_session_id ? { provider_session_id: systemRun.provider_session_id } : {}),
       env: {
         ...(cliConfig.env ?? {}),
         ...(systemRun.runtime_env ?? {}),
         KIRO_RELAY_SYSTEM_FLOW: "true",
         KIRO_RELAY_FLOW_ID: systemRun.flow_id,
         KIRO_RELAY_RUN_ID: systemRun.run_id,
+        ...(systemRun.workspace_id ? { KIRO_RELAY_WORKSPACE_ID: systemRun.workspace_id } : {}),
         KIRO_RELAY_RUNTIME: systemRun.runtime,
         MY_AGENT_CLI_PROVIDER: systemRun.runtime,
         ...(systemRun.auto_execute ? { MY_AGENT_SYSTEM_FLOW_AUTO_APPROVE_CASES: "1" } : {}),
@@ -113,6 +115,7 @@ async function handleSystemRun(request: Request, config: RunnerConfig): Promise<
       run_id: `run_${crypto.randomUUID()}`,
       runner_session_id: `system:${systemRun.flow_id}:${systemRun.run_id}`,
       output: redactText(result.output),
+      ...(result.provider_session_id ? { provider_session_id: result.provider_session_id } : {}),
     });
   } catch (error) {
     if (error instanceof UnavailableRuntimeError) return jsonResponse({ error: error.message }, 501);

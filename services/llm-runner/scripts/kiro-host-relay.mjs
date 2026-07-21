@@ -944,12 +944,12 @@ function resolveRuntimeWorkspace(payload) {
 }
 
 function resolveSystemFlowWorkspace(payload) {
-  const { flowId, runId } = requireSystemFlowIdentity(payload);
+  const { flowId, runId, workspaceId } = requireSystemFlowIdentity(payload);
   const flowsRoot = join(workspaceRoot, "system-flows");
   const flowRoot = join(flowsRoot, flowId);
-  const runsRoot = join(flowRoot, "runs");
-  const workspaceDir = join(runsRoot, runId);
-  for (const directory of [flowsRoot, flowRoot, runsRoot, workspaceDir]) ensureSafeDirectory(directory);
+  const workspacesRoot = join(flowRoot, "projects");
+  const workspaceDir = join(workspacesRoot, workspaceId ?? runId);
+  for (const directory of [flowsRoot, flowRoot, workspacesRoot, workspaceDir]) ensureSafeDirectory(directory);
   ensureSafeDirectory(join(flowRoot, ".kiro"));
   ensureSafeDirectory(join(flowRoot, ".kiro", "agents"));
   ensureSafeDirectory(join(flowRoot, ".kiro", "skills"));
@@ -968,7 +968,9 @@ function requireSystemFlowIdentity(payload) {
   const runId = typeof payload.run_id === "string" ? payload.run_id.trim() : "";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(flowId)) throw new RelayRequestError("flow_id is invalid");
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) throw new RelayRequestError("run_id is invalid");
-  return { flowId, runId };
+  const workspaceId = typeof payload.workspace_id === "string" ? payload.workspace_id.trim() : undefined;
+  if (workspaceId && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(workspaceId)) throw new RelayRequestError("workspace_id is invalid");
+  return { flowId, runId, workspaceId };
 }
 
 function hashUserId(userId) {

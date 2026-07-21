@@ -17,6 +17,7 @@ export interface JiraAutomationRunnerConfig {
   runtimeEnv?: string;
   autoExecute?: boolean;
   autoPublish?: boolean;
+  prFeedbackUrl?: string;
   fetch?: typeof fetch; onError?: (error: unknown) => void;
 }
 
@@ -84,7 +85,7 @@ async function execute(config: JiraAutomationRunnerConfig, event: AutomationEven
     const prompt = buildPrompt(event, config.autoExecute === true);
     const endpoint = `${config.llmRunnerUrl}/v1/system-runs`;
     const headers = { "content-type": "application/json", authorization: `Bearer ${config.internalToken}`, "x-trace-id": event.event_id };
-    const body = JSON.stringify({ flow_id: config.flowId, run_id: workspace.runId, runtime: config.runtime, prompt, trace_id: event.event_id, runtime_env: parseRuntimeEnv(config.runtimeEnv), auto_execute: config.autoExecute === true });
+    const body = JSON.stringify({ flow_id: config.flowId, run_id: workspace.runId, workspace_id: workspace.projectId, runtime: config.runtime, prompt, trace_id: event.event_id, runtime_env: parseRuntimeEnv(config.runtimeEnv), auto_execute: config.autoExecute === true });
     const signal = AbortSignal.timeout(config.executionTimeoutMs);
     const request = new Request(endpoint, {
       method: "POST", headers, body, signal,
@@ -101,8 +102,10 @@ async function execute(config: JiraAutomationRunnerConfig, event: AutomationEven
       ? await fetchImpl(request)
       : await undiciFetch(endpoint, { method: "POST", headers, body, signal, dispatcher: cliDispatcher });
     if (!response.ok) throw new Error(`CLI runner failed (${response.status}): ${await response.text()}`);
-    await writeFile(join(workspace.root, "automation-result.md"), String((await response.json() as { output?: unknown }).output ?? "CLI completed"), { mode: 0o600 });
+    const result = await response.json() as { output?: unknown; provider_session_id?: unknown };
+    await writeFile(join(workspace.root, "automation-result.md"), String(result.output ?? "CLI completed"), { mode: 0o600 });
     if (config.autoPublish) await publishJiraProject(config, workspace.repository, event.issue_key);
+    if (config.prFeedbackUrl) await registerProjectSession(config, workspace, event, result, fetchImpl);
   } catch (error) { failure = describeError(error); }
   finally { await cliDispatcher?.close().catch(() => {}); }
   const completed = await fetchImpl(new Request(`${config.ingressUrl}/internal/events/${encodeURIComponent(event.event_id)}/complete`, {
@@ -120,26 +123,49 @@ function describeError(error: unknown): string {
   return error.message;
 }
 
-async function prepareWorkspace(config: JiraAutomationRunnerConfig, event: AutomationEvent): Promise<{ root: string; runId: string; repository: string }> {
+async function prepareWorkspace(config: JiraAutomationRunnerConfig, event: AutomationEvent): Promise<{ root: string; runId: string; projectId: string; repository: string }> {
   const runId = `jira-${event.issue_key}-${shortHash(event.event_id)}`;
   const flowRoot = join(config.workspaceRoot, "system-flows", config.flowId);
-  const root = join(flowRoot, "runs", runId);
+  const projectId = `jira-${event.issue_key}`;
+  const root = join(flowRoot, "projects", projectId);
   await mkdir(root, { recursive: true, mode: 0o700 });
   await installSkills(flowRoot, config.skills ?? [], config.skillsRoot);
   const repository = join(root, "repository");
-  await rm(repository, { recursive: true, force: true });
   const mirror = join(config.mirrorRoot, `${shortHash(config.repositoryUrl!)}.git`);
   await mkdir(config.mirrorRoot, { recursive: true, mode: 0o700 });
   if (existsSync(mirror)) await git(["--git-dir", mirror, "fetch", "--prune", "origin"], config.githubToken);
   else await git(["clone", "--mirror", config.repositoryUrl!, mirror], config.githubToken);
-  await git(["clone", "--reference-if-able", mirror, "--dissociate", "--branch", config.repositoryBranch, "--single-branch", config.repositoryUrl!, repository], config.githubToken);
   const branch = `bot/${event.issue_key}`;
-  const hasRemoteBranch = await gitSucceeds(["-C", repository, "fetch", "origin", `${branch}:refs/remotes/origin/${branch}`], config.githubToken);
-  await git(["-C", repository, "checkout", "-B", branch, hasRemoteBranch ? `origin/${branch}` : `origin/${config.repositoryBranch}`], config.githubToken);
+  if (!existsSync(join(repository, ".git"))) {
+    await git(["clone", "--reference-if-able", mirror, "--dissociate", "--branch", config.repositoryBranch, "--single-branch", config.repositoryUrl!, repository], config.githubToken);
+    const hasRemoteBranch = await gitSucceeds(["-C", repository, "fetch", "origin", `${branch}:refs/remotes/origin/${branch}`], config.githubToken);
+    await git(["-C", repository, "checkout", "-B", branch, hasRemoteBranch ? `origin/${branch}` : `origin/${config.repositoryBranch}`], config.githubToken);
+  }
   await materializeRuntimeEnv(repository, config.runtimeEnv);
   await mkdir(join(repository, event.issue_key, "reports"), { recursive: true, mode: 0o700 });
   await writeFile(join(root, "RUN_CONTEXT.md"), `# ${event.issue_key}\n\nSource event: ${event.event_type}\nJira: ${eventUrl(event)}\n\nProject root: \`repository/${event.issue_key}/\`\nOnly modify this project directory.\n`, { mode: 0o600 });
-  return { root, runId, repository };
+  return { root, runId, projectId, repository };
+}
+
+async function registerProjectSession(
+  config: JiraAutomationRunnerConfig,
+  workspace: { root: string; runId: string; projectId: string; repository: string },
+  event: AutomationEvent,
+  result: { provider_session_id?: unknown },
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  const providerSessionId = typeof result.provider_session_id === "string" ? result.provider_session_id : undefined;
+  if (!providerSessionId && config.runtime !== "mock") throw new Error("CLI did not return a provider session id");
+  const response = await fetchImpl(new Request(`${config.prFeedbackUrl}/internal/project-sessions`, {
+    method: "POST", headers: internalHeaders(config),
+    body: JSON.stringify({
+      project_id: workspace.projectId, jira_key: event.issue_key, flow_id: config.flowId,
+      workspace_id: workspace.projectId, workspace_root: workspace.root, repository: config.repositoryUrl,
+      branch: `bot/${event.issue_key}`, runtime: config.runtime, provider_session_id: providerSessionId,
+      head_sha: await gitOutput(["-C", workspace.repository, "rev-parse", "HEAD"], config.githubToken),
+    }),
+  }));
+  if (!response.ok) throw new Error(`project session registration failed (${response.status})`);
 }
 
 async function materializeRuntimeEnv(repository: string, runtimeEnv?: string): Promise<void> {
@@ -204,4 +230,5 @@ function eventUrl(event: AutomationEvent): string { return typeof event.payload.
 function shortHash(value: string): string { return createHash("sha256").update(value).digest("hex").slice(0, 12); }
 function internalHeaders(config: Pick<JiraAutomationRunnerConfig, "internalToken">): Record<string, string> { return { "content-type": "application/json", authorization: `Bearer ${config.internalToken}` }; }
 async function git(args: string[], token?: string): Promise<void> { await new Promise<void>((resolve, reject) => execFile("git", args, { env: { ...process.env, ...(token ? { GITHUB_TOKEN: token, GIT_ASKPASS: "/usr/local/bin/git-askpass", GIT_TERMINAL_PROMPT: "0" } : {}) } }, (error) => error ? reject(error) : resolve())); }
+async function gitOutput(args: string[], token?: string): Promise<string> { return new Promise((resolve, reject) => execFile("git", args, { env: { ...process.env, ...(token ? { GITHUB_TOKEN: token, GIT_ASKPASS: "/usr/local/bin/git-askpass", GIT_TERMINAL_PROMPT: "0" } : {}) } }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()))); }
 async function gitSucceeds(args: string[], token?: string): Promise<boolean> { return new Promise((resolve) => execFile("git", args, { env: { ...process.env, ...(token ? { GITHUB_TOKEN: token, GIT_ASKPASS: "/usr/local/bin/git-askpass", GIT_TERMINAL_PROMPT: "0" } : {}) } }, (error) => resolve(!error))); }

@@ -14,6 +14,7 @@ const runner = createJiraAutomationRunner({
   settingsFile: process.env.JIRA_AUTOMATION_SETTINGS_FILE,
   skillsRoot: process.env.JIRA_AUTOMATION_SKILLS_ROOT ?? "/automation-config/skills",
   runtimeEnv: process.env.JIRA_AUTOMATION_RUNTIME_ENV,
+  prFeedbackUrl: process.env.PR_FEEDBACK_RUNNER_URL?.replace(/\/+$/, ""),
   onError(error) { console.error(error instanceof Error ? error.message : "jira automation error"); },
 });
 const server = createServer((req, res) => {

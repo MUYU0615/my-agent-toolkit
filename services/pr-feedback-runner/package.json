@@ -1,0 +1,9 @@
+{
+  "name": "@my-agent-toolkit/pr-feedback-runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": { "dev": "tsx src/main.ts", "start": "node dist/main.js", "test": "vitest run", "typecheck": "tsc -b", "build": "tsc -b" },
+  "dependencies": { "undici": "^7.28.0" }
+}

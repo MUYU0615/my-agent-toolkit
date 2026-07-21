@@ -46,6 +46,7 @@ services:
       JIRA_AUTOMATION_EXECUTION_TIMEOUT_MS: "${JIRA_AUTOMATION_EXECUTION_TIMEOUT_MS:-910000}"
       JIRA_AUTOMATION_SETTINGS_FILE: "/automation-config/settings.json"
       JIRA_AUTOMATION_SKILLS_ROOT: "/automation-config/skills"
+      PR_FEEDBACK_RUNNER_URL: "http://pr-feedback-runner:8920"
     ports:
       - "8910:8910"
     volumes:
@@ -57,9 +58,41 @@ services:
         condition: service_healthy
       llm-runner:
         condition: service_healthy
+      pr-feedback-runner:
+        condition: service_healthy
     healthcheck:
       test:
         ["CMD", "node", "-e", "fetch('http://127.0.0.1:8910').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  pr-feedback-runner:
+    build:
+      context: ../..
+      dockerfile: services/pr-feedback-runner/Dockerfile
+    environment:
+      PORT: "8920"
+      LLM_RUNNER_URL: "http://llm-runner:8200"
+      JIRA_AUTOMATION_INTERNAL_TOKEN: "${JIRA_AUTOMATION_INTERNAL_TOKEN:-}"
+      JIRA_AUTOMATION_WORKSPACE_ROOT: "/kiro-workspaces"
+      PR_FEEDBACK_STORE_FILE: "/data/project-sessions.json"
+      PR_FEEDBACK_SETTINGS_FILE: "/automation-config/settings.json"
+      PR_FEEDBACK_EXECUTION_TIMEOUT_MS: "${PR_FEEDBACK_EXECUTION_TIMEOUT_MS:-910000}"
+      GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET:-}"
+    ports:
+      - "8920:8920"
+    volumes:
+      - pr-feedback-runner-data:/data
+      - jira-automation-config:/automation-config:ro
+      - ${HOME}/Documents/KiroBotWorkspaces:/kiro-workspaces
+    depends_on:
+      llm-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:8920/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -382,4 +415,5 @@ volumes:
   capability-runner-data:
   jira-webhook-ingress-data:
   jira-automation-runner-data:
+  pr-feedback-runner-data:
   jira-automation-config:

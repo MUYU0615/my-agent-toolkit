@@ -10,8 +10,8 @@
     "dev:status": "./scripts/dev-status.sh",
     "dev:relay": "./scripts/dev-kiro-relay-watch.sh",
     "test": "vitest run",
-    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner services/work-dispatcher services/jira-webhook-ingress services/jira-automation-runner",
-    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner services/work-dispatcher services/jira-webhook-ingress services/jira-automation-runner"
+    "typecheck": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner services/work-dispatcher services/jira-webhook-ingress services/jira-automation-runner services/pr-feedback-runner",
+    "build": "tsc -b packages/contracts services/llm-runner services/data-service services/bot-host services/log-service services/control-api services/mcp-service services/capability-runner services/work-dispatcher services/jira-webhook-ingress services/jira-automation-runner services/pr-feedback-runner"
   },
   "workspaces": [
     "packages/*",

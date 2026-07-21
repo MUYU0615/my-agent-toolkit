@@ -2,59 +2,25 @@
 
 ## 2026-07-21
 
-### Jira System Automation Flow
-
-- 新增独立的 Jira System Flow 执行链路：Webhook 事件通过受控 `/v1/system-runs` 以 `flow_id`、`run_id` 运行，不再注册或复用普通 Bot、用户会话、Soul、Rules、Memory 与用户凭证。
-- System Flow 使用隔离工作目录 `system-flows/<flow>/runs/<run>/repository/<JIRA-KEY>/`；Runner 在启动 CLI 前创建 Jira 项目与 `reports/` 目录，并仅允许修改当前 Jira 范围。
-- Jira Flow WebUI 新增本地 Skill 文件夹上传、运行 `.env`、GitHub Token、自动执行和自动发布配置；内部服务令牌由本地启动脚本自动生成，不要求管理员配置或查看。
-- 新增 System Flow 固定规则注入：自动执行开启且准入通过时，管理员预授权替代普通 Bot 的用例确认门禁；仍禁止伪造环境或执行结果，并将 Jira 历史报告标记为参考而非本次 pytest 结果。
-
-### Jira 项目自动发布
-
-- Jira Flow 新增“完成后提交并 Push 当前 Jira 项目”开关；发布由 Runner 而非 LLM 执行。
-- 仅暂存并提交 `<JIRA-KEY>/` 及其报告，排除仓库根目录 `.env`、Cookie 和其他 Jira 目录；要求当前 Run 已生成 Markdown 报告。
-- 固定发布到 `bot/<JIRA-KEY>`，后续同 Jira Run 会先同步远端同名分支再追加提交；不自动创建 PR 或评论 Jira。
+- 新增 Jira System Flow：按 Jira 隔离项目、运行环境和 Skill，并支持自动执行与报告输出
+- 新增 Jira 项目自动提交：仅提交当前 Jira 目录和报告到 `bot/<JIRA-KEY>` 分支
+- 修复长任务默认 5 分钟首响应超时，System Flow 总执行上限保持 15 分钟
+- 新增持久 Project Agent Session，保存 CLI 会话和项目工作目录，支持后续恢复
+- 新增 `pr-feedback-runner`：接收 PR 评论、按仓库和 PR 定位项目并恢复 Agent；当前仅本地验证，不操作真实 GitHub
 
 ## 2026-07-20
 
-### Agent 转交能力
-
-- 新增自然语言转交 MCP 链路：用户可按“转交给某人，处理某项工作”发起跨用户任务转交。
-- 保留一个用户认领多个 Bot 的模式；接收方存在多个已认领 Bot 时，转交发起人选择目标 Bot 后再明确确认。
-- 转交确认后生成待投递通知；Bot Host 使用目标 Bot 的企微长连接向目标用户主动发送任务摘要，投递失败会保留并重试。
-- 兼容既有 Bot 的 MCP 权限配置，并在明确转交意图下要求运行器实际调用转交 MCP，避免退化为让用户手动复制转发摘要。
-- 当前转交仅负责任务摘要与通知投递；Jira Webhook 自动路由、自动执行和 Workflow 恢复尚未实现。
-
-### Jira Webhook 入站
-
-- 新增 `jira-webhook-ingress` 微服务，提供 `POST /webhooks/jira`、共享密钥校验、请求体限制和 Jira Issue Key 校验。
-- Jira 事件按事件标识持久化去重，并以 `pending_route` 状态确认接收；自动路由、CLI 执行与企微结果通知将在后续阶段接入。
+- 新增自然语言任务转交 MCP，支持一个用户认领多个 Bot、任务持久化和主动通知
+- 新增 `jira-webhook-ingress`：校验、去重并持久化 Jira Webhook 事件
 
 
 
 ## 2026-07-17
 
-### Jira 自动化项目发布
-
-- 新增 `jira.project.publish`，按 Bot、用户、会话和 Jira Key 定位独立项目，并直接提交到用户绑定的 GitHub fork
-- Jira 项目发布现在包含 `reports/` 报告目录；继续排除 `.env`、运行时目录、凭证、Cookie、私钥及原始日志等敏感文件
-- 增加项目发布结果校验，只有拿到实际分支、完整 commit、变更路径和 GitHub 地址才报告成功
-
-### Jira 测试报告
-
-- 优化 Jira 与自动化 Skill，支持在用户明确授权后上传脱敏测试报告 ZIP 并发布 Jira 评论
-- Jira 评论包含执行时间、环境、测试范围、通过/失败/跳过统计、失败原因、风险建议和附件链接
-- 报告发布与 GitHub 提交解耦，测试完成后不会自动评论或推送
-
-### Bot 技能与稳定性
-
-- 同步更新 Test-Jira Bot 的 Jira 和自动化 Skill，强化测试准入、当前会话项目隔离和敏感信息保护
-- WebUI 支持从本地目录安装 Bot Skill：校验 `SKILL.md`、Skill 名称、文件数量、大小和相对路径后，原子安装到当前 Bot 的隔离目录
-- 修复本地 Skill 安装状态与数据服务来源枚举不兼容导致的 400；本地上传在内部以受控上传流程处理，在状态记录中标记为 `local`
-- 优化 CLI 长任务流式响应：Host relay 立即发送响应头，并每 25 秒发送内部 heartbeat，避免 Claude Code 无可见输出时触发 5 分钟首响应超时
-- relay-cli 使用 Undici 并将响应头与流 body 超时设为 16 分钟；CLI 总执行上限保持 15 分钟
-- 流客户端断开时自动终止对应 CLI 子进程并回滚本次项目改动，避免机器人已报错但后台继续执行
-- 标准化本地启动流程：`dev:up` 与 `dev:relay` 自动注入 relay 认证凭证，避免单独重建服务后出现未授权请求
+- 新增 `jira.project.publish`，支持独立 Jira 项目、报告和 GitHub fork 提交
+- 支持授权后上传脱敏测试报告 ZIP 并发布 Jira 评论
+- WebUI 支持本地目录安装 Bot Skill，强化测试准入、隔离和敏感信息保护
+- 优化 CLI 长任务心跳、超时、取消回滚及本地启动凭据注入
 
 ## 2026-07-16
 
