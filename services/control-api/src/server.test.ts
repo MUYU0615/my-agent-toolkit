@@ -26,6 +26,26 @@ describe("control-api server", () => {
     process.env.APP_BUILD_TIME = previousBuildTime;
   });
 
+  it("renders a responsive Jira automation flow settings page", async () => {
+    const server = createControlApiServer({
+      dataServiceUrl: "http://data-service",
+      logServiceUrl: "http://log-service",
+      fetch: async () => new Response("not used", { status: 500 }),
+    });
+    const response = await server.fetch(new Request("http://localhost/automation/jira/settings"));
+    const html = await response.text();
+    expect(response.status).toBe(200);
+    expect(html).toContain("Jira 自动化测试");
+    expect(html).toContain("运行环境（.env）");
+    expect(html).toContain("GITHUB_TOKEN");
+    expect(html).toContain("准入通过后自动创建并执行自动化项目");
+    expect(html).toContain("完成后提交并 Push 当前 Jira 项目");
+    expect(html).toContain("jira-flow-skill-files");
+    expect(html).toContain("/automation/jira/settings/skills/upload");
+    expect(html).toContain("overflow-x:hidden");
+    expect(html).toContain("@media(max-width:640px)");
+  });
+
   it("serves the setup page", async () => {
     const server = createControlApiServer({
       dataServiceUrl: "http://data-service",

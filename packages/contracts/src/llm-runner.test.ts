@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseChatRequest } from "./llm-runner.js";
+import { parseChatRequest, parseSystemRunRequest } from "./llm-runner.js";
 
 describe("parseChatRequest", () => {
   it("accepts a minimal valid chat request", () => {
@@ -28,6 +28,23 @@ describe("parseChatRequest", () => {
       runtime: "claude-code",
       prompt: "hello",
     }).runtime).toBe("claude-code");
+  });
+
+  it("parses a system Flow run without Bot or user fields", () => {
+    expect(parseSystemRunRequest({
+      flow_id: "jira-automation",
+      run_id: "jira-HIM-22187-abc123",
+      runtime: "claude-code",
+      prompt: "run the isolated Jira task",
+      runtime_env: { EASEMOB_JIRA_USERNAME: "jira-service" },
+      auto_execute: true,
+    })).toMatchObject({
+      flow_id: "jira-automation",
+      run_id: "jira-HIM-22187-abc123",
+      runtime: "claude-code",
+      runtime_env: { EASEMOB_JIRA_USERNAME: "jira-service" },
+      auto_execute: true,
+    });
   });
 
   it("rejects missing required fields", () => {

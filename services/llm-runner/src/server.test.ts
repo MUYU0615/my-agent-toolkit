@@ -100,6 +100,40 @@ describe("llm-runner server", () => {
     expect(body.run_id).toMatch(/^run_/);
   });
 
+  it("runs a system Flow without looking up or requiring a normal Bot", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const server = createLlmRunnerServer({
+      enabled_runtimes: ["kiro"],
+      kiro: {
+        command: process.execPath,
+        args: ["-e", "process.stdout.write(process.env.EASEMOB_JIRA_USERNAME || 'missing')"],
+        timeout_ms: 1_000,
+      },
+      system_runner_token: "system-token",
+      fetch,
+    });
+
+    const response = await server.fetch(new Request("http://localhost/v1/system-runs", {
+      method: "POST",
+      headers: { authorization: "Bearer system-token" },
+      body: JSON.stringify({
+        flow_id: "jira-automation",
+        run_id: "jira-HIM-22187-abc123",
+        runtime: "kiro",
+        prompt: "create the isolated Jira project",
+        runtime_env: { EASEMOB_JIRA_USERNAME: "jira-service" },
+        auto_execute: true,
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      runner_session_id: "system:jira-automation:jira-HIM-22187-abc123",
+      output: "jira-service",
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("forwards a Kiro cancellation only for the matching runtime session", async () => {
     const requests: Request[] = [];
     const server = createLlmRunnerServer({

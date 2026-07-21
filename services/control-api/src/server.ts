@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 export interface ControlApiConfig {
   dataServiceUrl: string;
   logServiceUrl: string;
   botHostUrl?: string;
   capabilityRunnerUrl?: string;
+  jiraAutomationSettingsFile?: string;
   fetch: typeof fetch;
 }
 
@@ -30,6 +33,16 @@ export function createControlApiServer(config: ControlApiConfig): ControlApiServ
 
       if (request.method === "GET" && url.pathname === "/agent-lattice") {
         return handleAgentLatticeWorkbenchPage(config);
+      }
+
+      if (request.method === "GET" && url.pathname === "/automation/jira/settings") {
+        return handleJiraAutomationSettingsPage(config, url);
+      }
+      if (request.method === "POST" && url.pathname === "/automation/jira/settings") {
+        return handleJiraAutomationSettingsSave(request, config);
+      }
+      if (request.method === "POST" && url.pathname === "/automation/jira/settings/skills/upload") {
+        return handleJiraAutomationSkillUpload(request, config);
       }
 
       const agentLatticeWorkPageMatch = url.pathname.match(/^\/agent-lattice\/works\/([^/]+)$/);
@@ -752,6 +765,156 @@ async function handleAgentLatticeWorkbenchPage(config: ControlApiConfig): Promis
     works,
   }));
 }
+
+interface JiraAutomationSettings {
+  enabled: boolean;
+  repository_url: string;
+  repository_branch: string;
+  runtime: "claude-code" | "kiro";
+  notify_reporter: boolean;
+  auto_push: boolean;
+  auto_execute: boolean;
+  auto_publish: boolean;
+  skills: string[];
+  github_token: string;
+  runtime_env: string;
+}
+
+const DEFAULT_JIRA_AUTOMATION_SETTINGS: JiraAutomationSettings = {
+  enabled: false,
+  repository_url: "",
+  repository_branch: "main",
+  runtime: "claude-code",
+  notify_reporter: true,
+  auto_push: false,
+  auto_execute: false,
+  auto_publish: false,
+  skills: [],
+  github_token: "",
+  runtime_env: "",
+};
+
+async function handleJiraAutomationSettingsPage(config: ControlApiConfig, url: URL): Promise<Response> {
+  const [settings, localSkills] = await Promise.all([readJiraAutomationSettings(config), listJiraAutomationSkills(config)]);
+  const saved = url.searchParams.get("saved") === "1";
+  return htmlResponse(renderJiraAutomationSettingsPage(settings, saved, undefined, localSkills));
+}
+
+async function handleJiraAutomationSettingsSave(request: Request, config: ControlApiConfig): Promise<Response> {
+  const formData = await request.formData();
+  const form = Object.fromEntries([...formData.entries()].map(([key, value]) => [key, String(value)]));
+  const repositoryUrl = (form.repository_url ?? "").trim();
+  const repositoryBranch = (form.repository_branch ?? "main").trim();
+  if (repositoryUrl && !/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/.test(repositoryUrl)) {
+    return htmlResponseWithStatus(renderJiraAutomationSettingsPage(await readJiraAutomationSettings(config), false, "仓库地址必须是 HTTPS GitHub 地址。"), 400);
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(repositoryBranch)) {
+    return htmlResponseWithStatus(renderJiraAutomationSettingsPage(await readJiraAutomationSettings(config), false, "分支名称不合法。"), 400);
+  }
+  const settings: JiraAutomationSettings = {
+    enabled: form.enabled === "true",
+    repository_url: repositoryUrl,
+    repository_branch: repositoryBranch,
+    runtime: form.runtime === "kiro" ? "kiro" : "claude-code",
+    notify_reporter: form.notify_reporter === "true",
+    auto_push: false,
+    auto_execute: form.auto_execute === "true",
+    auto_publish: form.auto_publish === "true",
+    skills: formData.getAll("skills").map(String).filter((name) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)),
+    github_token: form.github_token ?? "",
+    runtime_env: form.runtime_env ?? "",
+  };
+  await writeJiraAutomationSettings(config, settings);
+  return redirectResponse("/automation/jira/settings?saved=1");
+}
+
+async function readJiraAutomationSettings(config: ControlApiConfig): Promise<JiraAutomationSettings> {
+  const file = config.jiraAutomationSettingsFile;
+  if (!file) return { ...DEFAULT_JIRA_AUTOMATION_SETTINGS };
+  try {
+    const parsed = JSON.parse(await readFile(file, "utf8")) as Partial<JiraAutomationSettings>;
+    return {
+      enabled: parsed.enabled === true,
+      repository_url: typeof parsed.repository_url === "string" ? parsed.repository_url : "",
+      repository_branch: typeof parsed.repository_branch === "string" && parsed.repository_branch ? parsed.repository_branch : "main",
+      runtime: parsed.runtime === "kiro" ? "kiro" : "claude-code",
+      notify_reporter: parsed.notify_reporter !== false,
+      auto_push: false,
+      auto_execute: parsed.auto_execute === true,
+      auto_publish: parsed.auto_publish === true,
+      skills: Array.isArray(parsed.skills) ? parsed.skills.filter((name): name is string => typeof name === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name)) : [],
+      github_token: typeof parsed.github_token === "string" ? parsed.github_token : "",
+      runtime_env: typeof parsed.runtime_env === "string" ? parsed.runtime_env : "",
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...DEFAULT_JIRA_AUTOMATION_SETTINGS };
+    throw error;
+  }
+}
+
+async function listJiraAutomationSkills(config: ControlApiConfig): Promise<string[]> {
+  const file = config.jiraAutomationSettingsFile;
+  if (!file) return [];
+  try {
+    return (await readdir(join(dirname(file), "skills"), { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(entry.name))
+      .map((entry) => entry.name).sort();
+  } catch { return []; }
+}
+
+async function handleJiraAutomationSkillUpload(request: Request, config: ControlApiConfig): Promise<Response> {
+  if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) return jsonResponse({ error: "local skill upload requires multipart/form-data" }, 400);
+  const file = config.jiraAutomationSettingsFile;
+  if (!file) return jsonResponse({ error: "jira automation settings storage is not configured" }, 503);
+  const form = await request.formData();
+  const files = form.getAll("files");
+  const paths = form.getAll("paths");
+  if (files.length === 0 || files.length > MAX_LOCAL_SKILL_FILES || paths.length !== files.length) return jsonResponse({ error: "select one local skill directory" }, 400);
+  const name = localSkillNameFromPaths(paths);
+  const root = join(dirname(file), "skills");
+  const staging = join(root, `.${name}.upload`);
+  await rm(staging, { recursive: true, force: true });
+  await mkdir(staging, { recursive: true, mode: 0o700 });
+  let totalBytes = 0;
+  for (let index = 0; index < files.length; index += 1) {
+    const uploaded = files[index]; const rawPath = paths[index];
+    if (!isUploadedFile(uploaded) || typeof rawPath !== "string") return jsonResponse({ error: "invalid local skill file" }, 400);
+    const relativePath = normalizeLocalSkillPath(rawPath, name);
+    const bytes = Buffer.from(await uploaded.arrayBuffer()); totalBytes += bytes.length;
+    if (totalBytes > MAX_LOCAL_SKILL_BYTES) return jsonResponse({ error: "local skill package exceeds the allowed size" }, 400);
+    const destination = join(staging, relativePath);
+    await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+    await writeFile(destination, bytes, { mode: isSkillExecutable(relativePath) ? 0o700 : 0o600 });
+  }
+  try { await readFile(join(staging, "SKILL.md"), "utf8"); } catch { return jsonResponse({ error: "selected directory must contain SKILL.md" }, 400); }
+  const destination = join(root, name);
+  await rm(destination, { recursive: true, force: true });
+  await rename(staging, destination);
+  const settings = await readJiraAutomationSettings(config);
+  if (!settings.skills.includes(name)) { settings.skills.push(name); await writeJiraAutomationSettings(config, settings); }
+  return redirectResponse("/automation/jira/settings?saved=1");
+}
+
+function isSkillExecutable(relativePath: string): boolean {
+  return relativePath === "scripts/run.sh" || (relativePath.startsWith("scripts/") && relativePath.endsWith(".sh"));
+}
+
+function normalizeLocalSkillPath(rawPath: string, directoryName: string): string {
+  const normalized = rawPath.trim().replaceAll("\\", "/");
+  const parts = normalized.split("/");
+  if (parts.shift() !== directoryName || parts.length === 0 || parts.some((part) => !part || part === "." || part === "..")) throw new Error("invalid local skill path");
+  return parts.join("/");
+}
+
+async function writeJiraAutomationSettings(config: ControlApiConfig, settings: JiraAutomationSettings): Promise<void> {
+  const file = config.jiraAutomationSettingsFile;
+  if (!file) throw new Error("jira automation settings storage is not configured");
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const temporary = `${file}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  await rename(temporary, file);
+}
+
 
 async function handleAgentLatticeWorkPage(
   config: ControlApiConfig,
@@ -1983,8 +2146,12 @@ function readStringArrayPayload(
 }
 
 function htmlResponse(body: string): Response {
+  return htmlResponseWithStatus(body, 200);
+}
+
+function htmlResponseWithStatus(body: string, status: number): Response {
   return new Response(body, {
-    status: 200,
+    status,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store, max-age=0",
@@ -2326,6 +2493,31 @@ function pageShell(title: string, body: string): string {
 </html>`;
 }
 
+function renderJiraAutomationSettingsPage(
+  settings: JiraAutomationSettings,
+  saved: boolean,
+  error?: string,
+  localSkills: string[] = [],
+): string {
+  const checked = (value: boolean) => value ? " checked" : "";
+  const selectedSkills = new Set(settings.skills);
+  const skillChoices = localSkills.length > 0
+    ? localSkills.map((name) => `<label class="skill-choice"><input type="checkbox" name="skills" value="${escapeHtmlValue(name)}"${selectedSkills.has(name) ? " checked" : ""}><span><strong>${escapeHtmlValue(name)}</strong><small>本地上传到此 Jira Automation Flow 的 Skill</small></span></label>`).join("")
+    : `<div class="notice">尚未添加本地 Skill。请选择一个包含 SKILL.md 的目录上传。</div>`;
+  return `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Jira 自动化 Flow 设置</title>
+<style>
+:root{--ink:#17202e;--muted:#687588;--line:#dce3ea;--canvas:#f4f7f8;--panel:#fff;--accent:#176b5c;--accent-soft:#e9f6f1;--warn:#976000}*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;overflow-x:hidden}.shell{width:min(100% - 32px,1040px);margin:0 auto;padding:28px 0 42px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:18px}.crumb{color:var(--accent);text-decoration:none;font-weight:700}.eyebrow{margin:14px 0 4px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}h1{margin:0;font-size:30px;letter-spacing:-.04em}h2{margin:0;font-size:17px}.lead{max-width:690px;margin:9px 0 0;color:var(--muted)}.status{display:inline-flex;align-items:center;gap:7px;flex:none;padding:8px 11px;border:1px solid var(--line);border-radius:999px;background:#fff;font-size:13px;font-weight:750}.dot{width:8px;height:8px;border-radius:999px;background:${settings.enabled ? "#15936a" : "#9aa6b4"}}form{display:grid;gap:16px}.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:20px;box-shadow:0 8px 30px rgba(28,45,66,.045)}.section-head{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:16px}.section-head p,.hint{margin:5px 0 0;color:var(--muted);font-size:13px}.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.full{grid-column:1/-1}label{display:grid;gap:7px;color:#3e4a59;font-size:13px;font-weight:700}input,select,textarea{width:100%;min-width:0;border:1px solid #cfd9e2;border-radius:9px;background:#fff;color:var(--ink);font:inherit}input,select{height:42px;padding:0 11px}textarea{min-height:190px;padding:11px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;line-height:1.55}input:focus,select:focus,textarea:focus{outline:3px solid rgba(23,107,92,.16);border-color:var(--accent)}.switch{display:flex;gap:10px;align-items:center;min-height:42px;border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:#fbfcfd}.switch input{width:18px;height:18px;accent-color:var(--accent)}.switch strong{display:block}.switch small{display:block;color:var(--muted);font-weight:500}.skill-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.skill-choice{display:flex;gap:9px;align-items:flex-start;min-width:0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfcfd;color:var(--ink)}.skill-choice input{width:18px;height:18px;min-height:18px;flex:none;accent-color:var(--accent)}.skill-choice strong{display:block;overflow-wrap:anywhere}.skill-choice small{display:block;margin-top:2px;color:var(--muted);font-weight:500;overflow-wrap:anywhere}.upload-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:12px}.upload-row input{min-width:0;max-width:100%;height:auto;padding:7px;background:#fff}.notice{padding:12px 14px;border-radius:10px;background:#fff8e9;color:#74521a;font-size:13px}.saved{padding:12px 14px;border-radius:10px;background:var(--accent-soft);color:#145846;font-weight:700}.error{padding:12px 14px;border-radius:10px;background:#fff0ed;color:#a3382e;font-weight:700}.actions{display:flex;justify-content:flex-end;gap:10px;align-items:center}.button{min-height:42px;border:0;border-radius:9px;padding:0 16px;background:var(--accent);color:#fff;font:inherit;font-weight:800;cursor:pointer}.button:hover{background:#105247}.secondary{color:var(--ink);background:#fff;border:1px solid var(--line);text-decoration:none;display:inline-flex;align-items:center;padding:0 14px;border-radius:9px;min-height:42px;font-weight:700}@media(max-width:640px){.shell{width:min(100% - 20px,1040px);padding-top:18px}.top{flex-direction:column}h1{font-size:26px}.fields,.skill-options{grid-template-columns:1fr}.card{padding:16px}.section-head{flex-direction:column}.upload-row{align-items:stretch}.upload-row>*{width:100%}.actions{justify-content:stretch}.actions>*{flex:1;text-align:center;justify-content:center}}
+</style></head><body><main class="shell"><div class="top"><div><a class="crumb" href="/">← Bot 控制台</a><p class="eyebrow">Automation Flow</p><h1>Jira 自动化测试</h1><p class="lead">Webhook 触发系统 QA 执行器。它不使用任何用户 Bot、对话上下文或用户环境变量。</p></div><span class="status"><i class="dot"></i>${settings.enabled ? "已启用" : "未启用"}</span></div>
+${saved ? '<div class="saved">设置已保存；新 Jira 事件会使用这份配置。</div>' : ""}${error ? `<div class="error">${escapeHtmlValue(error)}</div>` : ""}
+<form method="post" action="/automation/jira/settings"><section class="card"><div class="section-head"><div><h2>执行开关与仓库</h2><p>一次 Jira Run 只允许修改仓库内同名的 Jira 目录。</p></div></div><div class="fields"><label class="full"><span class="switch"><input name="enabled" value="true" type="checkbox"${checked(settings.enabled)}><span><strong>启用 Jira 自动化 Flow</strong><small>关闭时仍接收 Webhook，但不会启动 CLI。</small></span></span></label><label class="full">GitHub 仓库 HTTPS 地址<input name="repository_url" type="url" value="${escapeHtmlValue(settings.repository_url)}" placeholder="https://github.com/org/qa-auto-test.git"></label><label>基线分支<input name="repository_branch" value="${escapeHtmlValue(settings.repository_branch)}" maxlength="128" required></label><label>系统 Runtime<select name="runtime"><option value="claude-code"${settings.runtime === "claude-code" ? " selected" : ""}>Claude Code</option><option value="kiro"${settings.runtime === "kiro" ? " selected" : ""}>Kiro CLI</option></select></label></div></section>
+<section class="card"><div class="section-head"><div><h2>执行 Skills</h2><p>从本机选择 Skill 文件夹上传；上传后勾选本 Flow 本次要注入的项。</p></div></div><div class="skill-options">${skillChoices}</div><div class="upload-row"><input id="jira-flow-skill-files" type="file" webkitdirectory directory multiple><button class="secondary" id="jira-flow-skill-upload" type="button">添加本地 Skill 文件夹</button></div></section>
+<section class="card"><div class="section-head"><div><h2>执行策略</h2><p>自动执行和发布都是管理员对当前 Flow 的预授权；普通 Bot 的人工确认与 GitHub 绑定不受影响。</p></div></div><div class="fields"><label class="full"><span class="switch"><input name="auto_execute" value="true" type="checkbox"${checked(settings.auto_execute)}><span><strong>准入通过后自动创建并执行自动化项目</strong><small>关闭：只生成用例草稿。开启：通过后生成代码、校验环境并运行真实测试。</small></span></span></label><label class="full"><span class="switch"><input name="auto_publish" value="true" type="checkbox"${checked(settings.auto_publish)}><span><strong>完成后提交并 Push 当前 Jira 项目</strong><small>仅提交 <code>${"<JIRA-KEY>"}/</code> 和其中报告；固定推送到 <code>bot/&lt;JIRA-KEY&gt;</code>。</small></span></span></label><label class="full"><span class="switch"><input name="notify_reporter" value="true" type="checkbox"${checked(settings.notify_reporter)}><span><strong>完成后通知 Jira 报告人</strong><small>通知通道会在 Runner 结果落库后执行。</small></span></span></label></div><div class="notice">CLI 无权自行提交或 Push；发布由 Runner 在真实报告存在后执行。Jira 评论、PR 创建仍固定关闭。</div></section>
+<section class="card"><div class="section-head"><div><h2>运行环境（.env）</h2><p>管理员在这里填写当前 Flow 的测试环境变量；每个 Jira Run 会生成私有的 <code>repository/.env</code>。</p></div></div><label>环境变量<textarea name="runtime_env" spellcheck="false" placeholder="API_BASE_URL=https://test.example.com&#10;ORG_NAME=your_org&#10;APP_KEY=your_app_key&#10;TEST_USERNAME=test_user&#10;TEST_PASSWORD=test_password">${escapeHtmlValue(settings.runtime_env)}</textarea></label><p class="hint">可直接填写 Base URL、APP_KEY、账号、Token 等。该文件不会提交 Git；代码需要从 <code>.env</code> 读取这些变量。</p></section>
+<section class="card"><div class="section-head"><div><h2>GitHub 凭证</h2><p>仅用于系统 clone、fetch 和后续 push，不注入 LLM 的运行环境。</p></div></div><div class="fields"><label class="full">GITHUB_TOKEN<input name="github_token" value="${escapeHtmlValue(settings.github_token)}" autocomplete="off" spellcheck="false"></label></div><p class="hint">值保存在 AgentLattice 的 Flow 配置卷中，不写入 Git 或日志。</p></section>
+<div class="actions"><a class="secondary" href="/">取消</a><button class="button" type="submit">保存 Flow 设置</button></div></form><script>document.getElementById("jira-flow-skill-upload")?.addEventListener("click",async()=>{const input=document.getElementById("jira-flow-skill-files");if(!(input instanceof HTMLInputElement)||input.files.length===0){alert("请选择包含 SKILL.md 的 Skill 文件夹。");return}const data=new FormData;for(const file of input.files){data.append("files",file,file.name);data.append("paths",file.webkitRelativePath||file.name)}const response=await fetch("/automation/jira/settings/skills/upload",{method:"POST",body:data});if(response.redirected){location.assign(response.url);return}alert(await response.text())});</script></main></body></html>`;
+}
+
 interface AgentLatticeWorkbenchView {
   users: Array<Record<string, unknown>>;
   agents: Array<Record<string, unknown>>;
@@ -2361,7 +2553,7 @@ function renderAgentLatticeWorkbenchPage(view: AgentLatticeWorkbenchView): strin
   }).join("");
 
   return pageShell("AgentLattice", [
-    `<section class="card stack"><div class="actions"><a class="btn" href="/">Channel 管理</a></div><h1>AgentLattice</h1><p class="muted">每位用户拥有一个 Personal Agent；任务按 Work 与 Stage 隔离执行。当前为管理员导入用户的 MVP。</p></section>`,
+    `<section class="card stack"><div class="actions"><a class="btn" href="/">Channel 管理</a><a class="btn" href="/automation/jira/settings">Jira 自动化 Flow</a></div><h1>AgentLattice</h1><p class="muted">每位用户拥有一个 Personal Agent；任务按 Work 与 Stage 隔离执行。当前为管理员导入用户的 MVP。</p></section>`,
     `<section class="grid"><div class="card stack"><span class="muted">用户</span><span class="metric">${view.users.length}</span></div><div class="card stack"><span class="muted">Personal Agents</span><span class="metric">${view.agents.length}</span></div><div class="card stack"><span class="muted">进行中的 Work</span><span class="metric">${activeWorks}</span></div></section>`,
     `<section class="card stack"><h2>人员与 Agent</h2><div class="muted">按步骤创建并绑定，MVP 强制一位用户对应一个 Personal Agent。</div><div class="grid">`,
     `<form class="stack" method="post" action="/agent-lattice/users/create"><h3>1. 添加用户</h3><input type="hidden" name="actor_id" value="webui"><label class="stack"><span class="muted">姓名</span><input name="display_name" required maxlength="200"></label><label class="stack"><span class="muted">企业微信 User ID</span><input name="wecom_user_id" required maxlength="128"></label><label class="stack"><span class="muted">平台 User ID（可选）</span><input name="user_id" maxlength="128"></label><button class="btn primary" type="submit">添加用户</button></form>`,
@@ -3083,6 +3275,7 @@ function renderChannelWorkbenchPage(): string {
       </div>
       <div class="tools">
         <a href="/agent-lattice">AgentLattice</a>
+        <a href="/automation/jira/settings">Jira 自动化</a>
         <a href="/admin/global-documents">全局配置</a>
         <a href="/admin/roles">角色管理</a>
         <span class="toast" id="toast">等待操作。</span>

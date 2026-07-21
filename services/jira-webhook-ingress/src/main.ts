@@ -8,6 +8,7 @@ const app = createJiraWebhookIngressServer({
     process.env.JIRA_WEBHOOK_EVENT_STORE_FILE ?? "/data/jira-events.json",
   ),
   sharedSecret: process.env.JIRA_WEBHOOK_SHARED_SECRET,
+  internalToken: process.env.JIRA_AUTOMATION_INTERNAL_TOKEN,
 });
 
 const server = createServer(async (req, res) => {

@@ -8,6 +8,9 @@ const streamEnabled = process.env.KIRO_RELAY_STREAM === "true";
 const botId = process.env.KIRO_RELAY_BOT_ID?.trim();
 const userId = process.env.KIRO_RELAY_USER_ID?.trim();
 const conversationId = process.env.KIRO_RELAY_CONVERSATION_ID?.trim();
+const systemFlow = process.env.KIRO_RELAY_SYSTEM_FLOW === "true";
+const flowId = process.env.KIRO_RELAY_FLOW_ID?.trim();
+const flowRunId = process.env.KIRO_RELAY_RUN_ID?.trim();
 const relayAuthToken = process.env.KIRO_RELAY_AUTH_TOKEN?.trim();
 const runtimeEnv = collectRuntimeEnv(process.env);
 const provider = process.env.MY_AGENT_CLI_PROVIDER === "claude-code" ? "claude-code" : "kiro";
@@ -29,14 +32,13 @@ for await (const chunk of process.stdin) {
 }
 
 try {
-  if (!botId) {
-    throw new Error("KIRO_RELAY_BOT_ID is required");
-  }
-  if (!userId) {
-    throw new Error("KIRO_RELAY_USER_ID is required");
-  }
-  if (!conversationId) {
-    throw new Error("KIRO_RELAY_CONVERSATION_ID is required");
+  if (systemFlow) {
+    if (!flowId) throw new Error("KIRO_RELAY_FLOW_ID is required for a system Flow");
+    if (!flowRunId) throw new Error("KIRO_RELAY_RUN_ID is required for a system Flow");
+  } else {
+    if (!botId) throw new Error("KIRO_RELAY_BOT_ID is required");
+    if (!userId) throw new Error("KIRO_RELAY_USER_ID is required");
+    if (!conversationId) throw new Error("KIRO_RELAY_CONVERSATION_ID is required");
   }
   if (Object.keys(runtimeEnv).length > 0 && !relayAuthToken) {
     throw new Error("KIRO_RELAY_AUTH_TOKEN is required for credential forwarding");
@@ -52,9 +54,7 @@ try {
     method: "POST",
     headers: relayHeaders(),
     body: JSON.stringify({
-      bot_id: botId,
-      user_id: userId,
-      conversation_id: conversationId,
+      ...relayIdentity(),
       provider,
       prompt: Buffer.concat(chunks).toString(),
       args: forwardedArgs,
@@ -98,9 +98,7 @@ async function runStream(prompt) {
     method: "POST",
     headers: relayHeaders(),
     body: JSON.stringify({
-      bot_id: botId,
-      user_id: userId,
-      conversation_id: conversationId,
+      ...relayIdentity(),
       provider,
       prompt,
       args: forwardedArgs,
@@ -137,6 +135,12 @@ async function runStream(prompt) {
     throw new Error("cli relay stream returned invalid session id");
   }
   writeRuntimeMetadata(providerSessionId);
+}
+
+function relayIdentity() {
+  return systemFlow
+    ? { system_flow: true, flow_id: flowId, run_id: flowRunId }
+    : { bot_id: botId, user_id: userId, conversation_id: conversationId };
 }
 
 function handleStreamLine(line, providerSessionId) {
@@ -209,6 +213,12 @@ function collectRuntimeEnv(env) {
   }
   const userRuntimeKeys = parseUserRuntimeEnvKeys(env.MY_AGENT_USER_RUNTIME_ENV_KEYS_B64);
   for (const key of userRuntimeKeys) {
+    if (typeof env[key] === "string" && env[key].length > 0) {
+      result[key] = env[key];
+    }
+  }
+  const systemRuntimeKeys = parseUserRuntimeEnvKeys(env.MY_AGENT_SYSTEM_RUNTIME_ENV_KEYS_B64);
+  for (const key of systemRuntimeKeys) {
     if (typeof env[key] === "string" && env[key].length > 0) {
       result[key] = env[key];
     }

@@ -578,6 +578,10 @@ function runKeyFromPayload(payload) {
   if (!payload || typeof payload !== "object") {
     throw new RelayRequestError("request body is required");
   }
+  if (payload.system_flow === true) {
+    const { flowId, runId } = requireSystemFlowIdentity(payload);
+    return `flow:${flowId}:${runId}`;
+  }
   if (
     typeof payload.bot_id !== "string"
     || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.bot_id)
@@ -647,7 +651,7 @@ function prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome) {
   if (Object.keys(result).length > 0 && !relayAuthToken) {
     throw new RelayRequestError("relay auth token is required for credential forwarding");
   }
-  result.MY_AGENT_RUNTIME = "wecom";
+  result.MY_AGENT_RUNTIME = payload.system_flow === true ? "system-flow" : "wecom";
   result.KIRO_HOME = kiroHome;
   result.MY_AGENT_GIT_GUARD_PATH = createGitCommandGuard(botRoot);
   const projectDotenv = result.MY_AGENT_PROJECT_DOTENV_B64;
@@ -664,18 +668,24 @@ function prepareRuntimeEnv(payload, botRoot, userRoot, workspaceDir, kiroHome) {
     if (!result.EASEMOB_JIRA_USERNAME || !result.EASEMOB_JIRA_PASSWORD) {
       throw new RelayRequestError("Jira username and password must be provided together");
     }
-    const userHash = hashUserId(payload.user_id);
+    const userHash = payload.system_flow === true
+      ? createHash("sha256").update(requireSystemFlowIdentity(payload).flowId, "utf8").digest("hex").slice(0, 32)
+      : hashUserId(payload.user_id);
     const credentialVersion = result.MY_AGENT_JIRA_CREDENTIAL_VERSION ?? "legacy";
     const credentialHash = createHash("sha256")
       .update(credentialVersion, "utf8")
       .digest("hex")
       .slice(0, 16);
     delete result.MY_AGENT_JIRA_CREDENTIAL_VERSION;
-    const jiraRoot = join(botRoot, ".runtime", "users", userHash, "jira");
+    const jiraRoot = payload.system_flow === true
+      ? join(botRoot, ".runtime", "jira")
+      : join(botRoot, ".runtime", "users", userHash, "jira");
     const jiraDirectory = join(jiraRoot, credentialHash);
     ensurePrivateDirectory(join(botRoot, ".runtime"));
-    ensurePrivateDirectory(join(botRoot, ".runtime", "users"));
-    ensurePrivateDirectory(join(botRoot, ".runtime", "users", userHash));
+    if (payload.system_flow !== true) {
+      ensurePrivateDirectory(join(botRoot, ".runtime", "users"));
+      ensurePrivateDirectory(join(botRoot, ".runtime", "users", userHash));
+    }
     ensurePrivateDirectory(jiraRoot);
     ensurePrivateDirectory(jiraDirectory);
     result.EASEMOB_JIRA_COOKIE_FILE = join(jiraDirectory, "cookies.json");
@@ -897,6 +907,7 @@ function resolveBotWorkspace(botId) {
 }
 
 function resolveRuntimeWorkspace(payload) {
+  if (payload?.system_flow === true) return resolveSystemFlowWorkspace(payload);
   const botRoot = resolveBotWorkspace(payload.bot_id);
   if (
     typeof payload.user_id !== "string"
@@ -930,6 +941,34 @@ function resolveRuntimeWorkspace(payload) {
     workspaceDir: realpathSync(workspaceDir),
     kiroHome: realpathSync(join(botRoot, ".kiro")),
   };
+}
+
+function resolveSystemFlowWorkspace(payload) {
+  const { flowId, runId } = requireSystemFlowIdentity(payload);
+  const flowsRoot = join(workspaceRoot, "system-flows");
+  const flowRoot = join(flowsRoot, flowId);
+  const runsRoot = join(flowRoot, "runs");
+  const workspaceDir = join(runsRoot, runId);
+  for (const directory of [flowsRoot, flowRoot, runsRoot, workspaceDir]) ensureSafeDirectory(directory);
+  ensureSafeDirectory(join(flowRoot, ".kiro"));
+  ensureSafeDirectory(join(flowRoot, ".kiro", "agents"));
+  ensureSafeDirectory(join(flowRoot, ".kiro", "skills"));
+  ensureSafeDirectory(join(flowRoot, "projects"));
+  ensureSafeDirectory(join(workspaceDir, "artifacts"));
+  return {
+    botRoot: realpathSync(flowRoot),
+    userRoot: realpathSync(flowRoot),
+    workspaceDir: realpathSync(workspaceDir),
+    kiroHome: realpathSync(join(flowRoot, ".kiro")),
+  };
+}
+
+function requireSystemFlowIdentity(payload) {
+  const flowId = typeof payload.flow_id === "string" ? payload.flow_id.trim() : "";
+  const runId = typeof payload.run_id === "string" ? payload.run_id.trim() : "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(flowId)) throw new RelayRequestError("flow_id is invalid");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(runId)) throw new RelayRequestError("run_id is invalid");
+  return { flowId, runId };
 }
 
 function hashUserId(userId) {

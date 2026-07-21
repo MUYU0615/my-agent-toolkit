@@ -1,4 +1,4 @@
-import { parseChatRequest, type ChatResponse } from "@my-agent-toolkit/contracts";
+import { parseChatRequest, parseSystemRunRequest, type ChatResponse } from "@my-agent-toolkit/contracts";
 import { loadRunnerConfig, type RunnerConfig } from "./config.js";
 import {
   callMcpTool,
@@ -47,6 +47,10 @@ export function createLlmRunnerServer(
         return handleChat(request, config, sessionLocks);
       }
 
+      if (request.method === "POST" && url.pathname === "/v1/system-runs") {
+        return handleSystemRun(request, config);
+      }
+
       if (request.method === "POST" && url.pathname === "/v1/chat/stream") {
         return handleChatStream(request, config, sessionLocks);
       }
@@ -58,6 +62,68 @@ export function createLlmRunnerServer(
       return jsonResponse({ error: "not found" }, 404);
     },
   };
+}
+
+async function handleSystemRun(request: Request, config: RunnerConfig): Promise<Response> {
+  try {
+    if (!hasSystemRunnerAuthorization(request, config.system_runner_token)) {
+      return jsonResponse({ error: "unauthorized" }, 401);
+    }
+    const systemRun = parseSystemRunRequest(await request.json());
+    if (!config.enabled_runtimes.includes(systemRun.runtime)) {
+      throw new UnavailableRuntimeError("runtime is not available yet");
+    }
+    if (systemRun.runtime === "mock") {
+      return jsonResponse({
+        run_id: `run_${crypto.randomUUID()}`,
+        runner_session_id: `system:${systemRun.flow_id}:${systemRun.run_id}`,
+        output: `mock: ${systemRun.prompt}`,
+      });
+    }
+    const cliConfig = cliRuntimeConfig(config, systemRun.runtime);
+    if (!cliConfig) throw new UnavailableRuntimeError("runtime is not available yet");
+    // Adapt only at the process boundary. No Bot lookup, Soul, rules, memory,
+    // user environment, MCP manifest, or chat session is involved in this route.
+    const runtimeRequest = {
+      bot_id: `flow-${systemRun.flow_id}`,
+      user_id: "system",
+      conversation_id: systemRun.run_id,
+      runtime: systemRun.runtime,
+      prompt: systemRun.prompt,
+      ...(systemRun.trace_id ? { trace_id: systemRun.trace_id } : {}),
+    } as const;
+    const result = await runCliRuntime({
+      ...cliConfig,
+      env: {
+        ...(cliConfig.env ?? {}),
+        ...(systemRun.runtime_env ?? {}),
+        KIRO_RELAY_SYSTEM_FLOW: "true",
+        KIRO_RELAY_FLOW_ID: systemRun.flow_id,
+        KIRO_RELAY_RUN_ID: systemRun.run_id,
+        KIRO_RELAY_RUNTIME: systemRun.runtime,
+        MY_AGENT_CLI_PROVIDER: systemRun.runtime,
+        ...(systemRun.auto_execute ? { MY_AGENT_SYSTEM_FLOW_AUTO_APPROVE_CASES: "1" } : {}),
+        ...(systemRun.runtime_env && Object.keys(systemRun.runtime_env).length > 0
+          ? { MY_AGENT_SYSTEM_RUNTIME_ENV_KEYS_B64: Buffer.from(JSON.stringify(Object.keys(systemRun.runtime_env)), "utf8").toString("base64") }
+          : {}),
+        ...(systemRun.trace_id ? { MY_AGENT_TRACE_ID: systemRun.trace_id } : {}),
+      },
+    }, runtimeRequest);
+    return jsonResponse({
+      run_id: `run_${crypto.randomUUID()}`,
+      runner_session_id: `system:${systemRun.flow_id}:${systemRun.run_id}`,
+      output: redactText(result.output),
+    });
+  } catch (error) {
+    if (error instanceof UnavailableRuntimeError) return jsonResponse({ error: error.message }, 501);
+    if (error instanceof RuntimeExecutionError) return jsonResponse({ error: error.message, code: error.code, ...(error.details ? { details: error.details } : {}) }, error.status);
+    return jsonResponse({ error: error instanceof Error ? error.message : "invalid system run" }, 400);
+  }
+}
+
+function hasSystemRunnerAuthorization(request: Request, expected: string | undefined): boolean {
+  const provided = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  return Boolean(expected && provided && provided === expected);
 }
 
 async function handleRuntimeCancellation(

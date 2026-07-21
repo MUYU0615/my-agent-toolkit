@@ -6,6 +6,7 @@ const MAX_PAYLOAD_BYTES = 1024 * 1024;
 export interface JiraWebhookIngressConfig {
   eventStore: JiraWebhookEventStore;
   sharedSecret?: string;
+  internalToken?: string;
   now?: () => Date;
 }
 
@@ -21,6 +22,27 @@ export function createJiraWebhookIngressServer(config: JiraWebhookIngressConfig)
       const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/health") {
         return Response.json({ service: "jira-webhook-ingress", status: "ok" });
+      }
+      if (request.method === "POST" && url.pathname === "/internal/events/lease") {
+        if (!hasValidInternalToken(request, config.internalToken)) return Response.json({ error: "unauthorized" }, { status: 401 });
+        const body = await request.json().catch(() => undefined) as { worker_id?: unknown; lease_seconds?: unknown } | undefined;
+        const workerId = typeof body?.worker_id === "string" ? body.worker_id.trim() : "";
+        const leaseSeconds = typeof body?.lease_seconds === "number" ? body.lease_seconds : 0;
+        if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workerId) || !Number.isInteger(leaseSeconds) || leaseSeconds < 30 || leaseSeconds > 3600) {
+          return Response.json({ error: "invalid lease request" }, { status: 400 });
+        }
+        const event = await config.eventStore.lease(workerId, leaseSeconds, now());
+        return event ? Response.json({ event }) : new Response(null, { status: 204 });
+      }
+      const completeMatch = url.pathname.match(/^\/internal\/events\/([^/]+)\/complete$/);
+      if (request.method === "POST" && completeMatch) {
+        if (!hasValidInternalToken(request, config.internalToken)) return Response.json({ error: "unauthorized" }, { status: 401 });
+        const body = await request.json().catch(() => undefined) as { lease_id?: unknown; status?: unknown; error?: unknown } | undefined;
+        const leaseId = typeof body?.lease_id === "string" ? body.lease_id : "";
+        const status = body?.status === "succeeded" || body?.status === "failed" ? body.status : undefined;
+        if (!leaseId || !status) return Response.json({ error: "invalid completion request" }, { status: 400 });
+        const event = await config.eventStore.complete(decodeURIComponent(completeMatch[1]), leaseId, status, now(), typeof body?.error === "string" ? body.error.slice(0, 4000) : undefined);
+        return event ? Response.json({ event }) : Response.json({ error: "lease not found" }, { status: 409 });
       }
       if (request.method !== "POST" || url.pathname !== "/webhooks/jira") {
         return Response.json({ error: "not found" }, { status: 404 });
@@ -109,10 +131,17 @@ function createEventId(
   payload: Record<string, unknown>,
   rawBody: string,
 ): string {
-  const updated = findText(payload, ["timestamp", "updated", "update_time"])
+  const updated = findText(payload, ["timestamp", "updated", "update_time", "time"])
     ?? findNestedText(payload, ["issue", "fields", "updated"])
     ?? createHash("sha256").update(rawBody, "utf8").digest("hex");
   return `jira:${issueKey}:${eventType}:${updated}`;
+}
+
+function hasValidInternalToken(request: Request, expected: string | undefined): boolean {
+  const token = expected?.trim();
+  if (!token) return false;
+  const provided = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  return Boolean(provided) && provided === token;
 }
 
 function findNestedText(payload: Record<string, unknown>, path: string[]): string | undefined {

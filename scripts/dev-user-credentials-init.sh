@@ -16,6 +16,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
     printf 'DATA_SERVICE_INTERNAL_TOKEN=%s\n' "$(openssl rand -hex 32)"
     printf 'KIRO_RELAY_AUTH_TOKEN=%s\n' "$relay_token"
     printf 'MCP_RUNNER_SECRET=%s\n' "$(openssl rand -hex 32)"
+    printf 'JIRA_AUTOMATION_INTERNAL_TOKEN=%s\n' "$(openssl rand -hex 32)"
     printf 'CREDENTIAL_BIND_PUBLIC_URL=http://localhost:8600\n'
   } >"$ENV_FILE"
   chmod 600 "$ENV_FILE"
@@ -34,6 +35,13 @@ if ! grep -Eq '^MCP_RUNNER_SECRET=.+$' "$ENV_FILE"; then
   printf 'MCP_RUNNER_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
   chmod 600 "$ENV_FILE"
   echo "Added missing MCP runner secret to local credential runtime config." >&2
+fi
+
+if ! grep -Eq '^JIRA_AUTOMATION_INTERNAL_TOKEN=.+$' "$ENV_FILE"; then
+  umask 077
+  printf 'JIRA_AUTOMATION_INTERNAL_TOKEN=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+  chmod 600 "$ENV_FILE"
+  echo "Added a Jira Automation internal service token to local credential runtime config." >&2
 fi
 
 printf '%s\n' "$ENV_FILE"

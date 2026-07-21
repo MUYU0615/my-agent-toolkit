@@ -7,6 +7,7 @@ const app = createControlApiServer({
   logServiceUrl: process.env.LOG_SERVICE_URL ?? "http://log-service:8500",
   botHostUrl: process.env.BOT_HOST_URL ?? "http://bot-api:8400",
   capabilityRunnerUrl: process.env.CAPABILITY_RUNNER_URL,
+  jiraAutomationSettingsFile: process.env.JIRA_AUTOMATION_SETTINGS_FILE ?? "/data/jira-automation/settings.json",
   fetch,
 });
 

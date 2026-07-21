@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 
 export interface JiraWebhookEvent {
@@ -7,10 +8,18 @@ export interface JiraWebhookEvent {
   event_type: string;
   received_at: string;
   payload: Record<string, unknown>;
+  status?: "pending" | "running" | "succeeded" | "failed";
+  attempt_count?: number;
+  lease_id?: string;
+  lease_expires_at?: string;
+  completed_at?: string;
+  error?: string;
 }
 
 export interface JiraWebhookEventStore {
   record(event: JiraWebhookEvent): Promise<{ duplicate: boolean; event: JiraWebhookEvent }>;
+  lease(workerId: string, leaseSeconds: number, now: Date): Promise<JiraWebhookEvent | undefined>;
+  complete(eventId: string, leaseId: string, status: "succeeded" | "failed", now: Date, error?: string): Promise<JiraWebhookEvent | undefined>;
 }
 
 export function createJsonFileJiraWebhookEventStore(filePath: string): JiraWebhookEventStore {
@@ -46,9 +55,52 @@ export function createJsonFileJiraWebhookEventStore(filePath: string): JiraWebho
           result = { duplicate: true, event: existing };
           return;
         }
-        events.set(event.event_id, event);
+        events.set(event.event_id, { ...event, status: "pending", attempt_count: 0 });
         await persist();
-        result = { duplicate: false, event };
+        result = { duplicate: false, event: events.get(event.event_id)! };
+      });
+      await serial;
+      return result;
+    },
+    async lease(workerId, leaseSeconds, now) {
+      let result: JiraWebhookEvent | undefined;
+      serial = serial.then(async () => {
+        await load();
+        const current = [...events.values()].find((event) => event.status === "pending"
+          || (event.status === "running" && Date.parse(event.lease_expires_at ?? "") <= now.getTime()));
+        if (!current) return;
+        const leased: JiraWebhookEvent = {
+          ...current,
+          status: "running",
+          attempt_count: (current.attempt_count ?? 0) + 1,
+          lease_id: `${workerId}:${randomUUID()}`,
+          lease_expires_at: new Date(now.getTime() + leaseSeconds * 1_000).toISOString(),
+          error: undefined,
+        };
+        events.set(leased.event_id, leased);
+        await persist();
+        result = leased;
+      });
+      await serial;
+      return result;
+    },
+    async complete(eventId, leaseId, status, now, error) {
+      let result: JiraWebhookEvent | undefined;
+      serial = serial.then(async () => {
+        await load();
+        const current = events.get(eventId);
+        if (!current || current.status !== "running" || current.lease_id !== leaseId) return;
+        const completed: JiraWebhookEvent = {
+          ...current,
+          status,
+          completed_at: now.toISOString(),
+          lease_id: undefined,
+          lease_expires_at: undefined,
+          ...(error ? { error } : { error: undefined }),
+        };
+        events.set(eventId, completed);
+        await persist();
+        result = completed;
       });
       await serial;
       return result;

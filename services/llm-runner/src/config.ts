@@ -14,6 +14,8 @@ export interface RunnerConfig {
   credential_internal_token?: string;
   kiro_relay_cancel_url?: string;
   kiro_relay_auth_token?: string;
+  /** Shared credential for system-owned Flow runs. Ordinary chat must not use this route. */
+  system_runner_token?: string;
   /** Internal NDJSON keepalive interval for long-running CLI turns. */
   stream_heartbeat_interval_ms?: number;
 }
@@ -56,6 +58,9 @@ export function loadRunnerConfig(
   if (credentialInternalToken) {
     config.credential_internal_token = credentialInternalToken;
   }
+
+  const systemRunnerToken = env.SYSTEM_RUNNER_TOKEN?.trim();
+  if (systemRunnerToken) config.system_runner_token = systemRunnerToken;
 
   if (enabledRuntimes.includes("kiro")) {
     const command = env.KIRO_COMMAND?.trim();

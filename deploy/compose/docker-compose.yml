@@ -6,6 +6,7 @@ services:
     environment:
       PORT: "9000"
       JIRA_WEBHOOK_SHARED_SECRET: "${JIRA_WEBHOOK_SHARED_SECRET:-}"
+      JIRA_AUTOMATION_INTERNAL_TOKEN: "${JIRA_AUTOMATION_INTERNAL_TOKEN:-}"
       JIRA_WEBHOOK_EVENT_STORE_FILE: "/data/jira-events.json"
     ports:
       - "9000:9000"
@@ -24,6 +25,46 @@ services:
       retries: 5
       start_period: 5s
 
+  jira-automation-runner:
+    build:
+      context: ../..
+      dockerfile: services/jira-automation-runner/Dockerfile
+    environment:
+      PORT: "8910"
+      JIRA_WEBHOOK_INGRESS_URL: "http://jira-webhook-ingress:9000"
+      LLM_RUNNER_URL: "http://llm-runner:8200"
+      JIRA_AUTOMATION_INTERNAL_TOKEN: "${JIRA_AUTOMATION_INTERNAL_TOKEN:-}"
+      JIRA_AUTOMATION_ENABLED: "${JIRA_AUTOMATION_ENABLED:-false}"
+      JIRA_AUTOMATION_REPOSITORY_URL: "${JIRA_AUTOMATION_REPOSITORY_URL:-}"
+      JIRA_AUTOMATION_REPOSITORY_BRANCH: "${JIRA_AUTOMATION_REPOSITORY_BRANCH:-main}"
+      JIRA_AUTOMATION_RUNTIME: "${JIRA_AUTOMATION_RUNTIME:-claude-code}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      JIRA_AUTOMATION_WORKSPACE_ROOT: "/kiro-workspaces"
+      JIRA_AUTOMATION_MIRROR_ROOT: "/data/repositories"
+      JIRA_AUTOMATION_POLL_MS: "${JIRA_AUTOMATION_POLL_MS:-1000}"
+      JIRA_AUTOMATION_LEASE_SECONDS: "${JIRA_AUTOMATION_LEASE_SECONDS:-1200}"
+      JIRA_AUTOMATION_EXECUTION_TIMEOUT_MS: "${JIRA_AUTOMATION_EXECUTION_TIMEOUT_MS:-910000}"
+      JIRA_AUTOMATION_SETTINGS_FILE: "/automation-config/settings.json"
+      JIRA_AUTOMATION_SKILLS_ROOT: "/automation-config/skills"
+    ports:
+      - "8910:8910"
+    volumes:
+      - jira-automation-runner-data:/data
+      - jira-automation-config:/automation-config
+      - ${HOME}/Documents/KiroBotWorkspaces:/kiro-workspaces
+    depends_on:
+      jira-webhook-ingress:
+        condition: service_healthy
+      llm-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        ["CMD", "node", "-e", "fetch('http://127.0.0.1:8910').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
   control-api:
     build:
       context: ../..
@@ -34,8 +75,11 @@ services:
       LOG_SERVICE_URL: "http://log-service:8500"
       BOT_HOST_URL: "${BOT_HOST_URL:-http://bot-api:8400}"
       CAPABILITY_RUNNER_URL: "http://capability-runner:8700"
+      JIRA_AUTOMATION_SETTINGS_FILE: "/data/jira-automation/settings.json"
     ports:
       - "8600:8600"
+    volumes:
+      - jira-automation-config:/data/jira-automation
     depends_on:
       data-service:
         condition: service_healthy
@@ -212,6 +256,7 @@ services:
       CLAUDE_CODE_ARGS: "services/llm-runner/scripts/kiro-relay-cli.mjs -p --output-format text --permission-mode bypassPermissions --setting-sources project,local,user"
       CLAUDE_CODE_TIMEOUT_MS: "${CLAUDE_CODE_TIMEOUT_MS:-900000}"
       USER_CREDENTIALS_INTERNAL_TOKEN: "${USER_CREDENTIALS_INTERNAL_TOKEN:-}"
+      SYSTEM_RUNNER_TOKEN: "${JIRA_AUTOMATION_INTERNAL_TOKEN:-}"
       KIRO_RELAY_AUTH_TOKEN: "${KIRO_RELAY_AUTH_TOKEN:-}"
       MCP_SERVICE_URL: "http://mcp-service:8800"
       MCP_RUNNER_SECRET: "${MCP_RUNNER_SECRET:-}"
@@ -336,3 +381,5 @@ volumes:
   log-service-data:
   capability-runner-data:
   jira-webhook-ingress-data:
+  jira-automation-runner-data:
+  jira-automation-config:

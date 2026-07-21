@@ -1,5 +1,20 @@
 # 更新日志
 
+## 2026-07-21
+
+### Jira System Automation Flow
+
+- 新增独立的 Jira System Flow 执行链路：Webhook 事件通过受控 `/v1/system-runs` 以 `flow_id`、`run_id` 运行，不再注册或复用普通 Bot、用户会话、Soul、Rules、Memory 与用户凭证。
+- System Flow 使用隔离工作目录 `system-flows/<flow>/runs/<run>/repository/<JIRA-KEY>/`；Runner 在启动 CLI 前创建 Jira 项目与 `reports/` 目录，并仅允许修改当前 Jira 范围。
+- Jira Flow WebUI 新增本地 Skill 文件夹上传、运行 `.env`、GitHub Token、自动执行和自动发布配置；内部服务令牌由本地启动脚本自动生成，不要求管理员配置或查看。
+- 新增 System Flow 固定规则注入：自动执行开启且准入通过时，管理员预授权替代普通 Bot 的用例确认门禁；仍禁止伪造环境或执行结果，并将 Jira 历史报告标记为参考而非本次 pytest 结果。
+
+### Jira 项目自动发布
+
+- Jira Flow 新增“完成后提交并 Push 当前 Jira 项目”开关；发布由 Runner 而非 LLM 执行。
+- 仅暂存并提交 `<JIRA-KEY>/` 及其报告，排除仓库根目录 `.env`、Cookie 和其他 Jira 目录；要求当前 Run 已生成 Markdown 报告。
+- 固定发布到 `bot/<JIRA-KEY>`，后续同 Jira Run 会先同步远端同名分支再追加提交；不自动创建 PR 或评论 Jira。
+
 ## 2026-07-20
 
 ### Agent 转交能力

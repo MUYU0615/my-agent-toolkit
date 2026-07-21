@@ -7,6 +7,16 @@ description: Create, configure, execute, and report an isolated Easemob Jira-sco
 
 Use this skill only after `easemob-jira-testcase` has produced the current Jira's Chinese testcase draft and the same user explicitly confirms it. If Confluence is linked, use the available Confluence review result as source evidence.
 
+## System Flow Auto-execution
+
+This exception applies only when both conditions are true: `MY_AGENT_RUNTIME=system-flow` and `MY_AGENT_SYSTEM_FLOW_AUTO_APPROVE_CASES=1`. The administrator's Flow setting is then the explicit case confirmation for the current Jira Run.
+
+- Keep the readiness gate: if readiness is not `测试准入：通过`, stop after the gap/risk report; do not create test code or claim execution.
+- When readiness passes, use the already-created `repository/<JIRA-KEY>/` directory in the current System Flow workspace. Do not create an `auto-test/` parent and do not inspect sibling Jira directories.
+- Create `docs/cases.md`, implement tests, validate the exact required environment variables, then run the real test command only when all requirements are present.
+- System Flow variables are already injected into the CLI process and materialized as `repository/.env`; never ask for `/env set`, never copy their values into output, and never commit that file.
+- A report may call a case passed or failed only from the current Run's actual command output. Jira comments, attachments, and historical reports are evidence only and must be labelled `历史参考`.
+
 ## Two Modes
 
 - **Managed Test-Jira Bot (default):** create a clean `<current-conversation-workdir>/<JIRA-KEY>/` project. Do not inspect or reuse parent, sibling, shared-repository, or another-user files. The project is isolated by Bot, WeCom user, conversation, and Jira.

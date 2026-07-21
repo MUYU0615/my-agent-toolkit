@@ -20,6 +20,8 @@ SERVICES=(
   mcp-service
   bot-api
   control-api
+  jira-webhook-ingress
+  jira-automation-runner
 )
 
 WECOM_SERVICE="wecom-worker"
