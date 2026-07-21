@@ -16,6 +16,7 @@ WORKDIR /app
 RUN apk add --no-cache git
 RUN printf '%s\n' '#!/bin/sh' 'case "$1" in *Username*) printf "%s\\n" "x-access-token" ;; *) printf "%s\\n" "$GITHUB_TOKEN" ;; esac' > /usr/local/bin/git-askpass && chmod 700 /usr/local/bin/git-askpass
 COPY --from=build /app/services/jira-automation-runner/dist ./services/jira-automation-runner/dist
+COPY --from=deps /app/node_modules/undici ./node_modules/undici
 ENV PORT=8910
 EXPOSE 8910
 CMD ["node", "services/jira-automation-runner/dist/main.js"]

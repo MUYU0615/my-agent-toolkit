@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { appendFile, chmod, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { Agent, fetch as undiciFetch } from "undici";
 
 export interface AutomationEvent { event_id: string; issue_key: string; event_type: string; received_at: string; payload: Record<string, unknown>; lease_id?: string; }
 export interface JiraAutomationRunnerConfig {
@@ -75,25 +76,48 @@ async function withSavedSettings(config: JiraAutomationRunnerConfig): Promise<Ji
 
 async function execute(config: JiraAutomationRunnerConfig, event: AutomationEvent, fetchImpl: typeof fetch): Promise<void> {
   let failure: string | undefined;
+  let cliDispatcher: Agent | undefined;
   try {
     if (!config.repositoryUrl) throw new Error("JIRA_AUTOMATION_REPOSITORY_URL is not configured");
     if (!event.lease_id) throw new Error("event lease is missing");
     const workspace = await prepareWorkspace(config, event);
     const prompt = buildPrompt(event, config.autoExecute === true);
-    const response = await fetchImpl(new Request(`${config.llmRunnerUrl}/v1/system-runs`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.internalToken}`, "x-trace-id": event.event_id },
-      body: JSON.stringify({ flow_id: config.flowId, run_id: workspace.runId, runtime: config.runtime, prompt, trace_id: event.event_id, runtime_env: parseRuntimeEnv(config.runtimeEnv), auto_execute: config.autoExecute === true }),
-      signal: AbortSignal.timeout(config.executionTimeoutMs),
-    }));
+    const endpoint = `${config.llmRunnerUrl}/v1/system-runs`;
+    const headers = { "content-type": "application/json", authorization: `Bearer ${config.internalToken}`, "x-trace-id": event.event_id };
+    const body = JSON.stringify({ flow_id: config.flowId, run_id: workspace.runId, runtime: config.runtime, prompt, trace_id: event.event_id, runtime_env: parseRuntimeEnv(config.runtimeEnv), auto_execute: config.autoExecute === true });
+    const signal = AbortSignal.timeout(config.executionTimeoutMs);
+    const request = new Request(endpoint, {
+      method: "POST", headers, body, signal,
+    });
+    // Node's built-in fetch waits only about five minutes for the first response
+    // header. A System Flow legitimately waits for the CLI's 15-minute run, so
+    // give this internal request a little headroom while retaining the explicit
+    // execution timeout above as the overall limit.
+    cliDispatcher = config.fetch ? undefined : new Agent({
+      headersTimeout: config.executionTimeoutMs + 30_000,
+      bodyTimeout: config.executionTimeoutMs + 30_000,
+    });
+    const response = config.fetch
+      ? await fetchImpl(request)
+      : await undiciFetch(endpoint, { method: "POST", headers, body, signal, dispatcher: cliDispatcher });
     if (!response.ok) throw new Error(`CLI runner failed (${response.status}): ${await response.text()}`);
     await writeFile(join(workspace.root, "automation-result.md"), String((await response.json() as { output?: unknown }).output ?? "CLI completed"), { mode: 0o600 });
     if (config.autoPublish) await publishJiraProject(config, workspace.repository, event.issue_key);
-  } catch (error) { failure = error instanceof Error ? error.message : "automation failed"; }
+  } catch (error) { failure = describeError(error); }
+  finally { await cliDispatcher?.close().catch(() => {}); }
   const completed = await fetchImpl(new Request(`${config.ingressUrl}/internal/events/${encodeURIComponent(event.event_id)}/complete`, {
     method: "POST", headers: internalHeaders(config), body: JSON.stringify({ lease_id: event.lease_id, status: failure ? "failed" : "succeeded", ...(failure ? { error: failure } : {}) }),
   }));
   if (!completed.ok) throw new Error(`event completion failed (${completed.status})`);
   if (failure) throw new Error(failure);
+}
+
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return "automation failed";
+  const cause = error.cause;
+  if (cause instanceof Error && cause.message) return `${error.message}: ${cause.message}`;
+  if (typeof cause === "object" && cause && "code" in cause) return `${error.message}: ${String((cause as { code: unknown }).code)}`;
+  return error.message;
 }
 
 async function prepareWorkspace(config: JiraAutomationRunnerConfig, event: AutomationEvent): Promise<{ root: string; runId: string; repository: string }> {
